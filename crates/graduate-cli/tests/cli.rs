@@ -18,14 +18,18 @@ fn gd_command() -> Result<Command, Box<dyn Error>> {
 
 #[test]
 fn help_uses_the_product_focused_command_style() -> Result<(), Box<dyn Error>> {
+    let usage = format!(
+        "Usage: gd{} [OPTIONS] <COMMAND>",
+        std::env::consts::EXE_SUFFIX
+    );
     gd_command()?
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::starts_with(
-            "Inspect Jira Cloud from the terminal\n\nUsage: gd",
-        ))
-        .stdout(predicate::str::contains("Usage: gd [OPTIONS] <COMMAND>"))
+        .stdout(predicate::str::starts_with(format!(
+            "Inspect Jira Cloud from the terminal\n\n{usage}"
+        )))
+        .stdout(predicate::str::contains(usage))
         .stdout(predicate::str::contains("tui").not())
         .stdout(predicate::str::contains(
             "auth             Configure authentication for a ticket system",
@@ -46,10 +50,14 @@ fn version_uses_the_workspace_version() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn bare_invocation_requires_a_command() -> Result<(), Box<dyn Error>> {
+    let usage = format!(
+        "Usage: gd{} [OPTIONS] <COMMAND>",
+        std::env::consts::EXE_SUFFIX
+    );
     gd_command()?
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("Usage: gd [OPTIONS] <COMMAND>"));
+        .stderr(predicate::str::contains(usage));
     Ok(())
 }
 
