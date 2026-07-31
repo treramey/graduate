@@ -5,6 +5,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use graduate::jira::JiraCredentials;
 use graduate::jira_auth::{CompletedLogin, LoginDefaults};
 use serde::{Deserialize, Serialize};
 
@@ -143,6 +144,23 @@ impl Config {
             },
             None => LoginDefaults::default(),
         }
+    }
+
+    pub(crate) fn jira_credentials(&self) -> Result<Option<JiraCredentials>, CliError> {
+        let Some(ConnectionConfig::Jira {
+            site: Some(site),
+            email: Some(email),
+            token: Some(token),
+            ..
+        }) = self.connections.get(JIRA_CONNECTION_NAME)
+        else {
+            return Ok(None);
+        };
+        JiraCredentials::parse(site, email, token)
+            .map(Some)
+            .map_err(|error| {
+                CliError::Config(format!("stored Jira connection is invalid: {error}"))
+            })
     }
 
     pub(crate) fn set_jira_connection(&mut self, completed: &CompletedLogin) {

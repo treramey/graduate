@@ -24,9 +24,15 @@ All notable changes to this project will be documented in this file.
 - Reduced the login interface's minimum width to 76 columns so it works in
   common split-pane layouts.
 - Standardized the product-facing brand as Graduate.
+- Made generated Agent Skill updates transactional and rejected output paths
+  that escape the repository or traverse symbolic links.
 
 ### Added
 
+- Added `gd diff <environment>`, a streaming promotion report for feature
+  branches that reached an environment but not main, with Jira enrichment,
+  ticket opening, API-native JSON/table/YAML/CSV output, safe file export, and
+  environment-only PAT authentication.
 - Initial Rust workspace with an I/O-independent core crate and a Ratatui CLI.
 - Unit, rendering, and CLI integration tests.
 - Deterministic repository-controlled Agent Skill generation and validation.

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Graduate's public command-line interface.
 #[derive(Debug, Parser)]
@@ -24,8 +24,55 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Configure authentication for a ticket system.
     Auth(AuthArgs),
+    /// Show feature branches in an environment that have not reached main.
+    Diff(DiffArgs),
     /// Generate portable AI agent skills from Graduate's command contract.
     GenerateSkills(GenerateSkillsArgs),
+}
+
+/// Options for comparing an environment branch with the main branch.
+#[derive(Args)]
+pub(crate) struct DiffArgs {
+    /// Environment branch to inspect, such as qa, staging, or cycle.
+    #[arg(value_name = "ENVIRONMENT")]
+    pub(crate) environment: String,
+    /// Main branch name. By default, use origin/HEAD, then try common names.
+    #[arg(long, value_name = "BRANCH")]
+    pub(crate) main: Option<String>,
+    /// Remote that owns the environment and feature branches.
+    #[arg(long, value_name = "REMOTE", default_value = "origin")]
+    pub(crate) remote: String,
+    /// Output format. Non-interactive output defaults to json.
+    #[arg(long = "format", value_name = "FORMAT", value_enum)]
+    pub(crate) output_format: Option<ReportFormat>,
+    /// Write formatted output to a relative file instead of stdout.
+    #[arg(short = 'o', long, value_name = "PATH")]
+    pub(crate) output: Option<PathBuf>,
+    /// Inspect existing remote-tracking refs without fetching first.
+    #[arg(long)]
+    pub(crate) no_fetch: bool,
+}
+
+impl std::fmt::Debug for DiffArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DiffArgs")
+            .field("environment", &self.environment)
+            .field("main", &self.main)
+            .field("remote", &self.remote)
+            .field("output_format", &self.output_format)
+            .field("output", &self.output)
+            .field("no_fetch", &self.no_fetch)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum ReportFormat {
+    Json,
+    Table,
+    Yaml,
+    Csv,
 }
 
 /// Authentication commands.
@@ -90,4 +137,27 @@ pub(crate) struct GenerateSkillsArgs {
     /// Replace existing generated skill files.
     #[arg(long)]
     pub(crate) force: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_parses_google_workspace_style_output_flags() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from([
+            "gd",
+            "diff",
+            "qa",
+            "--format",
+            "json",
+            "--output",
+            "report.json",
+        ])?;
+        let debug = format!("{cli:?}");
+
+        assert!(debug.contains("Json"));
+        assert!(debug.contains("report.json"));
+        Ok(())
+    }
 }

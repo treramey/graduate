@@ -37,6 +37,37 @@ gd auth setup jira
 Like Drag, Graduate requires an explicit command. Run `gd --help` to list the
 available commands.
 
+## Promotion reports
+
+Show remote feature branches that are present in an environment but have not
+reached the repository's main branch:
+
+```bash
+gd diff qa
+```
+
+Graduate fetches `origin`, discovers the remote default branch (then falls back
+to `main`, `master`, `trunk`, or `develop`), and streams alphabetically sorted
+rows into a terminal list. Pass `--main <branch>` for a custom main branch.
+Branch names containing a Jira key such as `PROJ-123` are enriched with the
+ticket summary, status, assignee, and fix versions when Jira is configured.
+Select a row and press `o` to open its ticket.
+
+For machine use, Graduate follows API-native output conventions. Non-interactive
+runs emit JSON by default, with camelCase report fields and Jira issue data in
+the same `fields.status.name`, `fields.assignee.displayName`, and
+`fields.fixVersions` shapes returned by Jira. Select another representation
+with `--format json|table|yaml|csv`, and write it with `-o, --output <path>`:
+
+```bash
+gd diff qa --format csv --output reports/qa.csv
+```
+
+Output paths are relative to the current directory and cannot traverse parent
+directories or symbolic links outside it. Set `GIT_PAT` for headless fetch authentication;
+tokens are not accepted as command-line flags. `--no-fetch` inspects existing
+remote-tracking refs.
+
 ## Jira configuration
 
 Run the interactive Jira authentication wizard:
@@ -93,7 +124,8 @@ See [`docs/architecture.md`](docs/architecture.md) for the design rules.
 ## AI agent skills
 
 Graduate includes repository-controlled Agent Skills generated from its CLI
-contract:
+contract. Generation stages and validates the complete update before replacing
+existing skill artifacts:
 
 ```bash
 cargo run -- generate-skills --force
@@ -109,6 +141,24 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+Create a disposable Git repository and exercise the promotion report without
+touching a real remote or Jira configuration:
+
+```bash
+pnpm test:diff                         # interactive TUI
+pnpm --silent test:diff -- --format json  # clean API-native JSON
+pnpm --silent test:diff -- --format table
+pnpm --silent test:diff -- --format yaml
+pnpm --silent test:diff -- --format csv
+```
+
+The fixture contains two branches in `qa` but not `main`, plus one branch that
+has already graduated and must be excluded. Set
+`GRADUATE_DIFF_FIXTURE_KEEP=1` to retain the temporary repository for inspection
+or to test `--output` files. The interactive launcher creates a pseudo-terminal
+with the controlling terminal's dimensions; if it cannot find one, it exits with
+instructions instead of silently falling back to JSON.
 
 ## License
 

@@ -20,3 +20,13 @@
   validation. Add `--verify` only for a read-only Jira network request.
 - Jira setup verifies `/rest/api/3/myself` before saving and atomically writes
   the configuration with mode `0600` on Unix.
+- `gd diff <environment>` reports remote feature branches reachable from the
+  environment but not main, discovers the remote default branch unless
+  `--main` is set, and maps Jira keys from branch names.
+- Promotion reports use Gitoxide for refs and commit traversal. Their fetch
+  seam preserves Git credential-helper behavior and supports non-persistent
+  PAT authentication.
+- Promotion report automation defaults to JSON with camelCase fields and
+  Jira-native issue field shapes. Use `--format` for table, YAML, or CSV and
+  `--output` only with a safe relative path. PATs come from `GIT_PAT`, never a
+  command-line flag.

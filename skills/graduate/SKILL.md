@@ -25,6 +25,15 @@ Interactive setup requires terminal-capable stdin and stderr. Use Tab and
 Shift-Tab to move, Enter to continue, Escape to go back or cancel, and Ctrl-C
 to cancel from any stage.
 
+## Inspect promotion gaps
+
+Run `gd diff <environment>` to stream feature branches that are in an
+environment but not the remote default branch. Use `--main <branch>` to
+override main. Non-interactive runs default to API-native JSON. Use `--format
+json|table|yaml|csv` and `--output <relative-path>` for other report surfaces.
+Configured Jira credentials enrich keys found in branch names. Provide headless
+Git authentication only through `GIT_PAT`; never print it.
+
 ## Current command contract
 
 ```text
@@ -34,6 +43,7 @@ Usage: gd [OPTIONS] <COMMAND>
 
 Commands:
   auth             Configure authentication for a ticket system
+  diff             Show feature branches in an environment that have not reached main
   generate-skills  Generate portable AI agent skills from Graduate's command contract
   help             Print this message or the help of the given subcommand(s)
 

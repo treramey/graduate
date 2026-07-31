@@ -10,6 +10,7 @@ fn gd_command() -> Result<Command, Box<dyn Error>> {
         "ATLASSIAN_HOST",
         "ATLASSIAN_EMAIL",
         "ATLASSIAN_TOKEN",
+        "GIT_PAT",
     ] {
         command.env_remove(variable);
     }
@@ -69,6 +70,23 @@ fn help_describes_skill_generation() -> Result<(), Box<dyn Error>> {
         .success()
         .stdout(predicate::str::contains("--output-dir"))
         .stdout(predicate::str::contains("--force"));
+    Ok(())
+}
+
+#[test]
+fn diff_help_describes_promotion_and_automation_options() -> Result<(), Box<dyn Error>> {
+    gd_command()?
+        .args(["diff", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<ENVIRONMENT>"))
+        .stdout(predicate::str::contains("--main <BRANCH>"))
+        .stdout(predicate::str::contains("--format <FORMAT>"))
+        .stdout(predicate::str::contains("-o, --output <PATH>"))
+        .stdout(predicate::str::contains("--csv").not())
+        .stdout(predicate::str::contains("--pat").not())
+        .stdout(predicate::str::contains("--unattended").not())
+        .stdout(predicate::str::contains("--no-fetch"));
     Ok(())
 }
 

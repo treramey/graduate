@@ -1,9 +1,9 @@
 //! Deterministic repository-controlled Agent Skill generation.
 
 use std::fs;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::Path;
+use std::io;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap::CommandFactory;
 
@@ -36,6 +36,15 @@ the token from environment variables or `~/.graduate/config.json`.
 Interactive setup requires terminal-capable stdin and stderr. Use Tab and
 Shift-Tab to move, Enter to continue, Escape to go back or cancel, and Ctrl-C
 to cancel from any stage.
+
+## Inspect promotion gaps
+
+Run `gd diff <environment>` to stream feature branches that are in an
+environment but not the remote default branch. Use `--main <branch>` to
+override main. Non-interactive runs default to API-native JSON. Use `--format
+json|table|yaml|csv` and `--output <relative-path>` for other report surfaces.
+Configured Jira credentials enrich keys found in branch names. Provide headless
+Git authentication only through `GIT_PAT`; never print it.
 "#;
 
 const INDEX: &str = r#"# Agent Skills
@@ -47,19 +56,23 @@ const INDEX: &str = r#"# Agent Skills
 | [`graduate`](../skills/graduate/SKILL.md) | Configure Graduate and inspect its Jira CLI contract. |
 "#;
 
+static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn run(args: &GenerateSkillsArgs) -> Result<(), CliError> {
-    let skill_path = args.output_dir.join("graduate").join("SKILL.md");
+    let current = std::env::current_dir()?.canonicalize()?;
+    let output_dir = validate_output_dir(&current, &args.output_dir)?;
+    let skill_path = output_dir.join("graduate").join("SKILL.md");
     let skill = format!(
         "{SKILL}\n## Current command contract\n\n```text\n{}```\n",
         Cli::command().render_long_help()
     );
     let files = [
         GeneratedFile {
-            path: &skill_path,
+            path: skill_path.clone(),
             content: &skill,
         },
         GeneratedFile {
-            path: Path::new("docs/skills.md"),
+            path: current.join("docs/skills.md"),
             content: INDEX,
         },
     ];
@@ -69,32 +82,230 @@ pub(crate) fn run(args: &GenerateSkillsArgs) -> Result<(), CliError> {
 }
 
 struct GeneratedFile<'a> {
-    path: &'a Path,
+    path: PathBuf,
     content: &'a str,
 }
 
 fn write_generated(files: &[GeneratedFile<'_>], force: bool) -> Result<(), CliError> {
-    if !force {
-        for file in files {
-            if file.path.exists() {
-                return Err(CliError::GeneratedFileExists(file.path.to_path_buf()));
-            }
-        }
+    validate_destinations(files, force)?;
+    let current = std::env::current_dir()?.canonicalize()?;
+    let mut staging = StagingDirectory::create(&current)?;
+    let mut artifacts = Vec::with_capacity(files.len());
+    for (index, file) in files.iter().enumerate() {
+        let staged = staging.path.join(index.to_string());
+        fs::write(&staged, file.content)?;
+        artifacts.push(StagedArtifact {
+            staged,
+            destination: file.path.clone(),
+        });
     }
+    validate_destinations(files, force)?;
     for file in files {
         if let Some(parent) = file.path.parent() {
             fs::create_dir_all(parent)?;
         }
     }
+    if let Err(error) = replace_artifacts(&staging.path, &artifacts) {
+        staging.preserve();
+        return Err(io::Error::other(format!(
+            "{error}; staged recovery files were kept at {}",
+            staging.path.display()
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_output_dir(current: &Path, output_dir: &Path) -> Result<PathBuf, CliError> {
+    if output_dir.as_os_str().is_empty()
+        || output_dir.is_absolute()
+        || !output_dir
+            .components()
+            .any(|component| matches!(component, Component::Normal(_)))
+        || output_dir.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(CliError::InvalidInput(
+            "--output-dir must be a non-empty relative path within the current directory"
+                .to_owned(),
+        ));
+    }
+    let destination = current.join(output_dir);
+    validate_path_without_symlinks(current, &destination, true)?;
+    Ok(destination)
+}
+
+fn validate_destinations(files: &[GeneratedFile<'_>], force: bool) -> Result<(), CliError> {
+    let current = std::env::current_dir()?.canonicalize()?;
     for file in files {
-        if force {
-            fs::write(file.path, file.content)?;
+        validate_path_without_symlinks(&current, &file.path, false)?;
+        if fs::symlink_metadata(&file.path).is_ok() && !force {
+            return Err(CliError::GeneratedFileExists(file.path.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_path_without_symlinks(
+    current: &Path,
+    destination: &Path,
+    leaf_must_be_directory: bool,
+) -> Result<(), CliError> {
+    let relative = destination.strip_prefix(current).map_err(|_| {
+        CliError::InvalidInput(format!(
+            "generated path must stay within {}",
+            current.display()
+        ))
+    })?;
+    let mut path = current.to_path_buf();
+    let components = relative.components().collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(component) = component else {
+            return Err(CliError::InvalidInput(format!(
+                "generated path must stay within {}",
+                current.display()
+            )));
+        };
+        path.push(component);
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(CliError::InvalidInput(format!(
+                "refusing to write through symlink {}",
+                path.display()
+            )));
+        }
+        let is_leaf = index + 1 == components.len();
+        if (!is_leaf || leaf_must_be_directory) && !metadata.is_dir() {
+            return Err(CliError::InvalidInput(format!(
+                "generated path parent is not a directory: {}",
+                path.display()
+            )));
+        }
+        if is_leaf && !leaf_must_be_directory && !metadata.is_file() {
+            return Err(CliError::InvalidInput(format!(
+                "generated file destination is not a file: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+struct StagingDirectory {
+    path: PathBuf,
+    cleanup: bool,
+}
+
+impl StagingDirectory {
+    fn create(parent: &Path) -> io::Result<Self> {
+        for _ in 0..100 {
+            let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!(
+                ".graduate-generate-skills-{}-{sequence}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => {
+                    return Ok(Self {
+                        path,
+                        cleanup: true,
+                    })
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not create a unique skill staging directory",
+        ))
+    }
+
+    fn preserve(&mut self) {
+        self.cleanup = false;
+    }
+}
+
+impl Drop for StagingDirectory {
+    fn drop(&mut self) {
+        if self.cleanup {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+struct StagedArtifact {
+    staged: PathBuf,
+    destination: PathBuf,
+}
+
+struct AppliedArtifact {
+    destination: PathBuf,
+    backup: Option<PathBuf>,
+}
+
+fn replace_artifacts(staging_root: &Path, artifacts: &[StagedArtifact]) -> Result<(), CliError> {
+    let backup_root = staging_root.join("backups");
+    fs::create_dir(&backup_root)?;
+    let mut applied = Vec::with_capacity(artifacts.len());
+    for (index, artifact) in artifacts.iter().enumerate() {
+        let backup = if fs::symlink_metadata(&artifact.destination).is_ok() {
+            let backup = backup_root.join(index.to_string());
+            if let Err(error) = fs::rename(&artifact.destination, &backup) {
+                return Err(rollback_after_error(error, &applied));
+            }
+            Some(backup)
         } else {
-            let mut destination = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(file.path)?;
-            destination.write_all(file.content.as_bytes())?;
+            None
+        };
+        if let Err(error) = fs::rename(&artifact.staged, &artifact.destination) {
+            let restore_error = backup
+                .as_ref()
+                .and_then(|backup| fs::rename(backup, &artifact.destination).err());
+            let rollback_error = rollback_artifacts(&applied).err();
+            if restore_error.is_some() || rollback_error.is_some() {
+                let recovery_errors = restore_error
+                    .into_iter()
+                    .chain(rollback_error)
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(io::Error::other(format!(
+                    "{error}; restoring the prior skill catalog also failed: {recovery_errors}"
+                ))
+                .into());
+            }
+            return Err(error.into());
+        }
+        applied.push(AppliedArtifact {
+            destination: artifact.destination.clone(),
+            backup,
+        });
+    }
+    Ok(())
+}
+
+fn rollback_after_error(error: io::Error, applied: &[AppliedArtifact]) -> CliError {
+    match rollback_artifacts(applied) {
+        Ok(()) => error.into(),
+        Err(rollback_error) => io::Error::other(format!(
+            "{error}; restoring the prior skill catalog also failed: {rollback_error}"
+        ))
+        .into(),
+    }
+}
+
+fn rollback_artifacts(applied: &[AppliedArtifact]) -> io::Result<()> {
+    for artifact in applied.iter().rev() {
+        fs::remove_file(&artifact.destination)?;
+        if let Some(backup) = &artifact.backup {
+            fs::rename(backup, &artifact.destination)?;
         }
     }
     Ok(())
@@ -107,7 +318,8 @@ mod tests {
     #[test]
     fn existing_destination_is_rejected_before_any_file_is_written(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let current = std::env::current_dir()?.canonicalize()?;
+        let directory = tempfile::tempdir_in(current)?;
         let skill = directory.path().join("skills/graduate/SKILL.md");
         let index = directory.path().join("docs/skills.md");
         let parent = index.parent().ok_or("index has no parent")?;
@@ -115,11 +327,11 @@ mod tests {
         fs::write(&index, "existing index")?;
         let files = [
             GeneratedFile {
-                path: &skill,
+                path: skill.clone(),
                 content: "skill",
             },
             GeneratedFile {
-                path: &index,
+                path: index.clone(),
                 content: "index",
             },
         ];
@@ -129,6 +341,64 @@ mod tests {
         assert!(matches!(result, Err(CliError::GeneratedFileExists(_))));
         assert!(!skill.exists());
         assert_eq!(fs::read_to_string(index)?, "existing index");
+        Ok(())
+    }
+
+    #[test]
+    fn output_directory_rejects_absolute_and_parent_paths() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let current = directory.path().canonicalize()?;
+        assert!(validate_output_dir(&current, Path::new("/tmp/skills")).is_err());
+        assert!(validate_output_dir(&current, Path::new("../skills")).is_err());
+        assert!(validate_output_dir(&current, Path::new(".")).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_directory_rejects_symlink_traversal() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let current = directory.path().canonicalize()?;
+        let outside = tempfile::tempdir()?;
+        symlink(outside.path(), current.join("skills"))?;
+
+        let result = validate_output_dir(&current, Path::new("skills"));
+
+        assert!(
+            matches!(result, Err(CliError::InvalidInput(message)) if message.contains("symlink"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_replacement_rolls_back_prior_outputs_when_commit_fails(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let staging = directory.path().join("staging");
+        fs::create_dir(&staging)?;
+        let first_destination = directory.path().join("first");
+        let second_destination = directory.path().join("second");
+        let first_staged = staging.join("first");
+        fs::write(&first_destination, "old first")?;
+        fs::write(&second_destination, "old second")?;
+        fs::write(&first_staged, "new first")?;
+        let artifacts = [
+            StagedArtifact {
+                staged: first_staged,
+                destination: first_destination.clone(),
+            },
+            StagedArtifact {
+                staged: staging.join("missing"),
+                destination: second_destination.clone(),
+            },
+        ];
+
+        assert!(replace_artifacts(&staging, &artifacts).is_err());
+        assert_eq!(fs::read_to_string(first_destination)?, "old first");
+        assert_eq!(fs::read_to_string(second_destination)?, "old second");
         Ok(())
     }
 }

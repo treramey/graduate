@@ -1,6 +1,8 @@
 mod browser;
 mod cli;
 mod config;
+mod diff;
+mod diff_tui;
 mod error;
 mod generate_skills;
 mod jira;
@@ -47,5 +49,9 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             }
         }
         Command::GenerateSkills(args) => generate_skills::run(&args),
+        Command::Diff(args) => {
+            let path = cli.config.unwrap_or(config::config_path()?);
+            diff::run(args, &path).await
+        }
     }
 }

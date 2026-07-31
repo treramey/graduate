@@ -2,3 +2,4 @@
 
 pub mod jira;
 pub mod jira_auth;
+pub mod promotion;

@@ -25,8 +25,14 @@ pub(crate) enum CliError {
     Url(#[from] url::ParseError),
     #[error("invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("YAML serialization failed: {0}")]
+    Yaml(#[from] serde_yaml::Error),
     #[error("terminal I/O failed: {0}")]
     Io(#[from] io::Error),
+    #[error("{0}")]
+    Git(String),
+    #[error("promotion report was cancelled")]
+    ReportCancelled,
     #[error("interactive setup was cancelled; configuration was not changed")]
     LoginCancelled,
     #[error(
@@ -39,9 +45,10 @@ pub(crate) enum CliError {
 impl CliError {
     pub(crate) const fn exit_code(&self) -> u8 {
         match self {
-            Self::InvalidInput(_) | Self::LoginCancelled | Self::GeneratedFileExists(_) => {
-                EXIT_USAGE
-            }
+            Self::InvalidInput(_)
+            | Self::LoginCancelled
+            | Self::ReportCancelled
+            | Self::GeneratedFileExists(_) => EXIT_USAGE,
             Self::Config(_)
             | Self::Authentication
             | Self::JiraStatus(_)
@@ -49,7 +56,9 @@ impl CliError {
             | Self::Http(_)
             | Self::Url(_)
             | Self::Json(_)
-            | Self::Io(_) => EXIT_FAILURE,
+            | Self::Yaml(_)
+            | Self::Io(_)
+            | Self::Git(_) => EXIT_FAILURE,
         }
     }
 
