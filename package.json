@@ -1,0 +1,41 @@
+{
+  "name": "@treramey/grad",
+  "private": true,
+  "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/treramey/graduate.git"
+  },
+  "author": {
+    "name": "Trevor Ramey",
+    "email": "trevor@trevors.email"
+  },
+  "homepage": "https://github.com/treramey/graduate",
+  "bugs": {
+    "url": "https://github.com/treramey/graduate/issues"
+  },
+  "packageManager": "pnpm@11.13.1",
+  "scripts": {
+    "test": "cargo test --workspace --locked",
+    "prepare": "lefthook install",
+    "changeset": "changeset",
+    "version-sync": "bash scripts/version-sync.sh",
+    "tag-release": "bash scripts/tag-release.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "cli",
+    "tui",
+    "ratatui",
+    "ai-agent",
+    "agent-skills",
+    "automation",
+    "rust"
+  ],
+  "devDependencies": {
+    "@changesets/cli": "^2.29.8",
+    "lefthook": "^2.1.2"
+  }
+}

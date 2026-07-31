@@ -1,0 +1,49 @@
+{
+  "name": "@treramey/grad",
+  "version": "0.1.0",
+  "description": "Graduate, a Jira Cloud command-line and terminal client",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/treramey/graduate.git"
+  },
+  "homepage": "https://github.com/treramey/graduate",
+  "bugs": "https://github.com/treramey/graduate/issues",
+  "bin": {
+    "gd": "run.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js",
+    "test": "node package-content.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "preferUnplugged": true,
+  "files": [
+    "install.js",
+    "platform.js",
+    "run.js"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "supportedPlatforms": {
+    "x86_64-unknown-linux-gnu": {
+      "artifact": "grad-x86_64-unknown-linux-gnu.tar.gz",
+      "binary": "gd"
+    },
+    "x86_64-apple-darwin": {
+      "artifact": "grad-x86_64-apple-darwin.tar.gz",
+      "binary": "gd"
+    },
+    "aarch64-apple-darwin": {
+      "artifact": "grad-aarch64-apple-darwin.tar.gz",
+      "binary": "gd"
+    },
+    "x86_64-pc-windows-msvc": {
+      "artifact": "grad-x86_64-pc-windows-msvc.zip",
+      "binary": "gd.exe"
+    }
+  }
+}
