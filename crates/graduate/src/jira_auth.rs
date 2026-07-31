@@ -1,4 +1,4 @@
-//! Deterministic Jira login and onboarding state transitions.
+//! Deterministic Jira authentication and onboarding state transitions.
 
 use thiserror::Error;
 

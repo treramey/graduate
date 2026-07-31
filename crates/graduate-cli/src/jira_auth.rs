@@ -1,21 +1,20 @@
-//! Login workflow, Jira verification boundary, and persistence orchestration.
+//! Jira authentication workflow, verification seam, and persistence orchestration.
 
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 
 use graduate::jira::{JiraCredentials, JiraIdentity};
-use graduate::login::{
-    CompletedLogin, LoginDefaults, OnboardingError, OnboardingScreen, OnboardingState, SecretInput,
-    TokenPage,
+use graduate::jira_auth::{
+    CompletedLogin, OnboardingError, OnboardingScreen, OnboardingState, SecretInput, TokenPage,
 };
 
 use crate::browser::{BrowserLauncher, SystemBrowserLauncher};
-use crate::cli::LoginArgs;
+use crate::cli::JiraSetupArgs;
 use crate::config::{Config, ATLASSIAN_EMAIL_ENV, ATLASSIAN_HOST_ENV, ATLASSIAN_TOKEN_ENV};
 use crate::error::CliError;
 use crate::jira::JiraClient;
-use crate::login_tui;
+use crate::jira_auth_tui;
 
 pub(crate) type VerificationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<JiraIdentity, CliError>> + Send + 'a>>;
@@ -51,14 +50,7 @@ impl<'a> OnboardingWorkflow<'a> {
     ) -> Self {
         Self {
             verifier,
-            state: OnboardingState::new(
-                LoginDefaults {
-                    hostname: existing.hostname.clone(),
-                    atlassian_user_email: existing.atlassian_user_email.clone(),
-                    atlassian_token: existing.atlassian_token.clone(),
-                },
-                open_browser,
-            ),
+            state: OnboardingState::new(existing.jira_login_defaults(), open_browser),
         }
     }
 
@@ -141,14 +133,14 @@ impl From<OnboardingError> for CliError {
     }
 }
 
-pub(crate) async fn run(args: LoginArgs, path: &Path) -> Result<(), CliError> {
+pub(crate) async fn run(args: JiraSetupArgs, path: &Path) -> Result<(), CliError> {
     let verifier = RemoteConnectionVerifier;
     let browser = SystemBrowserLauncher;
     run_with(args, path, &verifier, &browser).await
 }
 
 async fn run_with(
-    args: LoginArgs,
+    args: JiraSetupArgs,
     path: &Path,
     verifier: &dyn ConnectionVerifier,
     browser: &dyn BrowserLauncher,
@@ -158,7 +150,7 @@ async fn run_with(
     }
     let existing = Config::load(path)?;
     let workflow = OnboardingWorkflow::new(&existing, verifier, !args.no_open);
-    let completed = login_tui::run(workflow, browser).await?;
+    let completed = jira_auth_tui::run(workflow, browser).await?;
     save_completed(path, &completed)?;
     println!(
         "Connected {} to Jira at {}. Configuration saved to {}.",
@@ -170,7 +162,7 @@ async fn run_with(
 }
 
 async fn run_from_environment(
-    args: LoginArgs,
+    args: JiraSetupArgs,
     path: &Path,
     verifier: &dyn ConnectionVerifier,
 ) -> Result<(), CliError> {
@@ -183,14 +175,14 @@ async fn run_from_environment(
     .map_err(|error| CliError::InvalidInput(error.to_string()))?;
     if args.dry_run && !args.verify {
         println!(
-            "Login inputs are valid. Jira verification and configuration changes are planned; nothing was saved."
+            "Authentication inputs are valid. Jira verification and configuration changes are planned; nothing was saved."
         );
         return Ok(());
     }
     let identity = verifier.verify(&credentials).await?;
     if args.dry_run {
         println!(
-            "Login inputs are valid and Jira verification succeeded. Configuration changes are planned; nothing was saved."
+            "Authentication inputs are valid and Jira verification succeeded. Configuration changes are planned; nothing was saved."
         );
         return Ok(());
     }
@@ -205,11 +197,7 @@ async fn run_from_environment(
 
 fn save_completed(path: &Path, completed: &CompletedLogin) -> Result<(), CliError> {
     let mut config = Config::load(path)?;
-    config.account_id = Some(completed.identity().account_id().to_owned());
-    config.display_name = Some(completed.identity().display_name().to_owned());
-    config.atlassian_user_email = Some(completed.credentials().email().as_str().to_owned());
-    config.atlassian_token = Some(completed.credentials().token().expose_secret().to_owned());
-    config.hostname = Some(completed.credentials().site().as_str().to_owned());
+    config.set_jira_connection(completed);
     config.save(path)
 }
 
@@ -223,14 +211,14 @@ fn required_environment(name: &str) -> Result<String, CliError> {
         }
         Ok(value) if value.chars().any(|character| character.is_control()) => {
             Err(CliError::InvalidInput(format!(
-                "{name} contains unsafe control characters for `gd login --from-env`"
+                "{name} contains unsafe control characters for `gd auth setup jira --from-env`"
             )))
         }
         Err(std::env::VarError::NotUnicode(_)) => Err(CliError::InvalidInput(format!(
-            "{name} must contain valid Unicode for `gd login --from-env`"
+            "{name} must contain valid Unicode for `gd auth setup jira --from-env`"
         ))),
         Err(std::env::VarError::NotPresent) | Ok(_) => Err(CliError::InvalidInput(format!(
-            "{name} must be set and non-empty for `gd login --from-env`"
+            "{name} must be set and non-empty for `gd auth setup jira --from-env`"
         ))),
     }
 }

@@ -1,4 +1,4 @@
-//! Ratatui presentation and Crossterm runtime for interactive Jira login.
+//! Ratatui presentation and Crossterm runtime for interactive Jira authentication.
 
 use std::io::{self, IsTerminal};
 use std::time::Duration;
@@ -6,7 +6,7 @@ use std::time::Duration;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use graduate::jira::JiraField;
-use graduate::login::{CompletedLogin, OnboardingError, OnboardingScreen, SecretInput};
+use graduate::jira_auth::{CompletedLogin, OnboardingError, OnboardingScreen, SecretInput};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style, Stylize};
@@ -17,7 +17,7 @@ use tachyonfx::{fx, CellFilter, Effect, Interpolation, SimpleRng};
 
 use crate::browser::BrowserLauncher;
 use crate::error::CliError;
-use crate::login::{ConnectionOutcome, OnboardingWorkflow};
+use crate::jira_auth::{ConnectionOutcome, OnboardingWorkflow};
 use crate::terminal::StderrTerminal;
 use crate::terminal_text;
 use crate::theme::{
@@ -382,7 +382,7 @@ pub(crate) async fn run(
 ) -> Result<CompletedLogin, CliError> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(CliError::InvalidInput(
-            "interactive login requires terminal-capable stdin and stderr; use `gd login --from-env` for automation".to_owned(),
+            "interactive setup requires terminal-capable stdin and stderr; use `gd auth setup jira --from-env` for automation".to_owned(),
         ));
     }
 
@@ -600,9 +600,9 @@ fn apply_verified_login(
     model: &mut OnboardingModel,
     workflow: &OnboardingWorkflow<'_>,
 ) -> Result<(), CliError> {
-    let completed = workflow
-        .verified_login()
-        .ok_or_else(|| CliError::InvalidInput("verified Jira login state is missing".to_owned()))?;
+    let completed = workflow.verified_login().ok_or_else(|| {
+        CliError::InvalidInput("verified Jira authentication state is missing".to_owned())
+    })?;
     model.hostname = completed.credentials().site().as_str().to_owned();
     model.email = completed.credentials().email().as_str().to_owned();
     model.display_name = if completed.identity().display_name().is_empty() {
@@ -796,14 +796,14 @@ fn render_resize_message(frame: &mut Frame<'_>, area: Rect) {
         Line::from(format!(
             "Resize to at least {MIN_TERMINAL_WIDTH} columns by {MIN_TERMINAL_HEIGHT} rows to continue."
         )),
-        Line::from("Your entered login values are preserved.").dim(),
+        Line::from("Your entered authentication values are preserved.").dim(),
         Line::from("Ctrl-C cancels without saving.").dim(),
     ]);
     frame.render_widget(
         Paragraph::new(message)
             .centered()
             .wrap(Wrap { trim: true })
-            .block(Block::bordered().title(" Graduate login ")),
+            .block(Block::bordered().title(" Graduate · Jira setup ")),
         area,
     );
 }

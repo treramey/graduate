@@ -22,18 +22,18 @@ before constructing a command dynamically.
 
 ## Configure Jira
 
-Interactive login verifies Jira before saving:
+Interactive setup verifies Jira before saving:
 
 ```sh
-gd login
+gd auth setup jira
 ```
 
 For automation, provide `ATLASSIAN_HOST`, `ATLASSIAN_EMAIL`, and
-`ATLASSIAN_TOKEN`, then run `gd login --from-env`. Use `--dry-run` before
+`ATLASSIAN_TOKEN`, then run `gd auth setup jira --from-env`. Use `--dry-run` before
 saving. Dry-run networking requires explicit `--verify`. Never print or copy
 the token from environment variables or `~/.graduate/config.json`.
 
-Interactive login requires terminal-capable stdin and stderr. Use Tab and
+Interactive setup requires terminal-capable stdin and stderr. Use Tab and
 Shift-Tab to move, Enter to continue, Escape to go back or cancel, and Ctrl-C
 to cancel from any stage.
 "#;

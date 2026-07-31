@@ -28,8 +28,9 @@ fn help_uses_the_product_focused_command_style() -> Result<(), Box<dyn Error>> {
         .stdout(predicate::str::contains("Usage: gd [OPTIONS] <COMMAND>"))
         .stdout(predicate::str::contains("tui").not())
         .stdout(predicate::str::contains(
-            "login            Connect Jira, verify the account, then save",
-        ));
+            "auth             Configure authentication for a ticket system",
+        ))
+        .stdout(predicate::str::contains("login").not());
     Ok(())
 }
 
@@ -64,13 +65,13 @@ fn help_describes_skill_generation() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn login_help_describes_interactive_and_environment_paths() -> Result<(), Box<dyn Error>> {
+fn jira_setup_help_describes_interactive_and_environment_paths() -> Result<(), Box<dyn Error>> {
     gd_command()?
-        .args(["login", "--help"])
+        .args(["auth", "setup", "jira", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Interactive login requires terminal-capable stdin and stderr",
+            "Interactive setup requires terminal-capable stdin and stderr",
         ))
         .stdout(predicate::str::contains(
             "Use Tab and Shift-Tab to move and Enter to continue",
@@ -84,17 +85,17 @@ fn login_help_describes_interactive_and_environment_paths() -> Result<(), Box<dy
 }
 
 #[test]
-fn setup_is_not_retained_as_a_legacy_alias() -> Result<(), Box<dyn Error>> {
+fn login_is_not_retained_as_a_legacy_alias() -> Result<(), Box<dyn Error>> {
     gd_command()?
-        .arg("setup")
+        .arg("login")
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("unrecognized subcommand 'setup'"));
+        .stderr(predicate::str::contains("unrecognized subcommand 'login'"));
     Ok(())
 }
 
 #[test]
-fn unattended_login_dry_run_validates_without_saving_or_exposing_token(
+fn unattended_jira_setup_dry_run_validates_without_saving_or_exposing_token(
 ) -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("config.json");
@@ -103,7 +104,9 @@ fn unattended_login_dry_run_validates_without_saving_or_exposing_token(
         .args([
             "--config",
             path.to_str().ok_or("non-Unicode test path")?,
-            "login",
+            "auth",
+            "setup",
+            "jira",
             "--from-env",
             "--dry-run",
         ])
@@ -122,9 +125,9 @@ fn unattended_login_dry_run_validates_without_saving_or_exposing_token(
 }
 
 #[test]
-fn unattended_login_requires_every_atlassian_value() -> Result<(), Box<dyn Error>> {
+fn unattended_jira_setup_requires_every_atlassian_value() -> Result<(), Box<dyn Error>> {
     gd_command()?
-        .args(["login", "--from-env", "--dry-run"])
+        .args(["auth", "setup", "jira", "--from-env", "--dry-run"])
         .env("ATLASSIAN_HOST", "example.atlassian.net")
         .env("ATLASSIAN_EMAIL", "person@example.com")
         .assert()
@@ -136,13 +139,13 @@ fn unattended_login_requires_every_atlassian_value() -> Result<(), Box<dyn Error
 }
 
 #[test]
-fn interactive_login_rejects_redirected_terminals() -> Result<(), Box<dyn Error>> {
+fn interactive_jira_setup_rejects_redirected_terminals() -> Result<(), Box<dyn Error>> {
     gd_command()?
-        .arg("login")
+        .args(["auth", "setup", "jira"])
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "interactive login requires terminal-capable stdin and stderr",
+            "interactive setup requires terminal-capable stdin and stderr",
         ));
     Ok(())
 }

@@ -19,7 +19,8 @@ All notable changes to this project will be documented in this file.
   Home/Help terminal shell.
 - Moved Jira validation, credential and identity contracts, and shared login
   completion policy into the `graduate` core crate.
-- Named the Jira authentication command `gd login`.
+- Moved Jira authentication to `gd auth setup jira` and introduced versioned,
+  provider-tagged connection configuration for future ticket systems.
 - Reduced the login interface's minimum width to 76 columns so it works in
   common split-pane layouts.
 - Standardized the product-facing brand as Graduate.

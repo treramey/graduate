@@ -16,11 +16,12 @@ actions.
 
 1. Clap parses arguments without terminating inside application code.
 2. Like Drag, Graduate requires an explicit top-level command.
-3. Interactive login verifies terminal-capable stdin and stderr before
+3. Interactive Jira setup verifies terminal-capable stdin and stderr before
    Crossterm enters raw mode and the alternate screen.
-4. Login events drive deterministic transitions in `graduate::login`.
+4. Jira authentication events drive deterministic transitions in
+   `graduate::jira_auth`.
 5. The CLI performs browser, Jira, and configuration I/O at workflow seams.
-6. Ratatui renders a projection of login state to stderr.
+6. Ratatui renders a projection of Jira authentication state to stderr.
 7. A lifecycle guard restores the cursor, alternate screen, and raw mode on
    success or failure.
 
@@ -32,9 +33,12 @@ actions.
 - `graduate_cli::error`: process-facing error categories and exit codes.
 - `graduate_cli::generate_skills`: deterministic repository-controlled Agent Skill generation.
 - `graduate::jira`: validated Jira sites, credentials, and identities shared by every delivery path.
-- `graduate::login`: deterministic Jira onboarding state and secret-retention transitions.
-- `graduate_cli::login`: environment and interactive login orchestration behind an injected verifier.
-- `graduate_cli::login_tui`: masked token input, login navigation, review, and rendering.
+- `graduate::jira_auth`: deterministic Jira onboarding state and secret-retention
+  transitions.
+- `graduate_cli::jira_auth`: environment and interactive Jira authentication
+  orchestration behind an injected verifier.
+- `graduate_cli::jira_auth_tui`: masked token input, setup navigation, review,
+  and rendering.
 - `graduate_cli::config`: validated Jira sites and atomic secret-restricted persistence.
 - `graduate_cli::jira`: read-only Jira identity verification and future ticket-query boundary.
 
@@ -43,24 +47,26 @@ actions.
 - Core state changes do not perform I/O.
 - Jira sites, credentials, and identities are validated in core before an I/O
   adapter can use them.
-- Interactive and unattended login share the same core credential and
+- Interactive and unattended setup share the same core credential and
   completion contracts.
-- Login never writes interactive application data to stdout.
-- Interactive login fails before enabling raw mode on a non-terminal.
+- Jira setup never writes interactive application data to stdout.
+- Interactive setup fails before enabling raw mode on a non-terminal.
 - Terminal restoration attempts every pending cleanup step even if one fails.
 - Tests never initialize the developer's real terminal.
 - Generated skills are reproducible from the checked-in CLI generator.
 - Tokens never appear in result text, errors, review screens, or debug output.
-- Existing login tokens remain inside workflow state and are represented only
+- Existing Jira tokens remain inside workflow state and are represented only
   as retainable credentials, never editable field values.
-- Login creates a unique same-directory temporary file with exclusive access,
+- Jira setup creates a unique same-directory temporary file with exclusive access,
   verifies mode `0600` on Unix, then atomically replaces the configuration.
 - Interactive and unattended execution verify Jira before persistence;
   unattended dry-runs do not save and require explicit opt-in for networking.
 - Jira identity reads reject oversized `Content-Length` values and stop
   streaming at 64 KiB.
-- Escape cancels an in-flight verification request. Ctrl-C cancels login.
+- Escape cancels an in-flight verification request. Ctrl-C cancels setup.
 - Skill generation checks every destination before writing the first file.
+- Configuration is versioned and stores provider-tagged connections; provider
+  credentials cannot be combined across ticket systems.
 
 ## Distribution
 

@@ -27,7 +27,7 @@ pub(crate) enum CliError {
     Json(#[from] serde_json::Error),
     #[error("terminal I/O failed: {0}")]
     Io(#[from] io::Error),
-    #[error("interactive login was cancelled; configuration was not changed")]
+    #[error("interactive setup was cancelled; configuration was not changed")]
     LoginCancelled,
     #[error(
         "generated file already exists: {path}; pass --force to replace it",
