@@ -4,8 +4,8 @@ mod config;
 mod error;
 mod generate_skills;
 mod jira;
-mod login;
-mod login_tui;
+mod jira_auth;
+mod jira_auth_tui;
 mod terminal;
 mod terminal_text;
 mod theme;
@@ -13,7 +13,7 @@ mod theme;
 use std::process::ExitCode;
 
 use clap::Parser;
-use cli::{Cli, Command};
+use cli::{AuthCommand, Cli, Command, SetupSystem};
 use error::CliError;
 
 #[tokio::main]
@@ -38,9 +38,13 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
-        Command::Login(args) => {
+        Command::Auth(args) => {
             let path = cli.config.unwrap_or(config::config_path()?);
-            login::run(args, &path).await
+            match args.command {
+                AuthCommand::Setup(args) => match args.system {
+                    SetupSystem::Jira(args) => jira_auth::run(args, &path).await,
+                },
+            }
         }
         Command::GenerateSkills(args) => generate_skills::run(&args),
     }

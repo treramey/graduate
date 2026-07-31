@@ -1,9 +1,11 @@
-//! Jira configuration loading, environment overrides, and atomic persistence.
+//! Versioned ticket-system configuration and atomic persistence.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use graduate::jira_auth::{CompletedLogin, LoginDefaults};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
@@ -12,34 +14,149 @@ pub(crate) const GRADUATE_CONFIG_ENV: &str = "GRADUATE_CONFIG";
 pub(crate) const ATLASSIAN_EMAIL_ENV: &str = "ATLASSIAN_EMAIL";
 pub(crate) const ATLASSIAN_TOKEN_ENV: &str = "ATLASSIAN_TOKEN";
 pub(crate) const ATLASSIAN_HOST_ENV: &str = "ATLASSIAN_HOST";
+const CONFIG_VERSION: u32 = 1;
+const JIRA_CONNECTION_NAME: &str = "jira";
 
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Config {
+    version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) account_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) display_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) atlassian_user_email: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) atlassian_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) hostname: Option<String>,
+    default_connection: Option<String>,
+    #[serde(default)]
+    connections: BTreeMap<String, ConnectionConfig>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            version: CONFIG_VERSION,
+            default_connection: None,
+            connections: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "provider",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum ConnectionConfig {
+    Jira {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
+    },
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyConfig {
+    #[serde(default)]
+    account_id: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    atlassian_user_email: Option<String>,
+    #[serde(default)]
+    atlassian_token: Option<String>,
+    #[serde(default)]
+    hostname: Option<String>,
 }
 
 impl Config {
     pub(crate) fn load(path: &Path) -> Result<Self, CliError> {
         match fs::read_to_string(path) {
-            Ok(contents) => serde_json::from_str(&contents).map_err(|error| {
-                CliError::Config(format!("could not parse {}: {error}", path.display()))
-            }),
+            Ok(contents) => Self::parse(&contents, path),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(CliError::Config(format!(
                 "could not read {}: {error}",
                 path.display()
             ))),
         }
+    }
+
+    fn parse(contents: &str, path: &Path) -> Result<Self, CliError> {
+        let value: serde_json::Value = serde_json::from_str(contents).map_err(|error| {
+            CliError::Config(format!("could not parse {}: {error}", path.display()))
+        })?;
+        if value.get("version").is_some() {
+            let config: Self = serde_json::from_value(value).map_err(|error| {
+                CliError::Config(format!("could not parse {}: {error}", path.display()))
+            })?;
+            if config.version != CONFIG_VERSION {
+                return Err(CliError::Config(format!(
+                    "unsupported configuration version {} in {}; expected {CONFIG_VERSION}",
+                    config.version,
+                    path.display()
+                )));
+            }
+            return Ok(config);
+        }
+        let legacy: LegacyConfig = serde_json::from_value(value).map_err(|error| {
+            CliError::Config(format!("could not parse {}: {error}", path.display()))
+        })?;
+        Ok(Self::from_legacy(legacy))
+    }
+
+    fn from_legacy(legacy: LegacyConfig) -> Self {
+        let has_jira = legacy.hostname.is_some()
+            || legacy.atlassian_user_email.is_some()
+            || legacy.atlassian_token.is_some()
+            || legacy.account_id.is_some()
+            || legacy.display_name.is_some();
+        let mut config = Self::default();
+        if has_jira {
+            config.default_connection = Some(JIRA_CONNECTION_NAME.to_owned());
+            config.connections.insert(
+                JIRA_CONNECTION_NAME.to_owned(),
+                ConnectionConfig::Jira {
+                    site: legacy.hostname,
+                    email: legacy.atlassian_user_email,
+                    token: legacy.atlassian_token,
+                    account_id: legacy.account_id,
+                    display_name: legacy.display_name,
+                },
+            );
+        }
+        config
+    }
+
+    pub(crate) fn jira_login_defaults(&self) -> LoginDefaults {
+        match self.connections.get(JIRA_CONNECTION_NAME) {
+            Some(ConnectionConfig::Jira {
+                site, email, token, ..
+            }) => LoginDefaults {
+                hostname: site.clone(),
+                atlassian_user_email: email.clone(),
+                atlassian_token: token.clone(),
+            },
+            None => LoginDefaults::default(),
+        }
+    }
+
+    pub(crate) fn set_jira_connection(&mut self, completed: &CompletedLogin) {
+        self.default_connection = Some(JIRA_CONNECTION_NAME.to_owned());
+        self.connections.insert(
+            JIRA_CONNECTION_NAME.to_owned(),
+            ConnectionConfig::Jira {
+                site: Some(completed.credentials().site().as_str().to_owned()),
+                email: Some(completed.credentials().email().as_str().to_owned()),
+                token: Some(completed.credentials().token().expose_secret().to_owned()),
+                account_id: Some(completed.identity().account_id().to_owned()),
+                display_name: Some(completed.identity().display_name().to_owned()),
+            },
+        );
     }
 
     pub(crate) fn save(&self, path: &Path) -> Result<(), CliError> {
@@ -99,7 +216,16 @@ pub(crate) fn config_path() -> Result<PathBuf, CliError> {
 
 #[cfg(test)]
 mod tests {
+    use graduate::jira::{JiraCredentials, JiraIdentity};
+
     use super::*;
+
+    fn config_with_jira_site(site: &str) -> Config {
+        Config::from_legacy(LegacyConfig {
+            hostname: Some(site.to_owned()),
+            ..LegacyConfig::default()
+        })
+    }
 
     #[test]
     fn malformed_config_is_not_silently_discarded() -> Result<(), Box<dyn std::error::Error>> {
@@ -117,15 +243,15 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("config.json");
         fs::write(&path, "old")?;
-        let config = Config {
-            hostname: Some("example.atlassian.net".to_owned()),
-            ..Config::default()
-        };
+        let config = config_with_jira_site("example.atlassian.net");
 
         config.save(&path)?;
 
         assert_eq!(
-            Config::load(&path)?.hostname.as_deref(),
+            Config::load(&path)?
+                .jira_login_defaults()
+                .hostname
+                .as_deref(),
             Some("example.atlassian.net")
         );
         assert_eq!(fs::read_dir(directory.path())?.count(), 1);
@@ -152,16 +278,89 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("config.tmp");
         fs::write(&path, "old")?;
-        let config = Config {
-            hostname: Some("example.atlassian.net".to_owned()),
-            ..Config::default()
-        };
+        let config = config_with_jira_site("example.atlassian.net");
 
         config.save(&path)?;
 
         assert_eq!(
-            Config::load(&path)?.hostname.as_deref(),
+            Config::load(&path)?
+                .jira_login_defaults()
+                .hostname
+                .as_deref(),
             Some("example.atlassian.net")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_flat_config_is_loaded_as_the_jira_connection(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{
+  "hostname": "example.atlassian.net",
+  "atlassianUserEmail": "person@example.com",
+  "atlassianToken": "secret",
+  "accountId": "account-1",
+  "displayName": "Person"
+}"#,
+        )?;
+
+        let defaults = Config::load(&path)?.jira_login_defaults();
+
+        assert_eq!(defaults.hostname.as_deref(), Some("example.atlassian.net"));
+        assert_eq!(
+            defaults.atlassian_user_email.as_deref(),
+            Some("person@example.com")
+        );
+        assert_eq!(defaults.atlassian_token.as_deref(), Some("secret"));
+        Ok(())
+    }
+
+    #[test]
+    fn verified_jira_connection_uses_the_versioned_provider_schema(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("config.json");
+        let credentials =
+            JiraCredentials::parse("example.atlassian.net", "person@example.com", "secret")?;
+        let identity = JiraIdentity::new("account-1", "Person")?;
+        let mut config = Config::default();
+        config.set_jira_connection(&CompletedLogin::verified(credentials, identity));
+
+        config.save(&path)?;
+
+        let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["defaultConnection"], "jira");
+        assert_eq!(value["connections"]["jira"]["provider"], "jira");
+        assert_eq!(
+            value["connections"]["jira"]["site"],
+            "example.atlassian.net"
+        );
+        assert_eq!(value["connections"]["jira"]["accountId"], "account-1");
+        let defaults = Config::load(&path)?.jira_login_defaults();
+        assert_eq!(defaults.hostname.as_deref(), Some("example.atlassian.net"));
+        assert_eq!(
+            defaults.atlassian_user_email.as_deref(),
+            Some("person@example.com")
+        );
+        assert_eq!(defaults.atlassian_token.as_deref(), Some("secret"));
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_config_version_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("config.json");
+        fs::write(&path, r#"{"version":2,"connections":{}}"#)?;
+
+        let result = Config::load(&path);
+
+        assert!(
+            matches!(result, Err(CliError::Config(message)) if message.contains("unsupported configuration version 2"))
         );
         Ok(())
     }

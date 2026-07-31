@@ -5,7 +5,7 @@
 Graduate is a Jira Cloud CLI and terminal interface. It keeps domain behavior
 independent from terminal and network I/O so commands remain predictable and
 testable. The `graduate` core owns validated Jira sites, credentials,
-identities, and login transitions; `graduate-cli` owns external I/O.
+identities, and Jira authentication transitions; `graduate-cli` owns external I/O.
 
 ## Install
 
@@ -31,7 +31,7 @@ cargo install --path crates/graduate-cli
 ## Run
 
 ```bash
-gd login
+gd auth setup jira
 ```
 
 Like Drag, Graduate requires an explicit command. Run `gd --help` to list the
@@ -39,10 +39,10 @@ available commands.
 
 ## Jira configuration
 
-Run the interactive login wizard:
+Run the interactive Jira authentication wizard:
 
 ```bash
-gd login
+gd auth setup jira
 ```
 
 Graduate uses the same Jira Cloud authentication method as Drag: Jira site,
@@ -54,28 +54,31 @@ loaded into an editable field.
 The interactive wizard follows Drag's guided layout: boxed, focusable inputs;
 explicit Continue, Connect, and Save actions; Tab and Shift-Tab navigation; and
 a final connection manifest. Graduate omits Drag's Tempo authentication step. Set
-`GRADUATE_REDUCED_MOTION=1` to replace moving login effects with short fades.
-The login interface supports terminal panes at least 76 columns by 28 rows.
+`GRADUATE_REDUCED_MOTION=1` to replace moving setup effects with short fades.
+The setup interface supports terminal panes at least 76 columns by 28 rows.
 
-For unattended login:
+For unattended setup:
 
 ```bash
 export ATLASSIAN_HOST=https://yourcompany.atlassian.net
 export ATLASSIAN_EMAIL=you@example.com
 export ATLASSIAN_TOKEN=...
 
-gd login --from-env
+gd auth setup jira --from-env
 ```
 
 Preview local validation without networking or saving:
 
 ```bash
-gd login --from-env --dry-run
+gd auth setup jira --from-env --dry-run
 ```
 
 Add `--verify` to the dry-run for an explicit read-only Jira check. The default
 configuration path is `~/.graduate/config.json`; override it with `--config` or
-`GRADUATE_CONFIG`.
+`GRADUATE_CONFIG`. Graduate stores connections in a versioned, provider-tagged
+configuration so other ticket systems can be added without mixing credential
+formats. Graduate reads the original flat Jira configuration and writes the new
+schema after the next successful setup.
 
 ## Workspace
 
