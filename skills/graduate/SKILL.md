@@ -1,5 +1,5 @@
 ---
-name: grad
+name: graduate
 description: Configure Jira Cloud with Graduate. Use when an agent needs to inspect Graduate's CLI contract or establish its Jira connection.
 ---
 
@@ -19,7 +19,7 @@ gd login
 For automation, provide `ATLASSIAN_HOST`, `ATLASSIAN_EMAIL`, and
 `ATLASSIAN_TOKEN`, then run `gd login --from-env`. Use `--dry-run` before
 saving. Dry-run networking requires explicit `--verify`. Never print or copy
-the token from environment variables or `~/.grad/config.json`.
+the token from environment variables or `~/.graduate/config.json`.
 
 Interactive login requires terminal-capable stdin and stderr. Use Tab and
 Shift-Tab to move, Enter to continue, Escape to go back or cancel, and Ctrl-C
@@ -39,7 +39,7 @@ Commands:
 
 Options:
       --config <PATH>
-          Override the configuration file (also available as GRAD_CONFIG)
+          Override the configuration file (also available as GRADUATE_CONFIG)
 
   -h, --help
           Print help

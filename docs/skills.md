@@ -4,4 +4,4 @@
 
 | Skill | Description |
 |---|---|
-| [`grad`](../skills/grad/SKILL.md) | Configure Graduate and inspect its Jira CLI contract. |
+| [`graduate`](../skills/graduate/SKILL.md) | Configure Graduate and inspect its Jira CLI contract. |

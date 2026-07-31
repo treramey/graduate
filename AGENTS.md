@@ -1,14 +1,14 @@
 ## Architecture
 
-- Keep deterministic state and transitions in `crates/graduation`.
-- Keep terminal, filesystem, process, and other I/O in `crates/graduation-cli`.
+- Keep deterministic state and transitions in `crates/graduate`.
+- Keep terminal, filesystem, process, and other I/O in `crates/graduate-cli`.
 - Keep feature workflow in `<feature>.rs` and terminal rendering and events in a flat `<feature>_tui.rs` sibling.
 - Read `CONTEXT.md` and `docs/architecture.md` before changing behavior.
 
 ## Changesets
 
 User-visible pull requests MUST include `.changeset/<descriptive-name>.md` for
-`@treramey/grad`: use `patch` for fixes/chores, `minor` for features, and
+`@treramey/graduate`: use `patch` for fixes/chores, `minor` for features, and
 `major` for breaking changes. Run `pnpm changeset` to create it. Documentation-
 only and internal CI changes do not require a changeset.
 

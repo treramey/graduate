@@ -631,7 +631,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "graduation"
+name = "graduate"
 version = "0.1.0"
 dependencies = [
  "thiserror",
@@ -639,7 +639,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "graduation-cli"
+name = "graduate-cli"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
@@ -648,7 +648,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "futures-util",
- "graduation",
+ "graduate",
  "predicates",
  "ratatui",
  "reqwest",

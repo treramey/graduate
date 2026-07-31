@@ -1,4 +1,4 @@
-# @treramey/grad
+# @treramey/graduate
 
 ## 0.1.0
 

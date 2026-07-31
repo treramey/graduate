@@ -1,7 +1,7 @@
 //! Minimal Jira Cloud boundary used by login and future ticket queries.
 
 use futures_util::StreamExt;
-use graduation::jira::{JiraCredentials, JiraIdentity};
+use graduate::jira::{JiraCredentials, JiraIdentity};
 use reqwest::{Client, Method, Request, Response, StatusCode};
 use serde::Deserialize;
 use url::Url;
@@ -26,7 +26,7 @@ impl JiraClient {
 
     fn with_base(base: Url) -> Result<Self, CliError> {
         let client = Client::builder()
-            .user_agent(concat!("grad/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("graduate/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(15))
             .build()?;

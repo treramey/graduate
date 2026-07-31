@@ -11,7 +11,7 @@ use crate::cli::{Cli, GenerateSkillsArgs};
 use crate::error::CliError;
 
 const SKILL: &str = r#"---
-name: grad
+name: graduate
 description: Configure Jira Cloud with Graduate. Use when an agent needs to inspect Graduate's CLI contract or establish its Jira connection.
 ---
 
@@ -31,7 +31,7 @@ gd login
 For automation, provide `ATLASSIAN_HOST`, `ATLASSIAN_EMAIL`, and
 `ATLASSIAN_TOKEN`, then run `gd login --from-env`. Use `--dry-run` before
 saving. Dry-run networking requires explicit `--verify`. Never print or copy
-the token from environment variables or `~/.grad/config.json`.
+the token from environment variables or `~/.graduate/config.json`.
 
 Interactive login requires terminal-capable stdin and stderr. Use Tab and
 Shift-Tab to move, Enter to continue, Escape to go back or cancel, and Ctrl-C
@@ -44,11 +44,11 @@ const INDEX: &str = r#"# Agent Skills
 
 | Skill | Description |
 |---|---|
-| [`grad`](../skills/grad/SKILL.md) | Configure Graduate and inspect its Jira CLI contract. |
+| [`graduate`](../skills/graduate/SKILL.md) | Configure Graduate and inspect its Jira CLI contract. |
 "#;
 
 pub(crate) fn run(args: &GenerateSkillsArgs) -> Result<(), CliError> {
-    let skill_path = args.output_dir.join("grad").join("SKILL.md");
+    let skill_path = args.output_dir.join("graduate").join("SKILL.md");
     let skill = format!(
         "{SKILL}\n## Current command contract\n\n```text\n{}```\n",
         Cli::command().render_long_help()
@@ -108,7 +108,7 @@ mod tests {
     fn existing_destination_is_rejected_before_any_file_is_written(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let skill = directory.path().join("skills/grad/SKILL.md");
+        let skill = directory.path().join("skills/graduate/SKILL.md");
         let index = directory.path().join("docs/skills.md");
         let parent = index.parent().ok_or("index has no parent")?;
         fs::create_dir_all(parent)?;

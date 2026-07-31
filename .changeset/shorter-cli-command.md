@@ -1,5 +1,5 @@
 ---
-"@treramey/grad": major
+"@treramey/graduate": major
 ---
 
-Rename the installed CLI command from `grad` to `gd`.
+Standardize Rust packages, distribution artifacts, configuration, and generated skills on Graduate while keeping `gd` as the installed CLI command.

@@ -4,8 +4,8 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 
-use graduation::jira::{JiraCredentials, JiraIdentity};
-use graduation::login::{
+use graduate::jira::{JiraCredentials, JiraIdentity};
+use graduate::login::{
     CompletedLogin, LoginDefaults, OnboardingError, OnboardingScreen, OnboardingState, SecretInput,
     TokenPage,
 };

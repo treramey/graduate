@@ -6,10 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- Renamed the installed CLI command from `grad` to `gd`.
-- Renamed the CLI Cargo package from `grad-cli` to `graduation-cli`.
-- Renamed the core Cargo package to `graduation` and aligned both crate
-  directories with their package names.
+- Installed the CLI executable as `gd`.
+- Named the CLI and core Cargo packages `graduate-cli` and `graduate`, with
+  crate directories aligned to their package names.
+- Standardized the npm package, Nix package, Homebrew formula, release
+  artifacts, configuration namespace, and generated skill on `graduate`.
 - Reworked command help around Graduate's Jira workflow and documented the guided
   login controls in the same direct style as Drag.
 - Matched Drag's interactive login fields, focusable actions, responsive
@@ -17,11 +18,11 @@ All notable changes to this project will be documented in this file.
 - Matched Drag's required-command behavior and removed the placeholder
   Home/Help terminal shell.
 - Moved Jira validation, credential and identity contracts, and shared login
-  completion policy into the `graduation` core crate.
+  completion policy into the `graduate` core crate.
 - Named the Jira authentication command `gd login`.
 - Reduced the login interface's minimum width to 76 columns so it works in
   common split-pane layouts.
-- Corrected the product-facing brand from Grad to Graduate.
+- Standardized the product-facing brand as Graduate.
 
 ### Added
 

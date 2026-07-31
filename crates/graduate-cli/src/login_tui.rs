@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
-use graduation::jira::JiraField;
-use graduation::login::{CompletedLogin, OnboardingError, OnboardingScreen, SecretInput};
+use graduate::jira::JiraField;
+use graduate::login::{CompletedLogin, OnboardingError, OnboardingScreen, SecretInput};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style, Stylize};
@@ -41,7 +41,7 @@ const ANIMATION_RNG_SEED: u32 = 0x4752_4144;
 const FOCUS_BORDER_CELLS_PER_SECOND: f32 = 30.0;
 const STAGE_SEPARATOR: &str = " ─── ";
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-pub(crate) const REDUCED_MOTION_ENV: &str = "GRAD_REDUCED_MOTION";
+pub(crate) const REDUCED_MOTION_ENV: &str = "GRADUATE_REDUCED_MOTION";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConnectionStatus {
@@ -1021,7 +1021,7 @@ fn render_save(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) {
     frame.render_widget(
         Paragraph::new(Text::from(vec![
             Line::from("Ready to save").bold(),
-            Line::from("Confirm the Jira account GRAD will connect.").dim(),
+            Line::from("Confirm the Jira account Graduate will connect.").dim(),
         ])),
         intro,
     );
@@ -1320,7 +1320,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) {
 
 #[cfg(test)]
 mod tests {
-    use graduation::jira::JiraValidationError;
+    use graduate::jira::JiraValidationError;
     use ratatui::backend::TestBackend;
     use ratatui::style::Modifier;
     use ratatui::Terminal;
@@ -1402,7 +1402,6 @@ mod tests {
             .ok_or("Jira heading was not rendered")?;
         assert!(heading.starts_with("Connect your Jira account"));
         assert!(rendered.contains("Atlassian account Graduate should use"));
-        assert!(!rendered.contains("Atlassian account Grad should use"));
         Ok(())
     }
 

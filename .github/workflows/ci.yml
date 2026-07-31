@@ -54,7 +54,7 @@ jobs:
       - name: Verify repository-controlled skills
         run: |
           cargo run --locked -- generate-skills --force
-          git diff --exit-code -- skills/grad docs/skills.md
+          git diff --exit-code -- skills/graduate docs/skills.md
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
       - name: Validate generated skills
         run: |

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
 
-pub(crate) const GRAD_CONFIG_ENV: &str = "GRAD_CONFIG";
+pub(crate) const GRADUATE_CONFIG_ENV: &str = "GRADUATE_CONFIG";
 pub(crate) const ATLASSIAN_EMAIL_ENV: &str = "ATLASSIAN_EMAIL";
 pub(crate) const ATLASSIAN_TOKEN_ENV: &str = "ATLASSIAN_TOKEN";
 pub(crate) const ATLASSIAN_HOST_ENV: &str = "ATLASSIAN_HOST";
@@ -61,7 +61,7 @@ impl Config {
         #[cfg(not(windows))]
         {
             let mut temporary = tempfile::Builder::new()
-                .prefix(".grad-config-")
+                .prefix(".graduate-config-")
                 .suffix(".tmp")
                 .tempfile_in(parent)?;
             #[cfg(unix)]
@@ -89,11 +89,11 @@ impl Config {
 }
 
 pub(crate) fn config_path() -> Result<PathBuf, CliError> {
-    if let Some(path) = std::env::var_os(GRAD_CONFIG_ENV) {
+    if let Some(path) = std::env::var_os(GRADUATE_CONFIG_ENV) {
         return Ok(PathBuf::from(path));
     }
     dirs::home_dir()
-        .map(|home| home.join(".grad").join("config.json"))
+        .map(|home| home.join(".graduate").join("config.json"))
         .ok_or_else(|| CliError::Config("could not determine the home directory".to_owned()))
 }
 

@@ -31,7 +31,7 @@ async function install() {
   const { version } = require("./package.json");
   const platform = getPlatform();
   const base = `https://github.com/treramey/graduate/releases/download/v${version}/${platform.artifact}`;
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "grad-"));
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "graduate-"));
   const archive = path.join(temp, platform.artifact);
   try {
     await Promise.all([download(base, archive), download(`${base}.sha256`, `${archive}.sha256`)]);

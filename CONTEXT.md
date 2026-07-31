@@ -6,7 +6,7 @@
   stdin and stderr and renders to stderr.
 - Keep login state deterministic and independent of Ratatui and Crossterm.
 - Keep validated Jira sites, credentials, identities, and login acceptance
-  rules in `graduation`; adapters may only consume those contracts.
+  rules in `graduate`; adapters may only consume those contracts.
 - Never initialize a real terminal in tests. Render with `TestBackend` and inject state transitions directly.
 - Regenerate repository-controlled skills with `gd generate-skills --force` whenever the public CLI changes.
 - `gd login` uses Jira Cloud Basic authentication with the Jira site,

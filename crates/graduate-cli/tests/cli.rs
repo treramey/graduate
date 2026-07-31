@@ -6,7 +6,7 @@ use predicates::prelude::*;
 fn gd_command() -> Result<Command, Box<dyn Error>> {
     let mut command = Command::cargo_bin("gd")?;
     for variable in [
-        "GRAD_CONFIG",
+        "GRADUATE_CONFIG",
         "ATLASSIAN_HOST",
         "ATLASSIAN_EMAIL",
         "ATLASSIAN_TOKEN",

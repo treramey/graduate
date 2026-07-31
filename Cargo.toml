@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/graduation", "crates/graduation-cli"]
-default-members = ["crates/graduation-cli"]
+members = ["crates/graduate", "crates/graduate-cli"]
+default-members = ["crates/graduate-cli"]
 resolver = "2"
 
 [workspace.package]

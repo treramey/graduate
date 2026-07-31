@@ -10,9 +10,9 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
-      - "crates/graduation-cli/Cargo.toml"
-      - "crates/graduation-cli/src/cli.rs"
-      - "crates/graduation-cli/src/generate_skills.rs"
+      - "crates/graduate-cli/Cargo.toml"
+      - "crates/graduate-cli/src/cli.rs"
+      - "crates/graduate-cli/src/generate_skills.rs"
       - ".github/workflows/generate-skills.yml"
 
 permissions:
@@ -80,8 +80,8 @@ jobs:
         if: steps.diff.outputs.changed == 'true' && github.event_name == 'push'
         shell: bash
         run: |
-          git config user.name "grad-release-bot"
-          git config user.email "grad-release-bot@users.noreply.github.com"
-          git add skills/grad docs/skills.md
+          git config user.name "graduate-release-bot"
+          git config user.email "graduate-release-bot@users.noreply.github.com"
+          git add skills/graduate docs/skills.md
           git commit -m "chore: regenerate local agent skills"
           git push

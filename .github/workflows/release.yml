@@ -40,13 +40,13 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: release-${{ matrix.target }}
-      - run: cargo build --release --locked --target ${{ matrix.target }} --package graduation-cli
+      - run: cargo build --release --locked --target ${{ matrix.target }} --package graduate-cli
 
       - name: Package Unix archive
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          artifact="grad-${{ matrix.target }}"
+          artifact="graduate-${{ matrix.target }}"
           mkdir -p "dist/$artifact"
           cp "target/${{ matrix.target }}/release/gd" "dist/$artifact/"
           cp LICENSE README.md CHANGELOG.md "dist/$artifact/"
@@ -58,7 +58,7 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $artifact = "grad-${{ matrix.target }}"
+          $artifact = "graduate-${{ matrix.target }}"
           New-Item -ItemType Directory -Path "dist/$artifact"
           Copy-Item "target/${{ matrix.target }}/release/gd.exe" "dist/$artifact/"
           Copy-Item LICENSE, README.md, CHANGELOG.md "dist/$artifact/"
@@ -70,14 +70,14 @@ jobs:
       - name: Attest artifact
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
-          subject-path: dist/grad-${{ matrix.target }}.${{ matrix.archive }}
+          subject-path: dist/graduate-${{ matrix.target }}.${{ matrix.archive }}
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: grad-${{ matrix.target }}
+          name: graduate-${{ matrix.target }}
           path: |
-            dist/grad-${{ matrix.target }}.${{ matrix.archive }}
-            dist/grad-${{ matrix.target }}.${{ matrix.archive }}.sha256
+            dist/graduate-${{ matrix.target }}.${{ matrix.archive }}
+            dist/graduate-${{ matrix.target }}.${{ matrix.archive }}.sha256
 
   release:
     name: Publish GitHub release
@@ -86,7 +86,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: grad-*
+          pattern: graduate-*
           path: artifacts
           merge-multiple: true
       - name: Create release

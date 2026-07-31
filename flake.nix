@@ -11,12 +11,12 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
         workspace = builtins.fromTOML (builtins.readFile ./Cargo.toml);
-        grad = pkgs.rustPlatform.buildRustPackage {
-          pname = "grad";
+        graduate = pkgs.rustPlatform.buildRustPackage {
+          pname = "graduate";
           version = workspace.workspace.package.version;
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
-          cargoBuildFlags = [ "--package" "graduation-cli" ];
+          cargoBuildFlags = [ "--package" "graduate-cli" ];
           cargoTestFlags = [ "--workspace" ];
           meta = with pkgs.lib; {
             description = "Graduate, a Jira Cloud command-line and terminal client";
@@ -26,9 +26,9 @@
           };
         };
       in {
-        packages.default = grad;
-        packages.grad = grad;
-        apps.default = flake-utils.lib.mkApp { drv = grad; };
-        devShells.default = pkgs.mkShell { inputsFrom = [ grad ]; packages = with pkgs; [ cargo clippy rustc rustfmt ]; };
+        packages.default = graduate;
+        packages.graduate = graduate;
+        apps.default = flake-utils.lib.mkApp { drv = graduate; };
+        devShells.default = pkgs.mkShell { inputsFrom = [ graduate ]; packages = with pkgs; [ cargo clippy rustc rustfmt ]; };
       });
 }

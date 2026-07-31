@@ -4,8 +4,8 @@
 
 ```text
 crates/
-├── graduation/      # I/O-independent Jira services and state transitions
-└── graduation-cli/  # Command parsing, terminal lifecycle, events, and rendering
+├── graduate/      # I/O-independent Jira services and state transitions
+└── graduate-cli/  # Command parsing, terminal lifecycle, events, and rendering
 ```
 
 The core crate has no terminal, filesystem, network, or process dependencies.
@@ -18,7 +18,7 @@ actions.
 2. Like Drag, Graduate requires an explicit top-level command.
 3. Interactive login verifies terminal-capable stdin and stderr before
    Crossterm enters raw mode and the alternate screen.
-4. Login events drive deterministic transitions in `graduation::login`.
+4. Login events drive deterministic transitions in `graduate::login`.
 5. The CLI performs browser, Jira, and configuration I/O at workflow seams.
 6. Ratatui renders a projection of login state to stderr.
 7. A lifecycle guard restores the cursor, alternate screen, and raw mode on
@@ -26,17 +26,17 @@ actions.
 
 ## Modules
 
-- `graduation_cli::cli`: public command-line shape.
-- `graduation_cli::terminal`: stderr terminal initialization and restoration.
-- `graduation_cli::theme`: shared ANSI-palette visual language.
-- `graduation_cli::error`: process-facing error categories and exit codes.
-- `graduation_cli::generate_skills`: deterministic repository-controlled Agent Skill generation.
-- `graduation::jira`: validated Jira sites, credentials, and identities shared by every delivery path.
-- `graduation::login`: deterministic Jira onboarding state and secret-retention transitions.
-- `graduation_cli::login`: environment and interactive login orchestration behind an injected verifier.
-- `graduation_cli::login_tui`: masked token input, login navigation, review, and rendering.
-- `graduation_cli::config`: validated Jira sites and atomic secret-restricted persistence.
-- `graduation_cli::jira`: read-only Jira identity verification and future ticket-query boundary.
+- `graduate_cli::cli`: public command-line shape.
+- `graduate_cli::terminal`: stderr terminal initialization and restoration.
+- `graduate_cli::theme`: shared ANSI-palette visual language.
+- `graduate_cli::error`: process-facing error categories and exit codes.
+- `graduate_cli::generate_skills`: deterministic repository-controlled Agent Skill generation.
+- `graduate::jira`: validated Jira sites, credentials, and identities shared by every delivery path.
+- `graduate::login`: deterministic Jira onboarding state and secret-retention transitions.
+- `graduate_cli::login`: environment and interactive login orchestration behind an injected verifier.
+- `graduate_cli::login_tui`: masked token input, login navigation, review, and rendering.
+- `graduate_cli::config`: validated Jira sites and atomic secret-restricted persistence.
+- `graduate_cli::jira`: read-only Jira identity verification and future ticket-query boundary.
 
 ## Safety invariants
 
@@ -71,7 +71,7 @@ workspace is available as a Nix flake with locked inputs.
 
 ## Adding behavior
 
-Put deterministic services and state transitions in `graduation`. Keep
+Put deterministic services and state transitions in `graduate`. Keep
 terminal, filesystem, process, prompt, and network behavior in
-`graduation-cli`. For a larger feature, place workflow in `<feature>.rs` and
+`graduate-cli`. For a larger feature, place workflow in `<feature>.rs` and
 rendering and terminal events in `<feature>_tui.rs`.

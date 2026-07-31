@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand};
     propagate_version = true
 )]
 pub(crate) struct Cli {
-    /// Override the configuration file (also available as GRAD_CONFIG).
+    /// Override the configuration file (also available as GRADUATE_CONFIG).
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) config: Option<PathBuf>,
 
