@@ -32,6 +32,7 @@ struct DiffModel {
     main: String,
     rows: Vec<BranchRow>,
     selected: usize,
+    table_state: TableState,
     finished: bool,
     frame: usize,
     warning: Option<String>,
@@ -44,6 +45,7 @@ impl DiffModel {
             main: String::new(),
             rows: Vec::new(),
             selected: 0,
+            table_state: TableState::default(),
             finished: false,
             frame: 0,
             warning: None,
@@ -66,6 +68,9 @@ impl DiffModel {
                         report: None,
                     })
                     .collect();
+                self.selected = 0;
+                self.table_state = TableState::default()
+                    .with_selected((!self.rows.is_empty()).then_some(self.selected));
             }
             DiffUpdate::Measured(report) => {
                 if let Some(row) = self.rows.iter_mut().find(|row| row.branch == report.branch) {
@@ -89,12 +94,20 @@ impl DiffModel {
     }
 
     fn move_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        self.select(self.selected.saturating_sub(1));
     }
 
     fn move_down(&mut self) {
         if self.selected + 1 < self.rows.len() {
-            self.selected += 1;
+            self.select(self.selected + 1);
+        }
+    }
+
+    fn select(&mut self, selected: usize) {
+        if selected != self.selected {
+            self.selected = selected;
+            self.table_state.select(Some(selected));
+            self.warning = None;
         }
     }
 
@@ -137,7 +150,7 @@ pub(crate) async fn run(
     let mut updates_open = true;
 
     let result = loop {
-        draw(&mut terminal, &model)?;
+        draw(&mut terminal, &mut model)?;
         tokio::select! {
             update = updates.recv(), if updates_open => match update {
                 Some(update) => {
@@ -167,9 +180,9 @@ pub(crate) async fn run(
                         }
                         KeyCode::Up | KeyCode::Char('k') => model.move_up(),
                         KeyCode::Down | KeyCode::Char('j') => model.move_down(),
-                        KeyCode::Home => model.selected = 0,
+                        KeyCode::Home => model.select(0),
                         KeyCode::End => {
-                            model.selected = model.rows.len().saturating_sub(1);
+                            model.select(model.rows.len().saturating_sub(1));
                         }
                         KeyCode::Char('o') => {
                             if let Some(url) = model.selected_issue_url() {
@@ -203,12 +216,12 @@ pub(crate) async fn run(
     }
 }
 
-fn draw(terminal: &mut StderrTerminal, model: &DiffModel) -> Result<(), CliError> {
+fn draw(terminal: &mut StderrTerminal, model: &mut DiffModel) -> Result<(), CliError> {
     terminal.terminal_mut().draw(|frame| render(frame, model))?;
     Ok(())
 }
 
-fn render(frame: &mut Frame<'_>, model: &DiffModel) {
+fn render(frame: &mut Frame<'_>, model: &mut DiffModel) {
     let area = theme::constrain_content_width(frame.area());
     let [_top_padding, header, title, table, details, footer] = Layout::vertical([
         Constraint::Length(2),
@@ -269,7 +282,7 @@ fn render_title(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
     );
 }
 
-fn render_table(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
+fn render_table(frame: &mut Frame<'_>, area: Rect, model: &mut DiffModel) {
     let header = Row::new(["BRANCH", "STARTED", "LAST", "AHEAD", "JIRA", "STATUS"])
         .style(Palette::muted().add_modifier(Modifier::BOLD))
         .bottom_margin(1);
@@ -309,9 +322,7 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
         .header(header)
         .row_highlight_style(Palette::action_focus())
         .highlight_symbol("› ");
-    let mut state =
-        TableState::default().with_selected((!model.rows.is_empty()).then_some(model.selected));
-    frame.render_stateful_widget(table, area, &mut state);
+    frame.render_stateful_widget(table, area, &mut model.table_state);
 }
 
 fn jira_columns(state: &JiraIssueState) -> (String, String) {
@@ -429,7 +440,7 @@ mod tests {
             branches: vec!["feature/PROJ-123-login".to_owned()],
         })?;
         let mut terminal = Terminal::new(TestBackend::new(110, 28))?;
-        terminal.draw(|frame| render(frame, &model))?;
+        terminal.draw(|frame| render(frame, &mut model))?;
         let rendered = terminal.backend().to_string();
 
         assert!(rendered.contains("In qa but not main"));
@@ -463,7 +474,7 @@ mod tests {
             }),
         }))?;
         let mut terminal = Terminal::new(TestBackend::new(110, 28))?;
-        terminal.draw(|frame| render(frame, &model))?;
+        terminal.draw(|frame| render(frame, &mut model))?;
         let rendered = terminal.backend().to_string();
 
         assert!(rendered.contains("Ready for QA"));
@@ -471,6 +482,55 @@ mod tests {
         assert!(rendered.contains("Fix versions: 1.2"));
         Ok(())
     }
+
+    #[test]
+    fn moving_to_another_branch_clears_the_open_ticket_warning() -> Result<(), CliError> {
+        let mut model = DiffModel::new();
+        model.apply(DiffUpdate::Skeleton {
+            environment: "qa".to_owned(),
+            main: "main".to_owned(),
+            branches: vec![
+                "feature/no-ticket".to_owned(),
+                "feature/PROJ-123".to_owned(),
+            ],
+        })?;
+        model.warning = Some("The selected branch does not have a loaded Jira ticket.".to_owned());
+
+        model.move_down();
+
+        assert_eq!(model.selected, 1);
+        assert!(model.warning.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn moving_up_after_scrolling_moves_the_selection_within_the_viewport(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = DiffModel::new();
+        model.apply(DiffUpdate::Skeleton {
+            environment: "qa".to_owned(),
+            main: "main".to_owned(),
+            branches: (0..20).map(|index| format!("branch-{index:02}")).collect(),
+        })?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 28))?;
+
+        model.select(15);
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let before = terminal.backend().to_string();
+        model.move_up();
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let after = terminal.backend().to_string();
+
+        assert_eq!(first_visible_branch(&before), first_visible_branch(&after));
+        Ok(())
+    }
+
+    fn first_visible_branch(rendered: &str) -> Option<&str> {
+        rendered
+            .split_whitespace()
+            .find(|value| value.starts_with("branch-"))
+    }
+
     #[test]
     fn update_channel_must_not_close_before_finished() {
         let result = finish_after_update_channel_closes(DiffModel::new());

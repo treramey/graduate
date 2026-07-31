@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Kept promotion-list navigation moving smoothly through a scrolled viewport
+  and cleared stale Jira ticket warnings when selecting another branch.
 - Hardened promotion report completion, Jira request concurrency, branch-key
   parsing, CSV error fields, main-branch fallback, and atomic report exports.
 - Added interruption recovery and mutation-boundary validation to generated

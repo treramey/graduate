@@ -46,6 +46,10 @@ reached the repository's main branch:
 gd diff qa
 ```
 
+Move between branches with the arrow keys or `j`/`k`. The viewport scrolls
+smoothly with the selection, and selection-specific Jira warnings clear when
+you move to another branch.
+
 Graduate fetches `origin`, discovers the remote default branch (then falls back
 to `main`, `master`, `trunk`, or `develop`), and streams alphabetically sorted
 rows into a terminal list. Pass `--main <branch>` for a custom main branch.
