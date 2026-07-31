@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Hardened promotion report completion, Jira request concurrency, branch-key
+  parsing, CSV error fields, main-branch fallback, and atomic report exports.
+- Added interruption recovery and mutation-boundary validation to generated
+  Agent Skill publication.
 - Installed the CLI executable as `gd`.
 - Named the CLI and core Cargo packages `graduate-cli` and `graduate`, with
   crate directories aligned to their package names.

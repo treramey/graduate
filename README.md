@@ -60,6 +60,7 @@ the same `fields.status.name`, `fields.assignee.displayName`, and
 with `--format json|table|yaml|csv`, and write it with `-o, --output <path>`:
 
 ```bash
+mkdir -p reports
 gd diff qa --format csv --output reports/qa.csv
 ```
 

@@ -74,7 +74,12 @@ pub fn jira_key_from_branch(branch: &str) -> Option<String> {
         while index < bytes.len() && bytes[index].is_ascii_digit() {
             index += 1;
         }
-        if index > digits {
+        let has_boundary = index == bytes.len()
+            || branch[index..]
+                .chars()
+                .next()
+                .is_some_and(|character| !character.is_alphanumeric());
+        if index > digits && has_boundary {
             return Some(branch[start..index].to_ascii_uppercase());
         }
         index = separator + 1;
@@ -98,5 +103,7 @@ mod tests {
     fn ignores_text_without_a_complete_ticket_key() {
         assert_eq!(jira_key_from_branch("feature/no-ticket"), None);
         assert_eq!(jira_key_from_branch("feature/PROJ-next"), None);
+        assert_eq!(jira_key_from_branch("feature/PROJ-123abc"), None);
+        assert_eq!(jira_key_from_branch("feature/PROJ-123é"), None);
     }
 }

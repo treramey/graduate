@@ -115,6 +115,16 @@ impl DiffModel {
     }
 }
 
+fn finish_after_update_channel_closes(model: DiffModel) -> Result<PromotionReport, CliError> {
+    if model.finished {
+        Ok(model.completed_report())
+    } else {
+        Err(CliError::Git(
+            "promotion report ended before the scan completed".to_owned(),
+        ))
+    }
+}
+
 pub(crate) async fn run(
     mut updates: mpsc::UnboundedReceiver<DiffUpdate>,
     browser: &dyn BrowserLauncher,
@@ -130,10 +140,14 @@ pub(crate) async fn run(
         draw(&mut terminal, &model)?;
         tokio::select! {
             update = updates.recv(), if updates_open => match update {
-                Some(update) => model.apply(update)?,
+                Some(update) => {
+                    model.apply(update)?;
+                    if model.finished {
+                        updates_open = false;
+                    }
+                }
                 None => {
-                    model.finished = true;
-                    updates_open = false;
+                    break finish_after_update_channel_closes(model);
                 }
             },
             event = events.next() => {
@@ -456,5 +470,13 @@ mod tests {
         assert!(rendered.contains("Add login"));
         assert!(rendered.contains("Fix versions: 1.2"));
         Ok(())
+    }
+    #[test]
+    fn update_channel_must_not_close_before_finished() {
+        let result = finish_after_update_channel_closes(DiffModel::new());
+
+        assert!(
+            matches!(result, Err(CliError::Git(message)) if message.contains("before the scan completed"))
+        );
     }
 }

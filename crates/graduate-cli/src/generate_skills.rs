@@ -1,11 +1,18 @@
 //! Deterministic repository-controlled Agent Skill generation.
 
 use std::fs;
+use std::fs::OpenOptions;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
 use clap::CommandFactory;
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::{Cli, GenerateSkillsArgs};
 use crate::error::CliError;
@@ -57,6 +64,9 @@ const INDEX: &str = r#"# Agent Skills
 "#;
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const STAGING_PREFIX: &str = ".graduate-generate-skills-";
+const MANIFEST_NAME: &str = "transaction.json";
+const COMMITTED_NAME: &str = "committed";
 
 pub(crate) fn run(args: &GenerateSkillsArgs) -> Result<(), CliError> {
     let current = std::env::current_dir()?.canonicalize()?;
@@ -86,9 +96,34 @@ struct GeneratedFile<'a> {
     content: &'a str,
 }
 
+struct GenerationLock {
+    _file: fs::File,
+}
+
+impl GenerationLock {
+    fn acquire(current: &Path) -> Result<Self, CliError> {
+        let mut hasher = DefaultHasher::new();
+        current.hash(&mut hasher);
+        let lock_path = std::env::temp_dir().join(format!(
+            "graduate-generate-skills-{:016x}.lock",
+            hasher.finish()
+        ));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
+        file.lock_exclusive()?;
+        Ok(Self { _file: file })
+    }
+}
+
 fn write_generated(files: &[GeneratedFile<'_>], force: bool) -> Result<(), CliError> {
-    validate_destinations(files, force)?;
     let current = std::env::current_dir()?.canonicalize()?;
+    let _lock = GenerationLock::acquire(&current)?;
+    recover_pending_publications(&current, files)?;
+    validate_destinations(files, force)?;
     let mut staging = StagingDirectory::create(&current)?;
     let mut artifacts = Vec::with_capacity(files.len());
     for (index, file) in files.iter().enumerate() {
@@ -102,10 +137,13 @@ fn write_generated(files: &[GeneratedFile<'_>], force: bool) -> Result<(), CliEr
     validate_destinations(files, force)?;
     for file in files {
         if let Some(parent) = file.path.parent() {
-            fs::create_dir_all(parent)?;
+            create_parents_without_symlinks(&current, parent)?;
         }
     }
-    if let Err(error) = replace_artifacts(&staging.path, &artifacts) {
+    if let Err(error) = replace_artifacts(&current, &staging.path, &artifacts, force) {
+        if let CliError::GeneratedFileExists(_) = &error {
+            return Err(error);
+        }
         staging.preserve();
         return Err(io::Error::other(format!(
             "{error}; staged recovery files were kept at {}",
@@ -113,6 +151,7 @@ fn write_generated(files: &[GeneratedFile<'_>], force: bool) -> Result<(), CliEr
         ))
         .into());
     }
+    staging.remove()?;
     Ok(())
 }
 
@@ -146,6 +185,78 @@ fn validate_destinations(files: &[GeneratedFile<'_>], force: bool) -> Result<(),
         if fs::symlink_metadata(&file.path).is_ok() && !force {
             return Err(CliError::GeneratedFileExists(file.path.clone()));
         }
+    }
+    Ok(())
+}
+
+fn create_parents_without_symlinks(current: &Path, parent: &Path) -> Result<(), CliError> {
+    let repository = repository_directory(current)?;
+    repository.create_dir_all(repository_relative(current, parent)?)?;
+    revalidate_parent(current, parent)
+}
+
+fn repository_directory(current: &Path) -> io::Result<Dir> {
+    Dir::open_ambient_dir(current, ambient_authority())
+}
+
+fn repository_relative<'a>(current: &Path, path: &'a Path) -> Result<&'a Path, CliError> {
+    let relative = path.strip_prefix(current).map_err(|_| {
+        CliError::InvalidInput(format!(
+            "generated path must stay within {}",
+            current.display()
+        ))
+    })?;
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(CliError::InvalidInput(
+            "generated path must be a repository-relative normal path".to_owned(),
+        ));
+    }
+    Ok(relative)
+}
+
+fn safe_rename(current: &Path, source: &Path, destination: &Path) -> io::Result<()> {
+    let repository = repository_directory(current)?;
+    let source = repository_relative(current, source).map_err(io::Error::other)?;
+    let destination = repository_relative(current, destination).map_err(io::Error::other)?;
+    repository.rename(source, &repository, destination)
+}
+
+fn safe_hard_link(current: &Path, source: &Path, destination: &Path) -> io::Result<()> {
+    let repository = repository_directory(current)?;
+    let source = repository_relative(current, source).map_err(io::Error::other)?;
+    let destination = repository_relative(current, destination).map_err(io::Error::other)?;
+    repository.hard_link(source, &repository, destination)
+}
+
+fn safe_remove_file(current: &Path, path: &Path) -> io::Result<()> {
+    let repository = repository_directory(current)?;
+    let path = repository_relative(current, path).map_err(io::Error::other)?;
+    repository.remove_file(path)
+}
+
+fn safe_restore_backup(current: &Path, backup: &Path, destination: &Path) -> io::Result<()> {
+    safe_hard_link(current, backup, destination)?;
+    safe_remove_file(current, backup)?;
+    if let Some(parent) = destination.parent() {
+        sync_directory(parent)?;
+    }
+    if let Some(parent) = backup.parent() {
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+fn revalidate_parent(current: &Path, parent: &Path) -> Result<(), CliError> {
+    let canonical = parent.canonicalize()?;
+    if canonical != parent || !canonical.starts_with(current) {
+        return Err(CliError::InvalidInput(format!(
+            "generated path parent changed while publishing: {}",
+            parent.display()
+        )));
     }
     Ok(())
 }
@@ -199,6 +310,7 @@ fn validate_path_without_symlinks(
 
 struct StagingDirectory {
     path: PathBuf,
+    parent: PathBuf,
     cleanup: bool,
 }
 
@@ -212,10 +324,12 @@ impl StagingDirectory {
             ));
             match fs::create_dir(&path) {
                 Ok(()) => {
+                    sync_directory(parent)?;
                     return Ok(Self {
                         path,
+                        parent: parent.to_path_buf(),
                         cleanup: true,
-                    })
+                    });
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error),
@@ -229,6 +343,13 @@ impl StagingDirectory {
 
     fn preserve(&mut self) {
         self.cleanup = false;
+    }
+
+    fn remove(&mut self) -> io::Result<()> {
+        fs::remove_dir_all(&self.path)?;
+        sync_directory(&self.parent)?;
+        self.cleanup = false;
+        Ok(())
     }
 }
 
@@ -248,27 +369,160 @@ struct StagedArtifact {
 struct AppliedArtifact {
     destination: PathBuf,
     backup: Option<PathBuf>,
+    new_content: Vec<u8>,
 }
 
-fn replace_artifacts(staging_root: &Path, artifacts: &[StagedArtifact]) -> Result<(), CliError> {
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PublicationManifest {
+    version: u32,
+    artifacts: Vec<RecoveryArtifact>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecoveryArtifact {
+    destination: PathBuf,
+    staged: PathBuf,
+    backup: PathBuf,
+    had_destination: bool,
+    old_content: Option<Vec<u8>>,
+    new_content: Vec<u8>,
+}
+
+fn replace_artifacts(
+    current: &Path,
+    staging_root: &Path,
+    artifacts: &[StagedArtifact],
+    force: bool,
+) -> Result<(), CliError> {
     let backup_root = staging_root.join("backups");
-    fs::create_dir(&backup_root)?;
+    create_parents_without_symlinks(current, &backup_root)?;
+    let manifest = PublicationManifest {
+        version: 1,
+        artifacts: artifacts
+            .iter()
+            .enumerate()
+            .map(|(index, artifact)| {
+                Ok(RecoveryArtifact {
+                    destination: artifact
+                        .destination
+                        .strip_prefix(current)
+                        .map_err(|_| {
+                            CliError::InvalidInput(
+                                "generated destination escaped the repository".to_owned(),
+                            )
+                        })?
+                        .to_path_buf(),
+                    staged: artifact
+                        .staged
+                        .strip_prefix(staging_root)
+                        .map_err(|_| {
+                            CliError::InvalidInput(
+                                "staged artifact escaped its transaction".to_owned(),
+                            )
+                        })?
+                        .to_path_buf(),
+                    backup: PathBuf::from("backups").join(index.to_string()),
+                    had_destination: fs::symlink_metadata(&artifact.destination).is_ok(),
+                    old_content: match fs::read(&artifact.destination) {
+                        Ok(content) => Some(content),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                        Err(error) => return Err(error.into()),
+                    },
+                    new_content: fs::read(&artifact.staged)?,
+                })
+            })
+            .collect::<Result<Vec<_>, CliError>>()?,
+    };
+    write_manifest(staging_root, &manifest)?;
+
     let mut applied = Vec::with_capacity(artifacts.len());
     for (index, artifact) in artifacts.iter().enumerate() {
-        let backup = if fs::symlink_metadata(&artifact.destination).is_ok() {
+        require_regular_file(&artifact.staged, true)?;
+        let parent = artifact.destination.parent().ok_or_else(|| {
+            CliError::InvalidInput("generated destination must have a parent".to_owned())
+        })?;
+        validate_path_without_symlinks(current, &artifact.destination, false)?;
+        revalidate_parent(current, parent)?;
+        let exists = fs::symlink_metadata(&artifact.destination).is_ok();
+        let expected_old = manifest.artifacts[index].old_content.as_deref();
+        if force && expected_old.is_some() && !exists {
+            return Err(rollback_cli_error(
+                CliError::Config(format!(
+                    "generated destination changed during publication: {}",
+                    artifact.destination.display()
+                )),
+                current,
+                &applied,
+            ));
+        }
+        if exists && !force {
+            return Err(rollback_cli_error(
+                CliError::GeneratedFileExists(artifact.destination.clone()),
+                current,
+                &applied,
+            ));
+        }
+        if !force || expected_old.is_none() {
+            revalidate_parent(current, parent)?;
+            match safe_hard_link(current, &artifact.staged, &artifact.destination) {
+                Ok(()) => {
+                    applied.push(AppliedArtifact {
+                        destination: artifact.destination.clone(),
+                        backup: None,
+                        new_content: manifest.artifacts[index].new_content.clone(),
+                    });
+                    validate_published_content(
+                        &artifact.destination,
+                        &manifest.artifacts[index].new_content,
+                    )
+                    .map_err(|error| rollback_cli_error(error, current, &applied))?;
+                    if let Err(error) = safe_remove_file(current, &artifact.staged) {
+                        return Err(rollback_after_error(error, current, &applied));
+                    }
+                    sync_directory(parent)?;
+                    sync_directory(staging_root)?;
+                    continue;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    let error = if force {
+                        CliError::Config(format!(
+                            "generated destination changed during publication: {}",
+                            artifact.destination.display()
+                        ))
+                    } else {
+                        CliError::GeneratedFileExists(artifact.destination.clone())
+                    };
+                    return Err(rollback_cli_error(error, current, &applied));
+                }
+                Err(error) => return Err(rollback_after_error(error, current, &applied)),
+            }
+        }
+        let backup = if exists {
             let backup = backup_root.join(index.to_string());
-            if let Err(error) = fs::rename(&artifact.destination, &backup) {
-                return Err(rollback_after_error(error, &applied));
+            revalidate_parent(current, parent)?;
+            if let Err(error) = backup_validated_destination(
+                current,
+                &artifact.destination,
+                &backup,
+                manifest.artifacts[index]
+                    .old_content
+                    .as_deref()
+                    .unwrap_or_default(),
+            ) {
+                return Err(rollback_cli_error(error, current, &applied));
             }
             Some(backup)
         } else {
             None
         };
-        if let Err(error) = fs::rename(&artifact.staged, &artifact.destination) {
-            let restore_error = backup
-                .as_ref()
-                .and_then(|backup| fs::rename(backup, &artifact.destination).err());
-            let rollback_error = rollback_artifacts(&applied).err();
+        revalidate_parent(current, parent)?;
+        if let Err(error) = safe_hard_link(current, &artifact.staged, &artifact.destination) {
+            let restore_error = backup.as_ref().and_then(|backup| {
+                safe_restore_backup(current, backup, &artifact.destination).err()
+            });
+            let rollback_error = rollback_artifacts(current, &applied).err();
             if restore_error.is_some() || rollback_error.is_some() {
                 let recovery_errors = restore_error
                     .into_iter()
@@ -285,14 +539,325 @@ fn replace_artifacts(staging_root: &Path, artifacts: &[StagedArtifact]) -> Resul
         }
         applied.push(AppliedArtifact {
             destination: artifact.destination.clone(),
-            backup,
+            backup: backup.clone(),
+            new_content: manifest.artifacts[index].new_content.clone(),
         });
+        validate_published_content(
+            &artifact.destination,
+            &manifest.artifacts[index].new_content,
+        )
+        .map_err(|error| rollback_cli_error(error, current, &applied))?;
+        if let Err(error) = safe_remove_file(current, &artifact.staged) {
+            return Err(rollback_after_error(error, current, &applied));
+        }
+        sync_directory(parent)?;
+        sync_directory(staging_root)?;
+    }
+    if let Err(error) = mark_committed(staging_root) {
+        return Err(rollback_cli_error(error, current, &applied));
     }
     Ok(())
 }
 
-fn rollback_after_error(error: io::Error, applied: &[AppliedArtifact]) -> CliError {
-    match rollback_artifacts(applied) {
+fn backup_validated_destination(
+    current: &Path,
+    destination: &Path,
+    backup: &Path,
+    expected: &[u8],
+) -> Result<(), CliError> {
+    safe_rename(current, destination, backup)?;
+    if let Some(parent) = destination.parent() {
+        sync_directory(parent)?;
+    }
+    if let Some(parent) = backup.parent() {
+        sync_directory(parent)?;
+    }
+    let verification = require_regular_file(backup, true).and_then(|()| {
+        if fs::read(backup)? == expected {
+            Ok(())
+        } else {
+            Err(CliError::Config(format!(
+                "generated destination changed during publication: {}",
+                destination.display()
+            )))
+        }
+    });
+    let Err(verification_error) = verification else {
+        return Ok(());
+    };
+    safe_restore_backup(current, backup, destination).map_err(|error| {
+        CliError::Io(io::Error::other(format!(
+            "{verification_error}; restoration failed: {error}"
+        )))
+    })?;
+    Err(verification_error)
+}
+
+fn validate_published_content(destination: &Path, expected: &[u8]) -> Result<(), CliError> {
+    require_regular_file(destination, true)?;
+    if fs::read(destination)? != expected {
+        return Err(CliError::Config(format!(
+            "generated destination changed during publication: {}",
+            destination.display()
+        )));
+    }
+    Ok(())
+}
+
+fn rollback_cli_error(error: CliError, current: &Path, applied: &[AppliedArtifact]) -> CliError {
+    match rollback_artifacts(current, applied) {
+        Ok(()) => error,
+        Err(rollback_error) => io::Error::other(format!(
+            "{error}; restoring the prior skill catalog also failed: {rollback_error}"
+        ))
+        .into(),
+    }
+}
+
+fn write_manifest(staging_root: &Path, manifest: &PublicationManifest) -> Result<(), CliError> {
+    let mut contents = serde_json::to_vec_pretty(manifest)?;
+    contents.push(b'\n');
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".transaction-")
+        .suffix(".tmp")
+        .tempfile_in(staging_root)?;
+    temporary.write_all(&contents)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(staging_root.join(MANIFEST_NAME))
+        .map_err(|error| CliError::Io(error.error))?;
+    sync_directory(staging_root)?;
+    Ok(())
+}
+
+fn mark_committed(staging_root: &Path) -> Result<(), CliError> {
+    let mut marker = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(staging_root.join(COMMITTED_NAME))?;
+    marker.write_all(b"committed\n")?;
+    marker.sync_all()?;
+    sync_directory(staging_root)?;
+    Ok(())
+}
+
+fn recover_pending_publications(
+    current: &Path,
+    expected: &[GeneratedFile<'_>],
+) -> Result<(), CliError> {
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(STAGING_PREFIX) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(CliError::InvalidInput(format!(
+                "invalid skill publication recovery path: {}",
+                entry.path().display()
+            )));
+        }
+        recover_publication(current, &entry.path(), expected)?;
+        fs::remove_dir_all(entry.path())?;
+        sync_directory(current)?;
+    }
+    Ok(())
+}
+
+fn recover_publication(
+    current: &Path,
+    staging_root: &Path,
+    expected: &[GeneratedFile<'_>],
+) -> Result<(), CliError> {
+    let manifest_path = staging_root.join(MANIFEST_NAME);
+    let contents = match fs::read(&manifest_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(CliError::Config(format!(
+                "preserving unrecognized skill publication directory without a manifest: {}",
+                staging_root.display()
+            )))
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let manifest: PublicationManifest = serde_json::from_slice(&contents).map_err(|error| {
+        CliError::Config(format!(
+            "could not recover skill publication from {}: {error}",
+            manifest_path.display()
+        ))
+    })?;
+    if manifest.version != 1 {
+        return Err(CliError::Config(format!(
+            "unsupported skill publication recovery version {} in {}",
+            manifest.version,
+            manifest_path.display()
+        )));
+    }
+    validate_recovery_manifest(current, staging_root, &manifest, expected)?;
+    if staging_root.join(COMMITTED_NAME).is_file() {
+        return Ok(());
+    }
+    for artifact in manifest.artifacts.iter().rev() {
+        validate_recovery_relative_path(&artifact.destination)?;
+        validate_recovery_relative_path(&artifact.staged)?;
+        validate_recovery_relative_path(&artifact.backup)?;
+        let destination = current.join(&artifact.destination);
+        let staged = staging_root.join(&artifact.staged);
+        let backup = staging_root.join(&artifact.backup);
+        let parent = destination.parent().ok_or_else(|| {
+            CliError::InvalidInput("recovery destination must have a parent".to_owned())
+        })?;
+        create_parents_without_symlinks(current, parent)?;
+        validate_path_without_symlinks(current, &destination, false)?;
+        if backup.exists() {
+            require_regular_file(&backup, true)?;
+            remove_replaced_artifact(current, &destination, &artifact.new_content)?;
+            revalidate_parent(current, parent)?;
+            safe_restore_backup(current, &backup, &destination)?;
+            sync_directory(parent)?;
+            if let Some(backup_parent) = backup.parent() {
+                sync_directory(backup_parent)?;
+            }
+        } else if !artifact.had_destination {
+            recover_new_artifact(current, &destination, &staged, &artifact.new_content)?;
+            sync_directory(parent)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_recovery_manifest(
+    current: &Path,
+    staging_root: &Path,
+    manifest: &PublicationManifest,
+    expected: &[GeneratedFile<'_>],
+) -> Result<(), CliError> {
+    if manifest.artifacts.len() != expected.len() {
+        return Err(invalid_recovery_layout(staging_root));
+    }
+    require_regular_file(&staging_root.join(MANIFEST_NAME), true)?;
+    require_directory(&staging_root.join("backups"), true)?;
+    require_regular_file(&staging_root.join(COMMITTED_NAME), false)?;
+    for (index, (artifact, expected)) in manifest.artifacts.iter().zip(expected).enumerate() {
+        let expected_staged = index.to_string();
+        let destination = expected.path.strip_prefix(current).map_err(|_| {
+            CliError::InvalidInput("generated destination escaped the repository".to_owned())
+        })?;
+        if artifact.destination != destination
+            || artifact.staged != Path::new(&expected_staged)
+            || artifact.backup != PathBuf::from("backups").join(index.to_string())
+            || artifact.had_destination != artifact.old_content.is_some()
+            || artifact.new_content != expected.content.as_bytes()
+        {
+            return Err(invalid_recovery_layout(staging_root));
+        }
+        require_regular_file(&staging_root.join(&artifact.staged), false)?;
+        let backup = staging_root.join(&artifact.backup);
+        require_regular_file(&backup, false)?;
+        if backup.is_file()
+            && fs::read(&backup)?.as_slice() != artifact.old_content.as_deref().unwrap_or_default()
+        {
+            return Err(invalid_recovery_layout(staging_root));
+        }
+    }
+    Ok(())
+}
+
+fn invalid_recovery_layout(staging_root: &Path) -> CliError {
+    CliError::Config(format!(
+        "preserving invalid skill publication transaction at {}",
+        staging_root.display()
+    ))
+}
+
+fn require_regular_file(path: &Path, required: bool) -> Result<(), CliError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(()),
+        Ok(_) => Err(CliError::Config(format!(
+            "skill publication transaction entry is not a regular file: {}",
+            path.display()
+        ))),
+        Err(error) if !required && error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn require_directory(path: &Path, required: bool) -> Result<(), CliError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+        Ok(_) => Err(CliError::Config(format!(
+            "skill publication transaction entry is not a directory: {}",
+            path.display()
+        ))),
+        Err(error) if !required && error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn validate_recovery_relative_path(path: &Path) -> Result<(), CliError> {
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(CliError::InvalidInput(
+            "skill publication recovery path was invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn remove_replaced_artifact(
+    current: &Path,
+    destination: &Path,
+    expected: &[u8],
+) -> Result<(), CliError> {
+    match fs::read(destination) {
+        Ok(contents) if contents == expected => {
+            safe_remove_file(current, destination).map_err(CliError::from)
+        }
+        Ok(_) => Err(CliError::Config(format!(
+            "refusing to overwrite a file changed after an interrupted skill publication: {}",
+            destination.display()
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn recover_new_artifact(
+    current: &Path,
+    destination: &Path,
+    staged: &Path,
+    expected: &[u8],
+) -> Result<(), CliError> {
+    match fs::read(destination) {
+        Ok(contents) if contents == expected => {
+            safe_remove_file(current, destination).map_err(CliError::from)
+        }
+        Ok(_) if staged.exists() => Ok(()),
+        Ok(_) => Err(CliError::Config(format!(
+            "refusing to overwrite a file changed after an interrupted skill publication: {}",
+            destination.display()
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn rollback_after_error(error: io::Error, current: &Path, applied: &[AppliedArtifact]) -> CliError {
+    match rollback_artifacts(current, applied) {
         Ok(()) => error.into(),
         Err(rollback_error) => io::Error::other(format!(
             "{error}; restoring the prior skill catalog also failed: {rollback_error}"
@@ -301,11 +866,28 @@ fn rollback_after_error(error: io::Error, applied: &[AppliedArtifact]) -> CliErr
     }
 }
 
-fn rollback_artifacts(applied: &[AppliedArtifact]) -> io::Result<()> {
+fn rollback_artifacts(current: &Path, applied: &[AppliedArtifact]) -> io::Result<()> {
     for artifact in applied.iter().rev() {
-        fs::remove_file(&artifact.destination)?;
+        let parent = artifact
+            .destination
+            .parent()
+            .ok_or_else(|| io::Error::other("generated destination had no parent"))?;
+        validate_path_without_symlinks(current, &artifact.destination, false)
+            .map_err(io::Error::other)?;
+        revalidate_parent(current, parent).map_err(io::Error::other)?;
+        let contents = fs::read(&artifact.destination)?;
+        if contents != artifact.new_content {
+            return Err(io::Error::other(format!(
+                "refusing to overwrite a file changed during skill publication: {}",
+                artifact.destination.display()
+            )));
+        }
+        safe_remove_file(current, &artifact.destination)?;
         if let Some(backup) = &artifact.backup {
-            fs::rename(backup, &artifact.destination)?;
+            revalidate_parent(current, parent).map_err(io::Error::other)?;
+            safe_restore_backup(current, backup, &artifact.destination)?;
+        } else {
+            sync_directory(parent)?;
         }
     }
     Ok(())
@@ -396,9 +978,203 @@ mod tests {
             },
         ];
 
-        assert!(replace_artifacts(&staging, &artifacts).is_err());
+        assert!(replace_artifacts(directory.path(), &staging, &artifacts, true).is_err());
         assert_eq!(fs::read_to_string(first_destination)?, "old first");
         assert_eq!(fs::read_to_string(second_destination)?, "old second");
+        Ok(())
+    }
+
+    #[test]
+    fn no_force_policy_is_rechecked_during_replacement() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let staging = directory.path().join("staging");
+        fs::create_dir(&staging)?;
+        let first_destination = directory.path().join("first");
+        let second_destination = directory.path().join("second");
+        let first_staged = staging.join("first");
+        let second_staged = staging.join("second");
+        fs::write(&first_staged, "new first")?;
+        fs::write(&second_staged, "new second")?;
+        fs::write(&second_destination, "concurrent edit")?;
+        let artifacts = [
+            StagedArtifact {
+                staged: first_staged,
+                destination: first_destination.clone(),
+            },
+            StagedArtifact {
+                staged: second_staged,
+                destination: second_destination.clone(),
+            },
+        ];
+
+        let result = replace_artifacts(directory.path(), &staging, &artifacts, false);
+
+        assert!(
+            matches!(result, Err(CliError::GeneratedFileExists(path)) if path == second_destination)
+        );
+        assert!(!first_destination.exists());
+        assert_eq!(fs::read_to_string(second_destination)?, "concurrent edit");
+        Ok(())
+    }
+
+    #[test]
+    fn forced_replacement_restores_a_destination_that_changed_after_validation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let destination = directory.path().join("generated");
+        let backup = directory.path().join("backup");
+        fs::write(&destination, "concurrent edit")?;
+
+        let result = backup_validated_destination(
+            directory.path(),
+            &destination,
+            &backup,
+            b"validated content",
+        );
+
+        assert!(
+            matches!(result, Err(CliError::Config(message)) if message.contains("changed during publication"))
+        );
+        assert_eq!(fs::read_to_string(destination)?, "concurrent edit");
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn interrupted_publication_is_rolled_back_from_its_manifest(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let staging = directory
+            .path()
+            .join(format!("{STAGING_PREFIX}interrupted"));
+        let backup = staging.join("backups/0");
+        fs::create_dir_all(backup.parent().ok_or("backup has no parent")?)?;
+        let destination_relative = PathBuf::from("skills/graduate/SKILL.md");
+        let destination = directory.path().join(&destination_relative);
+        fs::create_dir_all(destination.parent().ok_or("destination has no parent")?)?;
+        fs::write(&destination, "new skill")?;
+        fs::write(&backup, "old skill")?;
+        write_manifest(
+            &staging,
+            &PublicationManifest {
+                version: 1,
+                artifacts: vec![RecoveryArtifact {
+                    destination: destination_relative,
+                    staged: PathBuf::from("0"),
+                    backup: PathBuf::from("backups/0"),
+                    had_destination: true,
+                    old_content: Some(b"old skill".to_vec()),
+                    new_content: b"new skill".to_vec(),
+                }],
+            },
+        )?;
+        let files = [GeneratedFile {
+            path: destination.clone(),
+            content: "new skill",
+        }];
+
+        recover_pending_publications(directory.path(), &files)?;
+
+        assert_eq!(fs::read_to_string(destination)?, "old skill");
+        assert!(!staging.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_preserves_prefixed_directories_without_a_manifest(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let staging = directory
+            .path()
+            .join(format!("{STAGING_PREFIX}unrecognized"));
+        fs::create_dir(&staging)?;
+        fs::write(staging.join("user-file"), "keep me")?;
+        let files = [GeneratedFile {
+            path: directory.path().join("skills/graduate/SKILL.md"),
+            content: "new skill",
+        }];
+
+        let result = recover_pending_publications(directory.path(), &files);
+
+        assert!(
+            matches!(result, Err(CliError::Config(message)) if message.contains("without a manifest"))
+        );
+        assert_eq!(fs::read_to_string(staging.join("user-file"))?, "keep me");
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_rejects_destinations_outside_the_expected_artifacts(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let staging = directory.path().join(format!("{STAGING_PREFIX}crafted"));
+        fs::create_dir_all(staging.join("backups"))?;
+        fs::write(staging.join("0"), "new skill")?;
+        write_manifest(
+            &staging,
+            &PublicationManifest {
+                version: 1,
+                artifacts: vec![RecoveryArtifact {
+                    destination: PathBuf::from("important.txt"),
+                    staged: PathBuf::from("0"),
+                    backup: PathBuf::from("backups/0"),
+                    had_destination: false,
+                    old_content: None,
+                    new_content: b"new skill".to_vec(),
+                }],
+            },
+        )?;
+        let expected_path = directory.path().join("skills/graduate/SKILL.md");
+        let files = [GeneratedFile {
+            path: expected_path,
+            content: "new skill",
+        }];
+
+        let result = recover_pending_publications(directory.path(), &files);
+
+        assert!(
+            matches!(result, Err(CliError::Config(message)) if message.contains("preserving invalid"))
+        );
+        assert!(staging.exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_rejects_symlinked_backups() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let staging = directory.path().join(format!("{STAGING_PREFIX}symlink"));
+        fs::create_dir_all(staging.join("backups"))?;
+        let outside = directory.path().join("outside");
+        fs::write(&outside, "old skill")?;
+        symlink(&outside, staging.join("backups/0"))?;
+        write_manifest(
+            &staging,
+            &PublicationManifest {
+                version: 1,
+                artifacts: vec![RecoveryArtifact {
+                    destination: PathBuf::from("skills/graduate/SKILL.md"),
+                    staged: PathBuf::from("0"),
+                    backup: PathBuf::from("backups/0"),
+                    had_destination: true,
+                    old_content: Some(b"old skill".to_vec()),
+                    new_content: b"new skill".to_vec(),
+                }],
+            },
+        )?;
+        let files = [GeneratedFile {
+            path: directory.path().join("skills/graduate/SKILL.md"),
+            content: "new skill",
+        }];
+
+        let result = recover_pending_publications(directory.path(), &files);
+
+        assert!(
+            matches!(result, Err(CliError::Config(message)) if message.contains("not a regular file"))
+        );
+        assert!(staging.exists());
         Ok(())
     }
 }

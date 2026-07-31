@@ -72,13 +72,18 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
         remote: args.remote.clone(),
         jira_configured: credentials.is_some(),
     };
-    tokio::spawn(coordinate_scan(scan, credentials, updates_tx));
+    let coordinator = tokio::spawn(coordinate_scan(scan, credentials, updates_tx));
 
-    let report = if interactive {
-        diff_tui::run(updates_rx, &SystemBrowserLauncher).await?
+    let report_result = if interactive {
+        diff_tui::run(updates_rx, &SystemBrowserLauncher).await
     } else {
-        collect_plain(updates_rx).await?
+        collect_plain(updates_rx).await
     };
+    let coordinator_result = coordinator
+        .await
+        .map_err(|error| CliError::Git(format!("promotion scan task failed: {error}")))?;
+    let report = report_result?;
+    coordinator_result?;
     if !interactive {
         write_report(
             &report,
@@ -93,37 +98,38 @@ async fn coordinate_scan(
     options: ScanOptions,
     credentials: Option<JiraCredentials>,
     output: mpsc::UnboundedSender<DiffUpdate>,
-) {
+) -> Result<(), CliError> {
     let (scan_tx, mut scan_rx) = mpsc::unbounded_channel();
-    tokio::task::spawn_blocking(move || {
-        if let Err(error) = scan_repository(&options, &scan_tx) {
-            let _ = scan_tx.send(DiffUpdate::Failed(error.to_string()));
-        }
-    });
+    let scan_task = tokio::task::spawn_blocking(move || scan_repository(&options, &scan_tx));
 
     let mut jira_tasks = JoinSet::new();
-    let jira_slots = Arc::new(tokio::sync::Semaphore::new(8));
+    let jira = match credentials.as_ref().map(JiraClient::new).transpose() {
+        Ok(client) => client.map(Arc::new),
+        Err(error) => {
+            let _ = output.send(DiffUpdate::Failed(error.to_string()));
+            return Err(error);
+        }
+    };
+    let credentials = credentials.map(Arc::new);
     while let Some(update) = scan_rx.recv().await {
         if let DiffUpdate::Measured(row) = &update {
-            if let (Some(credentials), Some(key)) = (credentials.clone(), row.jira.key()) {
+            if let (Some(credentials), Some(jira), Some(key)) =
+                (credentials.clone(), jira.clone(), row.jira.key())
+            {
+                if jira_tasks.len() >= 8 {
+                    if let Err(error) = forward_jira_result(&output, jira_tasks.join_next().await) {
+                        jira_tasks.abort_all();
+                        return if matches!(error, CliError::ReportCancelled) {
+                            Ok(())
+                        } else {
+                            Err(error)
+                        };
+                    }
+                }
                 let branch = row.branch.clone();
                 let key = key.to_owned();
-                let jira_slots = Arc::clone(&jira_slots);
                 jira_tasks.spawn(async move {
-                    let permit = jira_slots.acquire_owned().await;
-                    if permit.is_err() {
-                        return (
-                            branch,
-                            JiraIssueState::Failed {
-                                key,
-                                message: "Jira query queue closed".to_owned(),
-                            },
-                        );
-                    }
-                    let result = match JiraClient::new(&credentials) {
-                        Ok(client) => client.issue(&credentials, &key).await,
-                        Err(error) => Err(error),
-                    };
+                    let result = jira.issue(&credentials, &key).await;
                     let state = match result {
                         Ok(issue) => JiraIssueState::Loaded(issue),
                         Err(error) => JiraIssueState::Failed {
@@ -138,27 +144,56 @@ async fn coordinate_scan(
         let failed = matches!(update, DiffUpdate::Failed(_));
         if output.send(update).is_err() || failed {
             jira_tasks.abort_all();
-            return;
+            return Ok(());
+        }
+    }
+
+    match scan_task.await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let _ = output.send(DiffUpdate::Failed(error.to_string()));
+            jira_tasks.abort_all();
+            return Err(error);
+        }
+        Err(error) => {
+            let message = format!("Git scan task failed: {error}");
+            let _ = output.send(DiffUpdate::Failed(message.clone()));
+            jira_tasks.abort_all();
+            return Err(CliError::Git(message));
         }
     }
 
     while let Some(result) = jira_tasks.join_next().await {
-        match result {
-            Ok((branch, state)) => {
-                if output.send(DiffUpdate::Jira { branch, state }).is_err() {
-                    return;
-                }
-            }
-            Err(error) if error.is_cancelled() => return,
-            Err(error) => {
-                let _ = output.send(DiffUpdate::Failed(format!(
-                    "Jira enrichment task failed: {error}"
-                )));
-                return;
-            }
+        if let Err(error) = forward_jira_result(&output, Some(result)) {
+            jira_tasks.abort_all();
+            return if matches!(error, CliError::ReportCancelled) {
+                Ok(())
+            } else {
+                Err(error)
+            };
         }
     }
     let _ = output.send(DiffUpdate::Finished);
+    Ok(())
+}
+
+fn forward_jira_result(
+    output: &mpsc::UnboundedSender<DiffUpdate>,
+    result: Option<Result<(String, JiraIssueState), tokio::task::JoinError>>,
+) -> Result<(), CliError> {
+    match result {
+        Some(Ok((branch, state))) => output
+            .send(DiffUpdate::Jira { branch, state })
+            .map_err(|_| CliError::ReportCancelled),
+        Some(Err(error)) => {
+            let message = format!("Jira enrichment task failed: {error}");
+            let _ = output.send(DiffUpdate::Failed(message.clone()));
+            Err(CliError::Git(message))
+        }
+        None => Err(CliError::Git(
+            "Jira enrichment queue ended unexpectedly".to_owned(),
+        )),
+    }
 }
 
 fn scan_repository(
@@ -231,7 +266,9 @@ fn resolve_main_branch(
         if let Some(target) = reference.target().try_name() {
             let target = target.as_bstr().to_str_lossy();
             if let Some(branch) = target.strip_prefix(prefix) {
-                return Ok(branch.to_owned());
+                if reference_id(repository, &target).is_ok() {
+                    return Ok(branch.to_owned());
+                }
             }
         }
     }
@@ -433,6 +470,7 @@ async fn collect_plain(
     let mut rows = HashMap::new();
     let mut environment = String::new();
     let mut main = String::new();
+    let mut finished = false;
     while let Some(update) = updates.recv().await {
         match update {
             DiffUpdate::Skeleton {
@@ -451,9 +489,17 @@ async fn collect_plain(
                     row.jira = state;
                 }
             }
-            DiffUpdate::Finished => break,
+            DiffUpdate::Finished => {
+                finished = true;
+                break;
+            }
             DiffUpdate::Failed(message) => return Err(CliError::Git(message)),
         }
+    }
+    if !finished {
+        return Err(CliError::Git(
+            "promotion report ended before the scan completed".to_owned(),
+        ));
     }
     let mut rows = rows.into_values().collect::<Vec<_>>();
     rows.sort_by(|left, right| left.branch.cmp(&right.branch));
@@ -477,10 +523,21 @@ fn write_report(
     };
     if let Some(output) = output {
         let output = validate_output_path(output)?;
-        std::fs::write(&output, content)?;
-        eprintln!("Wrote {}", output.display());
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".graduate-report-")
+            .suffix(".tmp")
+            .tempfile_in(&output.parent)?;
+        temporary.write_all(content.as_bytes())?;
+        temporary.as_file().sync_all()?;
+        revalidate_output_parent(&output)?;
+        temporary
+            .persist(&output.destination)
+            .map_err(|error| CliError::Io(error.error))?;
+        eprintln!("Wrote {}", output.destination.display());
     } else {
-        print!("{content}");
+        let stdout = io::stdout();
+        let mut stdout = stdout.lock();
+        stdout.write_all(content.as_bytes())?;
     }
     Ok(())
 }
@@ -600,57 +657,64 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
             "jiraIssue.fields.fixVersions",
             "jiraIssue.self",
             "jiraIssue.browseUrl",
+            "jiraError",
         ],
     )?;
     for row in &report.branches {
         let ahead = row.ahead.to_string();
-        let (key, status, summary, assignee, versions, api_url, browse_url) = match &row.jira {
-            JiraIssueState::Loaded(issue) => (
-                issue.key.clone(),
-                issue.status.clone(),
-                issue.summary.clone(),
-                issue.assignee.clone().unwrap_or_default(),
-                issue.fix_versions.join(", "),
-                issue.api_url.clone(),
-                issue.url.clone(),
-            ),
-            JiraIssueState::Failed { key, message } => (
-                key.clone(),
-                "error".to_owned(),
-                message.clone(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-            ),
-            JiraIssueState::NotConfigured { key } => (
-                key.clone(),
-                "not configured".to_owned(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-            ),
-            JiraIssueState::Loading { key } => (
-                key.clone(),
-                "loading".to_owned(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-            ),
-            JiraIssueState::NoTicket => (
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-            ),
-        };
+        let (key, status, summary, assignee, versions, api_url, browse_url, jira_error) =
+            match &row.jira {
+                JiraIssueState::Loaded(issue) => (
+                    issue.key.clone(),
+                    issue.status.clone(),
+                    issue.summary.clone(),
+                    issue.assignee.clone().unwrap_or_default(),
+                    issue.fix_versions.join(", "),
+                    issue.api_url.clone(),
+                    issue.url.clone(),
+                    String::new(),
+                ),
+                JiraIssueState::Failed { key, message } => (
+                    key.clone(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    message.clone(),
+                ),
+                JiraIssueState::NotConfigured { key } => (
+                    key.clone(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ),
+                JiraIssueState::Loading { key } => (
+                    key.clone(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ),
+                JiraIssueState::NoTicket => (
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ),
+            };
         csv_row(
             &mut file,
             &[
@@ -666,6 +730,7 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
                 &versions,
                 &api_url,
                 &browse_url,
+                &jira_error,
             ],
         )?;
     }
@@ -673,7 +738,13 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
         .map_err(|error| CliError::InvalidInput(format!("CSV was not valid UTF-8: {error}")))
 }
 
-fn validate_output_path(path: &Path) -> Result<PathBuf, CliError> {
+struct ValidatedOutput {
+    destination: PathBuf,
+    parent: PathBuf,
+    repository: PathBuf,
+}
+
+fn validate_output_path(path: &Path) -> Result<ValidatedOutput, CliError> {
     if path.as_os_str().is_empty()
         || path.is_absolute()
         || path.components().any(|component| {
@@ -691,8 +762,8 @@ fn validate_output_path(path: &Path) -> Result<PathBuf, CliError> {
         ));
     }
     let current = std::env::current_dir()?.canonicalize()?;
-    let destination = current.join(path);
-    let parent = destination
+    let lexical_destination = current.join(path);
+    let parent = lexical_destination
         .parent()
         .ok_or_else(|| CliError::InvalidInput("--output must name a file".to_owned()))?;
     let parent = parent.canonicalize().map_err(|error| {
@@ -705,6 +776,10 @@ fn validate_output_path(path: &Path) -> Result<PathBuf, CliError> {
             "--output must stay within the current directory".to_owned(),
         ));
     }
+    let leaf = lexical_destination
+        .file_name()
+        .ok_or_else(|| CliError::InvalidInput("--output must name a file".to_owned()))?;
+    let destination = parent.join(leaf);
     if std::fs::symlink_metadata(&destination)
         .is_ok_and(|metadata| metadata.file_type().is_symlink())
     {
@@ -712,7 +787,28 @@ fn validate_output_path(path: &Path) -> Result<PathBuf, CliError> {
             "--output must not replace a symbolic link".to_owned(),
         ));
     }
-    Ok(destination)
+    Ok(ValidatedOutput {
+        destination,
+        parent,
+        repository: current,
+    })
+}
+
+fn revalidate_output_parent(output: &ValidatedOutput) -> Result<(), CliError> {
+    let parent = output.parent.canonicalize()?;
+    if parent != output.parent || !parent.starts_with(&output.repository) {
+        return Err(CliError::InvalidInput(
+            "--output parent directory changed while the report was being written".to_owned(),
+        ));
+    }
+    if std::fs::symlink_metadata(&output.destination)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(CliError::InvalidInput(
+            "--output must not replace a symbolic link".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn csv_row(writer: &mut impl Write, fields: &[&str]) -> Result<(), CliError> {
@@ -749,9 +845,80 @@ mod tests {
     }
 
     #[test]
+    fn csv_keeps_jira_errors_out_of_issue_fields() -> Result<(), CliError> {
+        let report = PromotionReport {
+            environment: "qa".to_owned(),
+            main: "main".to_owned(),
+            branches: vec![PromotionBranch {
+                branch: "feature/PROJ-123-login".to_owned(),
+                started: "2024-01-01".to_owned(),
+                last: "2024-01-02".to_owned(),
+                ahead: 2,
+                last_author: "Pat".to_owned(),
+                jira: JiraIssueState::Failed {
+                    key: "PROJ-123".to_owned(),
+                    message: "request timed out".to_owned(),
+                },
+            }],
+        };
+
+        let csv = format_csv(&report)?;
+
+        assert!(csv
+            .lines()
+            .next()
+            .is_some_and(|line| line.ends_with("\"jiraError\"")));
+        assert!(csv.lines().nth(1).is_some_and(|line| {
+            line.contains("\"PROJ-123\",\"\",\"\"") && line.ends_with("\"request timed out\"")
+        }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn plain_reports_require_an_explicit_finished_update() {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        assert!(sender
+            .send(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: Vec::new(),
+            })
+            .is_ok());
+        drop(sender);
+
+        let result = collect_plain(receiver).await;
+
+        assert!(
+            matches!(result, Err(CliError::Git(message)) if message.contains("before the scan completed"))
+        );
+    }
+
+    #[test]
     fn output_rejects_paths_outside_the_current_directory() {
         assert!(validate_output_path(Path::new("../report.json")).is_err());
         assert!(validate_output_path(Path::new("/tmp/report.json")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_uses_the_canonical_parent_for_internal_symlinks(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let current = std::env::current_dir()?;
+        let directory = tempfile::tempdir_in(&current)?;
+        let reports = directory.path().join("reports");
+        std::fs::create_dir(&reports)?;
+        symlink(&reports, directory.path().join("report-link"))?;
+        let relative = directory
+            .path()
+            .strip_prefix(&current)?
+            .join("report-link/qa.json");
+
+        let output = validate_output_path(&relative)?;
+
+        assert_eq!(output.destination, reports.canonicalize()?.join("qa.json"));
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -814,6 +981,39 @@ mod tests {
         assert!(excluded_branch("qa", "qa", "main"));
         assert!(excluded_branch("backup/old", "qa", "main"));
         assert!(!excluded_branch("feature/PROJ-1", "qa", "main"));
+    }
+
+    #[test]
+    fn stale_remote_head_falls_back_to_an_existing_main_name(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        run_git(directory.path(), &["init", "-q", "-b", "main"])?;
+        run_git(directory.path(), &["config", "user.name", "Test Author"])?;
+        run_git(
+            directory.path(),
+            &["config", "user.email", "test@example.com"],
+        )?;
+        std::fs::write(directory.path().join("file"), "base\n")?;
+        run_git(directory.path(), &["add", "file"])?;
+        commit(directory.path(), "base", "2024-01-01T00:00:00Z")?;
+        run_git(
+            directory.path(),
+            &["update-ref", "refs/remotes/origin/main", "refs/heads/main"],
+        )?;
+        run_git(
+            directory.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/old-main",
+            ],
+        )?;
+        let repository = gix::discover(directory.path())?;
+
+        let main = resolve_main_branch(&repository, "refs/remotes/origin/", None)?;
+
+        assert_eq!(main, "main");
+        Ok(())
     }
 
     #[test]
