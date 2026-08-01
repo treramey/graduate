@@ -43,6 +43,7 @@ pub struct PromotionBranch {
     pub last: String,
     pub ahead: usize,
     pub last_author: String,
+    pub commit_messages: Vec<String>,
     pub jira: JiraIssueState,
 }
 

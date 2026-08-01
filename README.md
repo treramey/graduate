@@ -57,6 +57,10 @@ Branch names containing a Jira key such as `PROJ-123` are enriched with the
 ticket summary, status, assignee, and fix versions when Jira is configured.
 Select a row and press `o` to open its ticket.
 
+Press `h` to open a scrollable Git history modal listing the selected branch's
+commits that are ahead of the resolved main branch; press `q` or Escape to
+close it.
+
 For machine use, Graduate follows API-native output conventions. Non-interactive
 runs emit JSON by default, with camelCase report fields and Jira issue data in
 the same `fields.status.name`, `fields.assignee.displayName`, and

@@ -8,7 +8,9 @@ use graduate::promotion::{JiraIssueState, PromotionBranch};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
+};
 use ratatui::Frame;
 use tokio::sync::mpsc;
 
@@ -36,6 +38,9 @@ struct DiffModel {
     finished: bool,
     frame: usize,
     warning: Option<String>,
+    history_open: bool,
+    history_selected: usize,
+    history_list_state: ListState,
 }
 
 impl DiffModel {
@@ -49,6 +54,9 @@ impl DiffModel {
             finished: false,
             frame: 0,
             warning: None,
+            history_open: false,
+            history_selected: 0,
+            history_list_state: ListState::default(),
         }
     }
 
@@ -108,7 +116,46 @@ impl DiffModel {
             self.selected = selected;
             self.table_state.select(Some(selected));
             self.warning = None;
+            self.history_open = false;
+            self.history_selected = 0;
+            self.history_list_state = ListState::default();
         }
+    }
+
+    fn open_history(&mut self) {
+        if self
+            .rows
+            .get(self.selected)
+            .and_then(|row| row.report.as_ref())
+            .is_some()
+        {
+            self.history_open = true;
+            self.history_selected = 0;
+            self.history_list_state = ListState::default().with_selected(Some(0));
+        } else {
+            self.warning = Some("Branch history is still being measured.".to_owned());
+        }
+    }
+
+    fn close_history(&mut self) {
+        self.history_open = false;
+        self.history_selected = 0;
+        self.history_list_state = ListState::default();
+    }
+
+    fn scroll_history_up(&mut self) {
+        self.history_selected = self.history_selected.saturating_sub(1);
+        self.history_list_state.select(Some(self.history_selected));
+    }
+
+    fn scroll_history_down(&mut self) {
+        let maximum = self
+            .rows
+            .get(self.selected)
+            .and_then(|row| row.report.as_ref())
+            .map_or(0, |report| report.commit_messages.len().saturating_sub(1));
+        self.history_selected = self.history_selected.saturating_add(1).min(maximum);
+        self.history_list_state.select(Some(self.history_selected));
     }
 
     fn selected_issue_url(&self) -> Option<&str> {
@@ -175,6 +222,15 @@ pub(crate) async fn run(
                         break Err(CliError::ReportCancelled);
                     }
                     match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc if model.history_open => {
+                            model.close_history();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') if model.history_open => {
+                            model.scroll_history_up();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') if model.history_open => {
+                            model.scroll_history_down();
+                        }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             break Ok(model.completed_report());
                         }
@@ -199,6 +255,7 @@ pub(crate) async fn run(
                                 );
                             }
                         }
+                        KeyCode::Char('h') => model.open_history(),
                         _ => {}
                     }
                 }
@@ -237,6 +294,46 @@ fn render(frame: &mut Frame<'_>, model: &mut DiffModel) {
     render_table(frame, table, model);
     render_details(frame, details, model);
     render_footer(frame, footer, model);
+    if model.history_open {
+        render_history(frame, model);
+    }
+}
+
+fn render_history(frame: &mut Frame<'_>, model: &mut DiffModel) {
+    let Some(report) = model
+        .rows
+        .get(model.selected)
+        .and_then(|row| row.report.as_ref())
+    else {
+        return;
+    };
+    let outer = frame.area();
+    let width = outer.width.saturating_sub(8).clamp(20, 90);
+    let height = outer.height.saturating_sub(6).clamp(8, 24);
+    let area = Rect::new(
+        outer.x + outer.width.saturating_sub(width) / 2,
+        outer.y + outer.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let items = report
+        .commit_messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{:>3}. ", index + 1), Palette::muted()),
+                Span::raw(terminal_text::escape(message)),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let title = format!(" Git history · {} ", terminal_text::escape(&report.branch));
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Palette::action_focus())
+        .highlight_symbol("› ");
+    frame.render_widget(Clear, area);
+    frame.render_stateful_widget(list, area, &mut model.history_list_state);
 }
 
 fn render_title(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
@@ -418,6 +515,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
             Span::raw(" open Jira   "),
             Span::styled("q", Palette::primary()),
             Span::raw(" close"),
+            Span::styled("h", Palette::primary()),
+            Span::raw(" git history   "),
         ])
     };
     frame.render_widget(Paragraph::new(help), area);
@@ -463,6 +562,7 @@ mod tests {
             last: "2024-01-02".to_owned(),
             ahead: 2,
             last_author: "Pat".to_owned(),
+            commit_messages: vec!["Add login".to_owned(), "Add login tests".to_owned()],
             jira: JiraIssueState::Loaded(graduate::promotion::JiraIssueSummary {
                 key: "PROJ-123".to_owned(),
                 api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
@@ -480,6 +580,37 @@ mod tests {
         assert!(rendered.contains("Ready for QA"));
         assert!(rendered.contains("Add login"));
         assert!(rendered.contains("Fix versions: 1.2"));
+        Ok(())
+    }
+
+    #[test]
+    fn history_list_scrolls_to_any_number_of_commits() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = DiffModel::new();
+        model.apply(DiffUpdate::Skeleton {
+            environment: "qa".to_owned(),
+            main: "main".to_owned(),
+            branches: vec!["feature/PROJ-123-login".to_owned()],
+        })?;
+        model.apply(DiffUpdate::Measured(PromotionBranch {
+            branch: "feature/PROJ-123-login".to_owned(),
+            started: "2024-01-01".to_owned(),
+            last: "2024-01-02".to_owned(),
+            ahead: 50,
+            last_author: "Pat".to_owned(),
+            commit_messages: (1..=50).map(|index| format!("Commit {index}")).collect(),
+            jira: JiraIssueState::NoTicket,
+        }))?;
+        model.open_history();
+        for _ in 1..50 {
+            model.scroll_history_down();
+        }
+        let mut terminal = Terminal::new(TestBackend::new(110, 28))?;
+
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let rendered = terminal.backend().to_string();
+
+        assert_eq!(model.history_selected, 49);
+        assert!(rendered.contains("Commit 50"));
         Ok(())
     }
 

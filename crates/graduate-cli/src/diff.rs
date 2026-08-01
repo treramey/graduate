@@ -320,6 +320,7 @@ fn measure_branch(
     let last = unix_date(author_time.seconds);
     let last_author = author.name.to_str_lossy().into_owned();
     let mut unique = HashSet::new();
+    let mut commits = Vec::new();
     let mut pending = VecDeque::from([tip]);
     let mut started_seconds = author_time.seconds;
     while let Some(id) = pending.pop_front() {
@@ -328,16 +329,27 @@ fn measure_branch(
         }
         let commit = repository.find_commit(id).map_err(gitoxide_error)?;
         let commit_author = commit.author().map_err(gitoxide_error)?;
-        started_seconds =
-            started_seconds.min(commit_author.time().map_err(gitoxide_error)?.seconds);
+        let committed_at = commit_author.time().map_err(gitoxide_error)?.seconds;
+        started_seconds = started_seconds.min(committed_at);
+        let message = commit.message_raw().map_err(gitoxide_error)?;
+        let subject = message
+            .to_str_lossy()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        commits.push((committed_at, subject));
         pending.extend(commit.parent_ids().map(|parent| parent.detach()));
     }
+    commits.sort_by_key(|commit| std::cmp::Reverse(commit.0));
     Ok(PromotionBranch {
         branch,
         started: unix_date(started_seconds),
         last,
         ahead: unique.len(),
         last_author,
+        commit_messages: commits.into_iter().map(|(_, message)| message).collect(),
         jira,
     })
 }
@@ -855,6 +867,7 @@ mod tests {
                 last: "2024-01-02".to_owned(),
                 ahead: 2,
                 last_author: "Pat".to_owned(),
+                commit_messages: Vec::new(),
                 jira: JiraIssueState::Failed {
                     key: "PROJ-123".to_owned(),
                     message: "request timed out".to_owned(),
@@ -951,6 +964,7 @@ mod tests {
                 last: "2024-01-02".to_owned(),
                 ahead: 2,
                 last_author: "Pat".to_owned(),
+                commit_messages: Vec::new(),
                 jira: JiraIssueState::Loaded(graduate::promotion::JiraIssueSummary {
                     key: "PROJ-123".to_owned(),
                     api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
@@ -1092,10 +1106,12 @@ mod tests {
                 branch,
                 ahead: 1,
                 started,
+                commit_messages,
                 jira: JiraIssueState::NotConfigured { key },
                 ..
             })) if branch == "feature/PROJ-123-login"
                 && started == "2024-02-01"
+                && commit_messages == &["feature"]
                 && key == "PROJ-123"
         ));
         Ok(())

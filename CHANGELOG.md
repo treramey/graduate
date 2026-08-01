@@ -35,6 +35,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Added an `h` shortcut to the interactive promotion report for viewing the
+  selected branch's Git history ahead of the resolved main branch.
 - Added `gd diff <environment>`, a streaming promotion report for feature
   branches that reached an environment but not main, with Jira enrichment,
   ticket opening, API-native JSON/table/YAML/CSV output, safe file export, and
