@@ -959,10 +959,11 @@ mod tests {
     fn artifact_replacement_rolls_back_prior_outputs_when_commit_fails(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let staging = directory.path().join("staging");
+        let current = directory.path().canonicalize()?;
+        let staging = current.join("staging");
         fs::create_dir(&staging)?;
-        let first_destination = directory.path().join("first");
-        let second_destination = directory.path().join("second");
+        let first_destination = current.join("first");
+        let second_destination = current.join("second");
         let first_staged = staging.join("first");
         fs::write(&first_destination, "old first")?;
         fs::write(&second_destination, "old second")?;
@@ -978,7 +979,7 @@ mod tests {
             },
         ];
 
-        assert!(replace_artifacts(directory.path(), &staging, &artifacts, true).is_err());
+        assert!(replace_artifacts(&current, &staging, &artifacts, true).is_err());
         assert_eq!(fs::read_to_string(first_destination)?, "old first");
         assert_eq!(fs::read_to_string(second_destination)?, "old second");
         Ok(())
@@ -987,10 +988,11 @@ mod tests {
     #[test]
     fn no_force_policy_is_rechecked_during_replacement() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let staging = directory.path().join("staging");
+        let current = directory.path().canonicalize()?;
+        let staging = current.join("staging");
         fs::create_dir(&staging)?;
-        let first_destination = directory.path().join("first");
-        let second_destination = directory.path().join("second");
+        let first_destination = current.join("first");
+        let second_destination = current.join("second");
         let first_staged = staging.join("first");
         let second_staged = staging.join("second");
         fs::write(&first_staged, "new first")?;
@@ -1007,7 +1009,7 @@ mod tests {
             },
         ];
 
-        let result = replace_artifacts(directory.path(), &staging, &artifacts, false);
+        let result = replace_artifacts(&current, &staging, &artifacts, false);
 
         assert!(
             matches!(result, Err(CliError::GeneratedFileExists(path)) if path == second_destination)
@@ -1021,16 +1023,13 @@ mod tests {
     fn forced_replacement_restores_a_destination_that_changed_after_validation(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let destination = directory.path().join("generated");
-        let backup = directory.path().join("backup");
+        let current = directory.path().canonicalize()?;
+        let destination = current.join("generated");
+        let backup = current.join("backup");
         fs::write(&destination, "concurrent edit")?;
 
-        let result = backup_validated_destination(
-            directory.path(),
-            &destination,
-            &backup,
-            b"validated content",
-        );
+        let result =
+            backup_validated_destination(&current, &destination, &backup, b"validated content");
 
         assert!(
             matches!(result, Err(CliError::Config(message)) if message.contains("changed during publication"))
@@ -1044,13 +1043,12 @@ mod tests {
     fn interrupted_publication_is_rolled_back_from_its_manifest(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let staging = directory
-            .path()
-            .join(format!("{STAGING_PREFIX}interrupted"));
+        let current = directory.path().canonicalize()?;
+        let staging = current.join(format!("{STAGING_PREFIX}interrupted"));
         let backup = staging.join("backups/0");
         fs::create_dir_all(backup.parent().ok_or("backup has no parent")?)?;
         let destination_relative = PathBuf::from("skills/graduate/SKILL.md");
-        let destination = directory.path().join(&destination_relative);
+        let destination = current.join(&destination_relative);
         fs::create_dir_all(destination.parent().ok_or("destination has no parent")?)?;
         fs::write(&destination, "new skill")?;
         fs::write(&backup, "old skill")?;
@@ -1073,7 +1071,7 @@ mod tests {
             content: "new skill",
         }];
 
-        recover_pending_publications(directory.path(), &files)?;
+        recover_pending_publications(&current, &files)?;
 
         assert_eq!(fs::read_to_string(destination)?, "old skill");
         assert!(!staging.exists());
