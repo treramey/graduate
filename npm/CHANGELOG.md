@@ -1,5 +1,20 @@
 # @treramey/graduate
 
+## 1.1.0
+
+### Minor Changes
+
+- 99b3f9f: Add a Git history modal to interactive promotion reports.
+
+### Patch Changes
+
+- baa1b98: Add compact Graduate artwork, balanced spacing, and an adjacent version to the terminal header.
+- 2dcadb0: Harden promotion report streaming and exports, and recover interrupted Agent Skill publication.
+- 0ffadf5: Keep promotion-list navigation moving smoothly through a scrolled viewport and
+  clear stale Jira ticket warnings when selecting another branch. Raise ticket
+  details and add space between them and the branch table.
+- baa1b98: Add cursor movement and Unicode-aware editing to interactive Jira setup fields.
+
 ## 1.0.0
 
 ### Major Changes
