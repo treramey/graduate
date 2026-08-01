@@ -1327,6 +1327,8 @@ mod tests {
 
     use super::*;
 
+    use crate::theme::GRADUATE_ART;
+
     const TEST_WIDTH: u16 = 100;
     const TEST_HEIGHT: u16 = 30;
 
@@ -1391,7 +1393,7 @@ mod tests {
             &model(OnboardingScreen::JiraDetails),
         )?;
 
-        assert!(rendered.contains("█▀▀  █▀█  ▄▀█  █▀▄  █ █  ▄▀█  ▀█▀  █▀▀"));
+        assert!(rendered.contains(GRADUATE_ART[0]));
         assert!(rendered.contains("● Jira account ─── ○ Review & save"));
         assert!(rendered.contains("› Jira site"));
         assert!(rendered.contains("Atlassian email"));
@@ -1513,7 +1515,7 @@ mod tests {
         let rendered = render_text(78, 47, &model(OnboardingScreen::JiraDetails))?;
 
         assert!(!rendered.contains("Terminal too small"));
-        assert!(rendered.contains("█▀▀  █▀█  ▄▀█  █▀▄  █ █  ▄▀█  ▀█▀  █▀▀"));
+        assert!(rendered.contains(GRADUATE_ART[0]));
         assert!(rendered.contains("Connect your Jira account"));
         assert!(rendered.contains("Atlassian email"));
         Ok(())
