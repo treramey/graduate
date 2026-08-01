@@ -1,5 +1,22 @@
 # @treramey/graduate
 
+## 1.1.1
+
+### Patch Changes
+
+- e5b4d81: Present promotion Git history in a content-adaptive sheet with explicit comparison context, commit metadata, and local controls.
+- e5b4d81: Left-align promotion table headings and the selected-branch card.
+- e5b4d81: Move selected-branch details above the promotion table and present them in a balanced two-column card that separates Jira status from branch metadata.
+- e5b4d81: Remove the unnecessary authentication-window notice before interactive `gd diff` fetches.
+- e5b4d81: Show Jira issue lookups that return HTTP 404 with a `not found` status.
+- e5b4d81: Open the promotion-report interface before fetching remote branches.
+- e5b4d81: Use a compact master-detail layout when interactive promotion reports have
+  limited vertical space, hide the brand artwork, and prioritize available rows
+  for selected-branch metadata while right-aligning the report summary and
+  omitting its redundant heading. Pair the compact summary with a small Graduate
+  wordmark and remove vertical inspector padding before clipping metadata.
+  Use the branch name as the compact inspector title.
+
 ## 1.1.0
 
 ### Minor Changes
