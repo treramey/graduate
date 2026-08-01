@@ -33,6 +33,10 @@ impl Palette {
         Style::new().fg(MUTED_COLOR)
     }
 
+    pub(crate) const fn overlay() -> Style {
+        Style::new().bg(Color::Black)
+    }
+
     pub(crate) const fn focus() -> Style {
         Self::primary()
     }
