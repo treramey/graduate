@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "graduate"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "thiserror",
  "url",
@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "graduate-cli"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "assert_cmd",
  "atomicwrites",
