@@ -11,9 +11,14 @@ pub(crate) const PRIMARY_COLOR: Color = Color::Cyan;
 pub(crate) const MUTED_COLOR: Color = Color::DarkGray;
 pub(crate) const SUCCESS_COLOR: Color = Color::Green;
 pub(crate) const MAX_CONTENT_WIDTH: u16 = 115;
-pub(crate) const GRADUATE_ART: [&str; 2] = [
-    "█▀▀  █▀█  ▄▀█  █▀▄  █ █  ▄▀█  ▀█▀  █▀▀",
-    "█▄█  █▀▄  █▀█  █▄▀  █▄█  █▀█   █   █▄▄",
+pub(crate) const GRADUATE_ART_HEIGHT: u16 = 6;
+pub(crate) const GRADUATE_ART: [&str; GRADUATE_ART_HEIGHT as usize] = [
+    " ██████╗ ██████╗  █████╗ ██████╗ ██╗   ██╗ █████╗ ████████╗███████╗",
+    "██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██║   ██║██╔══██╗╚══██╔══╝██╔════╝",
+    "██║  ███╗██████╔╝███████║██║  ██║██║   ██║███████║   ██║   █████╗",
+    "██║   ██║██╔══██╗██╔══██║██║  ██║██║   ██║██╔══██║   ██║   ██╔══╝",
+    "╚██████╔╝██║  ██║██║  ██║██████╔╝╚██████╔╝██║  ██║   ██║   ███████╗",
+    " ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝  ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝",
 ];
 
 pub(crate) struct Palette;
