@@ -317,10 +317,11 @@ fn draw(terminal: &mut StderrTerminal, model: &mut DiffModel) -> Result<(), CliE
 
 fn render(frame: &mut Frame<'_>, model: &mut DiffModel) {
     let area = theme::constrain_content_width(frame.area());
-    let [_top_padding, header, title, table, _details_padding, details, footer] =
+    let [_top_padding, header, _header_padding, title, table, _details_padding, details, footer] =
         Layout::vertical([
             Constraint::Length(2),
             Constraint::Length(theme::GRADUATE_ART_HEIGHT),
+            Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Fill(1),
             Constraint::Length(1),

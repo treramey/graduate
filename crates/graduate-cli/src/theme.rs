@@ -11,14 +11,11 @@ pub(crate) const PRIMARY_COLOR: Color = Color::Cyan;
 pub(crate) const MUTED_COLOR: Color = Color::DarkGray;
 pub(crate) const SUCCESS_COLOR: Color = Color::Green;
 pub(crate) const MAX_CONTENT_WIDTH: u16 = 115;
-pub(crate) const GRADUATE_ART_HEIGHT: u16 = 6;
+pub(crate) const GRADUATE_ART_HEIGHT: u16 = 3;
 pub(crate) const GRADUATE_ART: [&str; GRADUATE_ART_HEIGHT as usize] = [
-    " ██████╗ ██████╗  █████╗ ██████╗ ██╗   ██╗ █████╗ ████████╗███████╗",
-    "██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██║   ██║██╔══██╗╚══██╔══╝██╔════╝",
-    "██║  ███╗██████╔╝███████║██║  ██║██║   ██║███████║   ██║   █████╗",
-    "██║   ██║██╔══██╗██╔══██║██║  ██║██║   ██║██╔══██║   ██║   ██╔══╝",
-    "╚██████╔╝██║  ██║██║  ██║██████╔╝╚██████╔╝██║  ██║   ██║   ███████╗",
-    " ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝  ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝",
+    "█▀▀░█▀▄░█▀█░█▀▄░█░█░█▀█░▀█▀░█▀▀",
+    "█░█░█▀▄░█▀█░█░█░█░█░█▀█░░█░░█▀▀",
+    "▀▀▀░▀░▀░▀░▀░▀▀░░▀▀▀░▀░▀░░▀░░▀▀▀",
 ];
 
 pub(crate) struct Palette;
@@ -80,14 +77,10 @@ pub(crate) fn render_brand_header(frame: &mut Frame<'_>, area: Rect) {
     if area.width < logo_width.saturating_add(version_width).saturating_add(1) {
         return;
     }
+    let version_x = area.x.saturating_add(logo_width).saturating_add(1);
     frame.render_widget(
         Paragraph::new(version).style(Palette::muted()),
-        Rect::new(
-            area.right().saturating_sub(version_width),
-            area.y,
-            version_width,
-            1,
-        ),
+        Rect::new(version_x, area.bottom().saturating_sub(1), version_width, 1),
     );
 }
 

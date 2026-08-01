@@ -2,4 +2,4 @@
 "@treramey/graduate": patch
 ---
 
-Expand the terminal header with Latin and Japanese Graduate artwork.
+Add compact Graduate artwork, balanced spacing, and an adjacent version to the terminal header.

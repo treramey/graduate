@@ -6,7 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- Expanded the terminal header with Latin and Japanese Graduate artwork.
+- Added compact Graduate artwork, balanced spacing, and an adjacent version to
+  the terminal header.
 - Added cursor movement and Unicode-aware editing to Jira setup fields.
 - Kept promotion-list navigation moving smoothly through a scrolled viewport
   and cleared stale Jira ticket warnings when selecting another branch. Raised
