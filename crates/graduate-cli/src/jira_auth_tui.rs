@@ -14,6 +14,8 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::Frame;
 use tachyonfx::{fx, CellFilter, Effect, Interpolation, SimpleRng};
+use tui_input::backend::crossterm::EventHandler;
+use tui_input::{Input, InputRequest};
 
 use crate::browser::BrowserLauncher;
 use crate::error::CliError;
@@ -21,13 +23,13 @@ use crate::jira_auth::{ConnectionOutcome, OnboardingWorkflow};
 use crate::terminal::StderrTerminal;
 use crate::terminal_text;
 use crate::theme::{
-    constrain_content_width, footer_divider, render_brand_header, Palette, MAX_CONTENT_WIDTH,
-    MUTED_COLOR, PRIMARY_COLOR, SUCCESS_COLOR,
+    constrain_content_width, footer_divider, render_brand_header, Palette, GRADUATE_ART_HEIGHT,
+    MAX_CONTENT_WIDTH, MUTED_COLOR, PRIMARY_COLOR, SUCCESS_COLOR,
 };
 
 // The longest fixed login control row needs 73 cells; retain a small margin.
 const MIN_TERMINAL_WIDTH: u16 = 76;
-const MIN_TERMINAL_HEIGHT: u16 = 28;
+const MIN_TERMINAL_HEIGHT: u16 = 48;
 const MAX_FORM_WIDTH: u16 = 80;
 const SPACE_SM: u16 = 1;
 const SPACE_MD: u16 = 2;
@@ -131,10 +133,10 @@ struct OnboardingModel {
     reduced_motion: bool,
     stage: OnboardingScreen,
     focus: usize,
-    hostname: String,
-    email: String,
+    hostname: Input,
+    email: Input,
     display_name: String,
-    jira_token: String,
+    jira_token: Input,
     can_retain_jira_token: bool,
     jira_instruction: String,
     jira_url: String,
@@ -156,10 +158,10 @@ impl OnboardingModel {
             reduced_motion,
             stage: workflow.screen(),
             focus: 0,
-            hostname: workflow.hostname_default().unwrap_or_default().to_owned(),
-            email: workflow.email_default().unwrap_or_default().to_owned(),
+            hostname: workflow.hostname_default().unwrap_or_default().into(),
+            email: workflow.email_default().unwrap_or_default().into(),
             display_name: String::new(),
-            jira_token: String::new(),
+            jira_token: Input::default(),
             can_retain_jira_token: workflow.can_retain_token(),
             jira_instruction: String::new(),
             jira_url: String::new(),
@@ -181,7 +183,7 @@ impl OnboardingModel {
         match event {
             Event::Key(key) => self.handle_key(key),
             Event::Paste(value) => {
-                if self.push_to_focused_input(&value) {
+                if self.insert_into_focused_input(&value) {
                     self.input_changed();
                 }
                 Action::None
@@ -220,21 +222,16 @@ impl OnboardingModel {
                 Action::EditJira
             }
             KeyCode::Enter => self.activate_or_advance(),
-            KeyCode::Backspace => {
-                if let Some(input) = self.focused_input_mut() {
-                    if input.pop().is_some() {
-                        self.input_changed();
-                    }
-                }
-                Action::None
-            }
-            KeyCode::Char(character) if text_input_modifiers(key.modifiers) => {
-                if self.push_to_focused_input(character.encode_utf8(&mut [0; 4])) {
+            _ => {
+                let changed = self
+                    .focused_input_mut()
+                    .and_then(|input| input.handle_event(&Event::Key(key)))
+                    .is_some_and(|change| change.value);
+                if changed {
                     self.input_changed();
                 }
                 Action::None
             }
-            _ => Action::None,
         }
     }
 
@@ -256,7 +253,7 @@ impl OnboardingModel {
         self.reset_cursor_blink();
     }
 
-    fn focused_input_mut(&mut self) -> Option<&mut String> {
+    fn focused_input_mut(&mut self) -> Option<&mut Input> {
         match (self.stage, self.focus) {
             (OnboardingScreen::JiraDetails, 0) => Some(&mut self.hostname),
             (OnboardingScreen::JiraDetails, 1) => Some(&mut self.email),
@@ -265,13 +262,15 @@ impl OnboardingModel {
         }
     }
 
-    fn push_to_focused_input(&mut self, value: &str) -> bool {
+    fn insert_into_focused_input(&mut self, value: &str) -> bool {
         let Some(input) = self.focused_input_mut() else {
             return false;
         };
-        let original_length = input.len();
-        input.extend(value.chars().filter(|character| !character.is_control()));
-        input.len() != original_length
+        let mut changed = false;
+        for character in value.chars().filter(|character| !character.is_control()) {
+            changed |= input.handle(InputRequest::InsertChar(character)).is_some();
+        }
+        changed
     }
 
     fn input_changed(&mut self) {
@@ -443,7 +442,9 @@ async fn run_loop(
                     Action::None => {}
                     Action::Cancel => return Err(CliError::LoginCancelled),
                     Action::Continue => {
-                        match workflow.continue_from_details(&model.hostname, &model.email) {
+                        match workflow
+                            .continue_from_details(model.hostname.value(), model.email.value())
+                        {
                             Ok(screen) => {
                                 model.set_stage(screen);
                                 present_token_page(model, &mut workflow, browser)?;
@@ -476,14 +477,14 @@ fn back(
     workflow: &mut OnboardingWorkflow<'_>,
 ) -> Result<(), CliError> {
     if model.stage == OnboardingScreen::JiraToken {
-        model.jira_token.clear();
+        model.jira_token = Input::default();
     }
     let Some(screen) = workflow.back()? else {
         return Err(CliError::LoginCancelled);
     };
     if screen == OnboardingScreen::JiraToken {
         model.jira_status = ConnectionStatus::NotConnected;
-        model.jira_token.clear();
+        model.jira_token = Input::default();
     }
     model.set_stage(screen);
     Ok(())
@@ -495,7 +496,7 @@ fn edit_jira(
 ) -> Result<(), CliError> {
     let screen = workflow.edit_jira_details()?;
     model.jira_status = ConnectionStatus::NotConnected;
-    model.jira_token.clear();
+    model.jira_token = Input::default();
     model.set_stage(screen);
     Ok(())
 }
@@ -538,10 +539,10 @@ async fn verify_jira(
     model.pending_animation_elapsed = Duration::ZERO;
     draw(terminal, model)?;
 
-    let token = if model.jira_token.is_empty() && model.can_retain_jira_token {
+    let token = if model.jira_token.value().is_empty() && model.can_retain_jira_token {
         SecretInput::Retain
     } else {
-        SecretInput::Replace(model.jira_token.clone())
+        SecretInput::Replace(model.jira_token.value().to_owned())
     };
     let outcome = {
         let verification = workflow.connect(token);
@@ -577,7 +578,7 @@ async fn verify_jira(
         }
         Some(ConnectionOutcome::Rejected) => {
             model.jira_status = ConnectionStatus::NotConnected;
-            model.jira_token.clear();
+            model.jira_token = Input::default();
             model.focus = 0;
             model.error = Some(
                 "Could not connect to Jira: Jira rejected the site, Atlassian email, or API token."
@@ -585,7 +586,7 @@ async fn verify_jira(
             );
         }
         Some(ConnectionOutcome::Invalid(error)) => {
-            model.jira_token.clear();
+            model.jira_token = Input::default();
             model.show_validation_error(&error);
         }
         None => {
@@ -603,14 +604,14 @@ fn apply_verified_login(
     let completed = workflow.verified_login().ok_or_else(|| {
         CliError::InvalidInput("verified Jira authentication state is missing".to_owned())
     })?;
-    model.hostname = completed.credentials().site().as_str().to_owned();
-    model.email = completed.credentials().email().as_str().to_owned();
+    model.hostname = completed.credentials().site().as_str().into();
+    model.email = completed.credentials().email().as_str().into();
     model.display_name = if completed.identity().display_name().is_empty() {
         completed.credentials().email().as_str().to_owned()
     } else {
         completed.identity().display_name().to_owned()
     };
-    model.jira_token.clear();
+    model.jira_token = Input::default();
     model.can_retain_jira_token = workflow.can_retain_token();
     Ok(())
 }
@@ -651,12 +652,6 @@ fn reduced_motion_value(value: Option<&str>) -> bool {
             || value.eq_ignore_ascii_case("yes")
             || value.eq_ignore_ascii_case("on")
     })
-}
-
-fn text_input_modifiers(modifiers: KeyModifiers) -> bool {
-    matches!(modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
-        || modifiers == KeyModifiers::CONTROL | KeyModifiers::ALT
-        || modifiers == KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT
 }
 
 fn is_cancel_event(event: &Event) -> bool {
@@ -724,7 +719,7 @@ fn render(frame: &mut Frame<'_>, model: &OnboardingModel) -> Option<AnimatedArea
     }
     let [_top_padding, header, body, footer] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(5),
+        Constraint::Length(GRADUATE_ART_HEIGHT + 2),
         Constraint::Fill(1),
         Constraint::Length(2),
     ])
@@ -749,7 +744,7 @@ fn render(frame: &mut Frame<'_>, model: &OnboardingModel) -> Option<AnimatedArea
     };
     render_footer(frame, footer, model);
     Some(AnimatedAreas {
-        brand: Rect::new(header.x, header.y, header.width, 2),
+        brand: Rect::new(header.x, header.y, header.width, GRADUATE_ART_HEIGHT),
         jira_status,
         focused_input: (!model.reduced_motion && model.text_input_focused())
             .then_some(focused_input)
@@ -833,10 +828,15 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) -> 
     ]);
     frame.render_widget(
         Paragraph::new(stages),
-        Rect::new(area.x, area.y.saturating_add(3), area.width, 1),
+        Rect::new(
+            area.x,
+            area.y.saturating_add(GRADUATE_ART_HEIGHT + 1),
+            area.width,
+            1,
+        ),
     );
     let jira_width = u16::try_from("Jira account".len() + 2).unwrap_or(area.width);
-    Rect::new(area.x, area.y + 3, jira_width, 1)
+    Rect::new(area.x, area.y + GRADUATE_ART_HEIGHT + 1, jira_width, 1)
 }
 
 fn stage_span(
@@ -886,8 +886,9 @@ fn render_jira_details(frame: &mut Frame<'_>, area: Rect, model: &OnboardingMode
         frame,
         hostname,
         "Jira site",
-        &terminal_text::escape(&model.hostname),
+        &terminal_text::escape(model.hostname.value()),
         FieldPresentation {
+            cursor: model.hostname.cursor(),
             focused: model.focus == 0,
             cursor_visible: model.cursor_visible(),
             invalid: model
@@ -905,8 +906,9 @@ fn render_jira_details(frame: &mut Frame<'_>, area: Rect, model: &OnboardingMode
         frame,
         email,
         "Atlassian email",
-        &terminal_text::escape(&model.email),
+        &terminal_text::escape(model.email.value()),
         FieldPresentation {
+            cursor: model.email.cursor(),
             focused: model.focus == 1,
             cursor_visible: model.cursor_visible(),
             invalid: model
@@ -955,8 +957,9 @@ fn render_jira_token(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel)
         frame,
         token,
         "Atlassian API token",
-        &model.jira_token,
+        model.jira_token.value(),
         FieldPresentation {
+            cursor: model.jira_token.cursor(),
             focused: model.focus == 0,
             cursor_visible: model.cursor_visible(),
             masked: true,
@@ -1030,8 +1033,8 @@ fn render_save(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) {
         constrain_width_left(manifest, MAX_FORM_WIDTH),
         "JIRA",
         vec![
-            detail_line("Site", &terminal_text::escape(&model.hostname)),
-            detail_line("Account", &terminal_text::escape(&model.email)),
+            detail_line("Site", &terminal_text::escape(model.hostname.value())),
+            detail_line("Account", &terminal_text::escape(model.email.value())),
             detail_line("Identity", &terminal_text::escape(&model.display_name)),
             edit_line("J", "Edit Jira account"),
         ],
@@ -1085,6 +1088,7 @@ fn edit_line(shortcut: &'static str, label: &'static str) -> Line<'static> {
 struct FieldPresentation {
     focused: bool,
     cursor_visible: bool,
+    cursor: usize,
     masked: bool,
     can_retain_secret: bool,
     invalid: bool,
@@ -1100,6 +1104,7 @@ fn render_field(
     let FieldPresentation {
         focused,
         cursor_visible,
+        cursor,
         masked,
         can_retain_secret,
         invalid,
@@ -1137,10 +1142,7 @@ fn render_field(
     );
 
     if focused && cursor_visible && area.width > 2 && !retained {
-        let cursor_offset = display
-            .chars()
-            .count()
-            .min(usize::from(area.width.saturating_sub(3))) as u16;
+        let cursor_offset = cursor.min(usize::from(area.width.saturating_sub(3))) as u16;
         if let Some(cell) = frame
             .buffer_mut()
             .cell_mut(Position::new(area.x + 1 + cursor_offset, area.y + 1))
@@ -1325,12 +1327,12 @@ mod tests {
     use ratatui::style::Modifier;
     use ratatui::Terminal;
 
-    use super::*;
-
     use crate::theme::GRADUATE_ART;
 
+    use super::*;
+
     const TEST_WIDTH: u16 = 100;
-    const TEST_HEIGHT: u16 = 30;
+    const TEST_HEIGHT: u16 = 50;
 
     const fn inactive_animation() -> BufferAnimation {
         BufferAnimation {
@@ -1349,10 +1351,10 @@ mod tests {
             reduced_motion: true,
             stage,
             focus: 0,
-            hostname: "company.atlassian.net".to_owned(),
-            email: "person@example.com".to_owned(),
+            hostname: "company.atlassian.net".into(),
+            email: "person@example.com".into(),
             display_name: "Example Person".to_owned(),
-            jira_token: String::new(),
+            jira_token: Input::default(),
             can_retain_jira_token: false,
             jira_instruction: "Create or manage your Atlassian API token:".to_owned(),
             jira_url: "https://id.atlassian.com/manage-profile/security/api-tokens".to_owned(),
@@ -1428,10 +1430,21 @@ mod tests {
     }
 
     #[test]
+    fn text_input_edits_at_the_unicode_aware_cursor() {
+        let mut model = model(OnboardingScreen::JiraDetails);
+        model.hostname = "café".into();
+
+        let _ = model.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        let _ = model.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+
+        assert_eq!(model.hostname.value(), "caf!é");
+    }
+
+    #[test]
     fn token_screen_masks_input_and_renders_a_focusable_connect_button(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut model = model(OnboardingScreen::JiraToken);
-        model.jira_token = "never-render-this-secret".to_owned();
+        model.jira_token = "never-render-this-secret".into();
         model.focus = 1;
 
         let rendered = render_text(TEST_WIDTH, TEST_HEIGHT, &model)?;
@@ -1512,7 +1525,7 @@ mod tests {
     #[test]
     fn split_pane_with_78_columns_renders_the_login_form() -> Result<(), Box<dyn std::error::Error>>
     {
-        let rendered = render_text(78, 47, &model(OnboardingScreen::JiraDetails))?;
+        let rendered = render_text(78, 48, &model(OnboardingScreen::JiraDetails))?;
 
         assert!(!rendered.contains("Terminal too small"));
         assert!(rendered.contains(GRADUATE_ART[0]));

@@ -280,15 +280,17 @@ fn draw(terminal: &mut StderrTerminal, model: &mut DiffModel) -> Result<(), CliE
 
 fn render(frame: &mut Frame<'_>, model: &mut DiffModel) {
     let area = theme::constrain_content_width(frame.area());
-    let [_top_padding, header, title, table, details, footer] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Fill(1),
-        Constraint::Length(7),
-        Constraint::Length(2),
-    ])
-    .areas(area);
+    let [_top_padding, header, title, table, _details_padding, details, footer] =
+        Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Length(theme::GRADUATE_ART_HEIGHT),
+            Constraint::Length(3),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(7),
+            Constraint::Length(3),
+        ])
+        .areas(area);
     theme::render_brand_header(frame, header);
     render_title(frame, title, model);
     render_table(frame, table, model);
@@ -513,10 +515,10 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
             Span::raw(" move   "),
             Span::styled("o", Palette::primary()),
             Span::raw(" open Jira   "),
-            Span::styled("q", Palette::primary()),
-            Span::raw(" close"),
             Span::styled("h", Palette::primary()),
             Span::raw(" git history   "),
+            Span::styled("q", Palette::primary()),
+            Span::raw(" close"),
         ])
     };
     frame.render_widget(Paragraph::new(help), area);
@@ -538,7 +540,7 @@ mod tests {
             main: "main".to_owned(),
             branches: vec!["feature/PROJ-123-login".to_owned()],
         })?;
-        let mut terminal = Terminal::new(TestBackend::new(110, 28))?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
         terminal.draw(|frame| render(frame, &mut model))?;
         let rendered = terminal.backend().to_string();
 
@@ -573,7 +575,7 @@ mod tests {
                 url: "https://example.atlassian.net/browse/PROJ-123".to_owned(),
             }),
         }))?;
-        let mut terminal = Terminal::new(TestBackend::new(110, 28))?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
         terminal.draw(|frame| render(frame, &mut model))?;
         let rendered = terminal.backend().to_string();
 
@@ -604,13 +606,27 @@ mod tests {
         for _ in 1..50 {
             model.scroll_history_down();
         }
-        let mut terminal = Terminal::new(TestBackend::new(110, 28))?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
 
         terminal.draw(|frame| render(frame, &mut model))?;
         let rendered = terminal.backend().to_string();
 
         assert_eq!(model.history_selected, 49);
         assert!(rendered.contains("Commit 50"));
+        Ok(())
+    }
+
+    #[test]
+    fn details_are_raised_with_space_below_the_table() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = DiffModel::new();
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
+
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let rendered = terminal.backend().to_string();
+        let lines: Vec<_> = rendered.lines().collect();
+
+        assert!(lines[37].trim_matches(['"', ' ']).is_empty());
+        assert!(lines[38].contains("Details"), "rows: {lines:#?}");
         Ok(())
     }
 
@@ -643,7 +659,7 @@ mod tests {
             main: "main".to_owned(),
             branches: (0..20).map(|index| format!("branch-{index:02}")).collect(),
         })?;
-        let mut terminal = Terminal::new(TestBackend::new(110, 28))?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
 
         model.select(15);
         terminal.draw(|frame| render(frame, &mut model))?;

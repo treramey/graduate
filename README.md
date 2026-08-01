@@ -48,7 +48,8 @@ gd diff qa
 
 Move between branches with the arrow keys or `j`/`k`. The viewport scrolls
 smoothly with the selection, and selection-specific Jira warnings clear when
-you move to another branch.
+you move to another branch. Ticket details appear beneath the table with space
+between the two sections.
 
 Graduate fetches `origin`, discovers the remote default branch (then falls back
 to `main`, `master`, `trunk`, or `develop`), and streams alphabetically sorted
@@ -93,9 +94,10 @@ loaded into an editable field.
 
 The interactive wizard follows Drag's guided layout: boxed, focusable inputs;
 explicit Continue, Connect, and Save actions; Tab and Shift-Tab navigation; and
-a final connection manifest. Graduate omits Drag's Tempo authentication step. Set
+a final connection manifest. Text fields support cursor movement and
+Unicode-aware editing. Graduate omits Drag's Tempo authentication step. Set
 `GRADUATE_REDUCED_MOTION=1` to replace moving setup effects with short fades.
-The setup interface supports terminal panes at least 76 columns by 28 rows.
+The setup interface supports terminal panes at least 76 columns by 48 rows.
 
 For unattended setup:
 

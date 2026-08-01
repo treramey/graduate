@@ -6,8 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Expanded the terminal header with Latin and Japanese Graduate artwork.
+- Added cursor movement and Unicode-aware editing to Jira setup fields.
 - Kept promotion-list navigation moving smoothly through a scrolled viewport
-  and cleared stale Jira ticket warnings when selecting another branch.
+  and cleared stale Jira ticket warnings when selecting another branch. Raised
+  ticket details and added space between them and the branch table.
 - Hardened promotion report completion, Jira request concurrency, branch-key
   parsing, CSV error fields, main-branch fallback, and atomic report exports.
 - Added interruption recovery and mutation-boundary validation to generated
