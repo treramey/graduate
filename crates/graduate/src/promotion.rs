@@ -18,6 +18,7 @@ pub enum JiraIssueState {
     NoTicket,
     NotConfigured { key: String },
     Loading { key: String },
+    NotFound { key: String },
     Loaded(JiraIssueSummary),
     Failed { key: String, message: String },
 }
@@ -27,12 +28,22 @@ impl JiraIssueState {
     pub fn key(&self) -> Option<&str> {
         match self {
             Self::NoTicket => None,
-            Self::NotConfigured { key } | Self::Loading { key } | Self::Failed { key, .. } => {
-                Some(key)
-            }
+            Self::NotConfigured { key }
+            | Self::Loading { key }
+            | Self::NotFound { key }
+            | Self::Failed { key, .. } => Some(key),
             Self::Loaded(issue) => Some(&issue.key),
         }
     }
+}
+
+/// One commit that belongs to a promotion branch but not the main branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromotionCommit {
+    pub short_id: String,
+    pub subject: String,
+    pub author: String,
+    pub date: String,
 }
 
 /// One remote feature branch that has reached an environment but not main.
@@ -43,7 +54,7 @@ pub struct PromotionBranch {
     pub last: String,
     pub ahead: usize,
     pub last_author: String,
-    pub commit_messages: Vec<String>,
+    pub commits: Vec<PromotionCommit>,
     pub jira: JiraIssueState,
 }
 

@@ -48,19 +48,25 @@ gd diff qa
 
 Move between branches with the arrow keys or `j`/`k`. The viewport scrolls
 smoothly with the selection, and selection-specific Jira warnings clear when
-you move to another branch. Ticket details appear beneath the table with space
-between the two sections.
+you move to another branch. The default layout keeps a full-width detail card
+above the branch table. Short terminals with enough horizontal room adapt to a
+master-detail layout, placing the branch table beside a persistent inspector so
+more rows remain visible. Compact-height reports also omit the Graduate artwork
+to prioritize report content.
 
 Graduate fetches `origin`, discovers the remote default branch (then falls back
 to `main`, `master`, `trunk`, or `develop`), and streams alphabetically sorted
-rows into a terminal list. Pass `--main <branch>` for a custom main branch.
+rows into a terminal list. The interface opens before the interactive fetch and
+updates when scanning begins. Pass `--main <branch>` for a custom main branch.
 Branch names containing a Jira key such as `PROJ-123` are enriched with the
 ticket summary, status, assignee, and fix versions when Jira is configured.
-Select a row and press `o` to open its ticket.
+Missing Jira tickets show a `not found` status. Select a row and press `o` to
+open its ticket.
 
-Press `h` to open a scrollable Git history modal listing the selected branch's
-commits that are ahead of the resolved main branch; press `q` or Escape to
-close it.
+Press `h` to open a content-adaptive history sheet listing the selected
+branch's commits ahead of the resolved main branch in newest-first order. The
+sheet shows each commit's short SHA, subject, author, and date alongside its
+list position, and uses `h` or Escape to close.
 
 For machine use, Graduate follows API-native output conventions. Non-interactive
 runs emit JSON by default, with camelCase report fields and Jira issue data in

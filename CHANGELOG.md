@@ -6,6 +6,24 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Added a compact master-detail promotion layout for short terminals with
+  enough horizontal room, while keeping the full-width details-above-table
+  layout on larger screens. Compact-height reports omit the Graduate artwork
+  and return unused title and footer rows to report content before collapsing
+  decorative inspector spacing, and pair a small Graduate wordmark with a
+  right-aligned report summary and one-row margin. The compact view omits the
+  redundant `Promotion report` heading and vertical inspector padding before
+  clipping branch metadata, and uses the selected branch as the inspector title.
+- Reworked promotion Git history into a content-adaptive contextual sheet with
+  explicit base-branch, commit-count, ordering, position, SHA, author, date,
+  and local controls.
+- Moved selected-branch details above the promotion table and presented them in
+  a balanced two-column card that separates Jira status from branch metadata.
+- Open the promotion-report interface before fetching remote branches.
+- Left-aligned promotion table headings and the selected-branch card.
+- Show Jira issue lookups that return HTTP 404 with a `not found` status.
+- Removed the unnecessary authentication-window notice before interactive
+  promotion-report fetches.
 - Added compact Graduate artwork, balanced spacing, and an adjacent version to
   the terminal header.
 - Added cursor movement and Unicode-aware editing to Jira setup fields.

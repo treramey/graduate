@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use gix::bstr::ByteSlice;
 use graduate::jira::JiraCredentials;
-use graduate::promotion::{jira_key_from_branch, JiraIssueState, PromotionBranch};
+use graduate::promotion::{jira_key_from_branch, JiraIssueState, PromotionBranch, PromotionCommit};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
@@ -47,6 +47,7 @@ struct ScanOptions {
     main: Option<String>,
     remote: String,
     jira_configured: bool,
+    fetch_before_scan: bool,
 }
 
 pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliError> {
@@ -59,7 +60,7 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
         && args.output.is_none()
         && io::stdin().is_terminal()
         && io::stderr().is_terminal();
-    if !args.no_fetch {
+    if !args.no_fetch && !interactive {
         fetch_remote(&args, interactive)?;
     }
 
@@ -71,6 +72,7 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
         main: args.main.clone(),
         remote: args.remote.clone(),
         jira_configured: credentials.is_some(),
+        fetch_before_scan: !args.no_fetch && interactive,
     };
     let coordinator = tokio::spawn(coordinate_scan(scan, credentials, updates_tx));
 
@@ -99,6 +101,16 @@ async fn coordinate_scan(
     credentials: Option<JiraCredentials>,
     output: mpsc::UnboundedSender<DiffUpdate>,
 ) -> Result<(), CliError> {
+    if options.fetch_before_scan {
+        let remote = options.remote.clone();
+        let fetch_result = tokio::task::spawn_blocking(move || fetch_remote_name(&remote, true))
+            .await
+            .map_err(|error| CliError::Git(format!("Git fetch task failed: {error}")))?;
+        if let Err(error) = fetch_result {
+            let _ = output.send(DiffUpdate::Failed(error.to_string()));
+            return Err(error);
+        }
+    }
     let (scan_tx, mut scan_rx) = mpsc::unbounded_channel();
     let scan_task = tokio::task::spawn_blocking(move || scan_repository(&options, &scan_tx));
 
@@ -130,13 +142,7 @@ async fn coordinate_scan(
                 let key = key.to_owned();
                 jira_tasks.spawn(async move {
                     let result = jira.issue(&credentials, &key).await;
-                    let state = match result {
-                        Ok(issue) => JiraIssueState::Loaded(issue),
-                        Err(error) => JiraIssueState::Failed {
-                            key,
-                            message: error.to_string(),
-                        },
-                    };
+                    let state = jira_issue_state(key, result);
                     (branch, state)
                 });
             }
@@ -175,6 +181,20 @@ async fn coordinate_scan(
     }
     let _ = output.send(DiffUpdate::Finished);
     Ok(())
+}
+
+fn jira_issue_state(
+    key: String,
+    result: Result<graduate::promotion::JiraIssueSummary, CliError>,
+) -> JiraIssueState {
+    match result {
+        Ok(issue) => JiraIssueState::Loaded(issue),
+        Err(CliError::JiraStatus(404)) => JiraIssueState::NotFound { key },
+        Err(error) => JiraIssueState::Failed {
+            key,
+            message: error.to_string(),
+        },
+    }
 }
 
 fn forward_jira_result(
@@ -339,7 +359,18 @@ fn measure_branch(
             .unwrap_or_default()
             .trim()
             .to_owned();
-        commits.push((committed_at, subject));
+        let author = commit_author.name.to_str_lossy().into_owned();
+        let id = id.to_string();
+        let short_id = id.chars().take(7).collect();
+        commits.push((
+            committed_at,
+            PromotionCommit {
+                short_id,
+                subject,
+                author,
+                date: unix_date(committed_at),
+            },
+        ));
         pending.extend(commit.parent_ids().map(|parent| parent.detach()));
     }
     commits.sort_by_key(|commit| std::cmp::Reverse(commit.0));
@@ -349,7 +380,7 @@ fn measure_branch(
         last,
         ahead: unique.len(),
         last_author,
-        commit_messages: commits.into_iter().map(|(_, message)| message).collect(),
+        commits: commits.into_iter().map(|(_, commit)| commit).collect(),
         jira,
     })
 }
@@ -379,24 +410,15 @@ fn unix_date(seconds: i64) -> String {
 }
 
 fn fetch_remote(args: &DiffArgs, interactive: bool) -> Result<(), CliError> {
+    fetch_remote_name(&args.remote, interactive)
+}
+
+fn fetch_remote_name(remote: &str, interactive: bool) -> Result<(), CliError> {
     let pat = std::env::var("GIT_PAT")
         .ok()
         .filter(|value| !value.is_empty());
-    if pat.is_some() {
-        eprintln!(
-            "Contacting {} with the supplied PAT (non-interactive)…",
-            args.remote
-        );
-    } else if !interactive {
-        eprintln!(
-            "Contacting {} (unattended; cached credentials only)…",
-            args.remote
-        );
-    } else {
-        eprintln!(
-            "Contacting {}… An authentication window may open.",
-            args.remote
-        );
+    if let Some(message) = fetch_status_message(remote, pat.is_some(), interactive) {
+        eprintln!("{message}");
     }
 
     if let Some(pat) = pat {
@@ -409,7 +431,7 @@ fn fetch_remote(args: &DiffArgs, interactive: bool) -> Result<(), CliError> {
                 "credential.helper=!f() { echo username=x-access-token; echo \"password=$GIT_PAT\"; }; f",
                 "fetch",
                 "--prune",
-                &args.remote,
+                remote,
             ])
             .env("GIT_PAT", pat)
             .env("GIT_TERMINAL_PROMPT", "0")
@@ -424,7 +446,7 @@ fn fetch_remote(args: &DiffArgs, interactive: bool) -> Result<(), CliError> {
                 "credential.interactive=false",
                 "fetch",
                 "--prune",
-                &args.remote,
+                remote,
             ])
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdout(Stdio::null());
@@ -432,9 +454,23 @@ fn fetch_remote(args: &DiffArgs, interactive: bool) -> Result<(), CliError> {
     }
     let mut command = Command::new("git");
     command
-        .args(["fetch", "--prune", &args.remote])
+        .args(["fetch", "--prune", remote])
         .stdout(Stdio::null());
     check_fetch(command.status(), false, false)
+}
+
+fn fetch_status_message(remote: &str, has_pat: bool, interactive: bool) -> Option<String> {
+    if interactive {
+        None
+    } else if has_pat {
+        Some(format!(
+            "Contacting {remote} with the supplied PAT (non-interactive)…"
+        ))
+    } else {
+        Some(format!(
+            "Contacting {remote} (unattended; cached credentials only)…"
+        ))
+    }
 }
 
 fn check_fetch(
@@ -584,7 +620,9 @@ fn report_value(report: &PromotionReport) -> serde_json::Value {
                     serde_json::json!(key),
                     serde_json::json!(message),
                 ),
-                JiraIssueState::NotConfigured { key } | JiraIssueState::Loading { key } => (
+                JiraIssueState::NotConfigured { key }
+                | JiraIssueState::Loading { key }
+                | JiraIssueState::NotFound { key } => (
                     serde_json::Value::Null,
                     serde_json::json!(key),
                     serde_json::Value::Null,
@@ -634,6 +672,7 @@ fn format_table(report: &PromotionReport) -> String {
         let status = match &row.jira {
             JiraIssueState::Loaded(issue) => issue.status.as_str(),
             JiraIssueState::Failed { .. } => "error",
+            JiraIssueState::NotFound { .. } => "not found",
             JiraIssueState::NotConfigured { .. } => "not configured",
             JiraIssueState::Loading { .. } => "loading",
             JiraIssueState::NoTicket => "—",
@@ -709,6 +748,16 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
                 JiraIssueState::Loading { key } => (
                     key.clone(),
                     String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ),
+                JiraIssueState::NotFound { key } => (
+                    key.clone(),
+                    "not found".to_owned(),
                     String::new(),
                     String::new(),
                     String::new(),
@@ -843,6 +892,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn interactive_fetch_does_not_print_a_status_message() {
+        assert_eq!(fetch_status_message("origin", false, true), None);
+        assert_eq!(fetch_status_message("origin", true, true), None);
+    }
+
+    #[test]
+    fn jira_404_becomes_a_not_found_issue_state() {
+        let state = jira_issue_state("PROJ-404".to_owned(), Err(CliError::JiraStatus(404)));
+
+        assert_eq!(
+            state,
+            JiraIssueState::NotFound {
+                key: "PROJ-404".to_owned()
+            }
+        );
+    }
+
+    #[test]
     fn dates_are_formatted_without_local_timezone_drift() {
         assert_eq!(unix_date(0), "1970-01-01");
         assert_eq!(unix_date(1_704_067_200), "2024-01-01");
@@ -867,7 +934,7 @@ mod tests {
                 last: "2024-01-02".to_owned(),
                 ahead: 2,
                 last_author: "Pat".to_owned(),
-                commit_messages: Vec::new(),
+                commits: Vec::new(),
                 jira: JiraIssueState::Failed {
                     key: "PROJ-123".to_owned(),
                     message: "request timed out".to_owned(),
@@ -964,7 +1031,7 @@ mod tests {
                 last: "2024-01-02".to_owned(),
                 ahead: 2,
                 last_author: "Pat".to_owned(),
-                commit_messages: Vec::new(),
+                commits: Vec::new(),
                 jira: JiraIssueState::Loaded(graduate::promotion::JiraIssueSummary {
                     key: "PROJ-123".to_owned(),
                     api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
@@ -1089,6 +1156,7 @@ mod tests {
                 main: None,
                 remote: "origin".to_owned(),
                 jira_configured: false,
+                fetch_before_scan: false,
             },
             &sender,
         )?;
@@ -1106,12 +1174,16 @@ mod tests {
                 branch,
                 ahead: 1,
                 started,
-                commit_messages,
+                commits,
                 jira: JiraIssueState::NotConfigured { key },
                 ..
             })) if branch == "feature/PROJ-123-login"
                 && started == "2024-02-01"
-                && commit_messages == &["feature"]
+                && commits.len() == 1
+                && commits[0].subject == "feature"
+                && commits[0].author == "Test Author"
+                && commits[0].date == "2024-02-01"
+                && commits[0].short_id.len() == 7
                 && key == "PROJ-123"
         ));
         Ok(())
