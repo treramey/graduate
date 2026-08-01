@@ -56,6 +56,8 @@ jobs:
           cargo run --locked -- generate-skills --force
           git diff --exit-code -- skills/graduate docs/skills.md
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          cache-dependency-glob: .github/workflows/ci.yml
       - name: Validate generated skills
         run: |
           failed=0
