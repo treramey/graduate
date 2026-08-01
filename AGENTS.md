@@ -41,3 +41,4 @@ Use Worktrunk (`wt`) for worktree lifecycle operations instead of raw
 - Do not use `unwrap`, `expect`, `panic`, `todo`, `dbg!`, or unsafe code.
 - TUI tests must use Ratatui's `TestBackend`; they must not take over the developer's terminal.
 - Lifecycle changes must preserve terminal restoration on success and error paths.
+- If you need a paragraph-long comment to justify why the workaround is OK, the code is wrong - fix the code
