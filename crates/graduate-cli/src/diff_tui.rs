@@ -43,6 +43,30 @@ struct DiffModel {
     history_list_state: ListState,
 }
 
+enum Message {
+    Scan(Box<DiffUpdate>),
+    MoveUp,
+    MoveDown,
+    SelectFirst,
+    SelectLast,
+    OpenTicket,
+    OpenTicketFailed(String),
+    OpenHistory,
+    CloseHistory,
+    ScrollHistoryUp,
+    ScrollHistoryDown,
+    Tick,
+    Finish,
+    Cancel,
+}
+
+enum Effect {
+    None,
+    OpenUrl(String),
+    Finish,
+    Cancel,
+}
+
 impl DiffModel {
     fn new() -> Self {
         Self {
@@ -60,57 +84,6 @@ impl DiffModel {
         }
     }
 
-    fn apply(&mut self, update: DiffUpdate) -> Result<(), CliError> {
-        match update {
-            DiffUpdate::Skeleton {
-                environment,
-                main,
-                branches,
-            } => {
-                self.environment = environment;
-                self.main = main;
-                self.rows = branches
-                    .into_iter()
-                    .map(|branch| BranchRow {
-                        branch,
-                        report: None,
-                    })
-                    .collect();
-                self.selected = 0;
-                self.table_state = TableState::default()
-                    .with_selected((!self.rows.is_empty()).then_some(self.selected));
-            }
-            DiffUpdate::Measured(report) => {
-                if let Some(row) = self.rows.iter_mut().find(|row| row.branch == report.branch) {
-                    row.report = Some(report);
-                }
-            }
-            DiffUpdate::Jira { branch, state } => {
-                if let Some(report) = self
-                    .rows
-                    .iter_mut()
-                    .find(|row| row.branch == branch)
-                    .and_then(|row| row.report.as_mut())
-                {
-                    report.jira = state;
-                }
-            }
-            DiffUpdate::Finished => self.finished = true,
-            DiffUpdate::Failed(message) => return Err(CliError::Git(message)),
-        }
-        Ok(())
-    }
-
-    fn move_up(&mut self) {
-        self.select(self.selected.saturating_sub(1));
-    }
-
-    fn move_down(&mut self) {
-        if self.selected + 1 < self.rows.len() {
-            self.select(self.selected + 1);
-        }
-    }
-
     fn select(&mut self, selected: usize) {
         if selected != self.selected {
             self.selected = selected;
@@ -120,42 +93,6 @@ impl DiffModel {
             self.history_selected = 0;
             self.history_list_state = ListState::default();
         }
-    }
-
-    fn open_history(&mut self) {
-        if self
-            .rows
-            .get(self.selected)
-            .and_then(|row| row.report.as_ref())
-            .is_some()
-        {
-            self.history_open = true;
-            self.history_selected = 0;
-            self.history_list_state = ListState::default().with_selected(Some(0));
-        } else {
-            self.warning = Some("Branch history is still being measured.".to_owned());
-        }
-    }
-
-    fn close_history(&mut self) {
-        self.history_open = false;
-        self.history_selected = 0;
-        self.history_list_state = ListState::default();
-    }
-
-    fn scroll_history_up(&mut self) {
-        self.history_selected = self.history_selected.saturating_sub(1);
-        self.history_list_state.select(Some(self.history_selected));
-    }
-
-    fn scroll_history_down(&mut self) {
-        let maximum = self
-            .rows
-            .get(self.selected)
-            .and_then(|row| row.report.as_ref())
-            .map_or(0, |report| report.commit_messages.len().saturating_sub(1));
-        self.history_selected = self.history_selected.saturating_add(1).min(maximum);
-        self.history_list_state.select(Some(self.history_selected));
     }
 
     fn selected_issue_url(&self) -> Option<&str> {
@@ -172,6 +109,129 @@ impl DiffModel {
             main: self.main,
             branches: self.rows.into_iter().filter_map(|row| row.report).collect(),
         }
+    }
+}
+
+fn update(model: &mut DiffModel, message: Message) -> Result<Effect, CliError> {
+    match message {
+        Message::Scan(update) => match *update {
+            DiffUpdate::Skeleton {
+                environment,
+                main,
+                branches,
+            } => {
+                model.environment = environment;
+                model.main = main;
+                model.rows = branches
+                    .into_iter()
+                    .map(|branch| BranchRow {
+                        branch,
+                        report: None,
+                    })
+                    .collect();
+                model.selected = 0;
+                model.table_state = TableState::default()
+                    .with_selected((!model.rows.is_empty()).then_some(model.selected));
+            }
+            DiffUpdate::Measured(report) => {
+                if let Some(row) = model
+                    .rows
+                    .iter_mut()
+                    .find(|row| row.branch == report.branch)
+                {
+                    row.report = Some(report);
+                }
+            }
+            DiffUpdate::Jira { branch, state } => {
+                if let Some(report) = model
+                    .rows
+                    .iter_mut()
+                    .find(|row| row.branch == branch)
+                    .and_then(|row| row.report.as_mut())
+                {
+                    report.jira = state;
+                }
+            }
+            DiffUpdate::Finished => model.finished = true,
+            DiffUpdate::Failed(message) => return Err(CliError::Git(message)),
+        },
+        Message::MoveUp => model.select(model.selected.saturating_sub(1)),
+        Message::MoveDown if model.selected + 1 < model.rows.len() => {
+            model.select(model.selected + 1);
+        }
+        Message::MoveDown => {}
+        Message::SelectFirst => model.select(0),
+        Message::SelectLast => model.select(model.rows.len().saturating_sub(1)),
+        Message::OpenTicket => {
+            if let Some(url) = model.selected_issue_url() {
+                return Ok(Effect::OpenUrl(url.to_owned()));
+            }
+            model.warning =
+                Some("The selected branch does not have a loaded Jira ticket.".to_owned());
+        }
+        Message::OpenTicketFailed(message) => model.warning = Some(message),
+        Message::OpenHistory => {
+            if model
+                .rows
+                .get(model.selected)
+                .and_then(|row| row.report.as_ref())
+                .is_some()
+            {
+                model.history_open = true;
+                model.history_selected = 0;
+                model.history_list_state = ListState::default().with_selected(Some(0));
+            } else {
+                model.warning = Some("Branch history is still being measured.".to_owned());
+            }
+        }
+        Message::CloseHistory => {
+            model.history_open = false;
+            model.history_selected = 0;
+            model.history_list_state = ListState::default();
+        }
+        Message::ScrollHistoryUp => {
+            model.history_selected = model.history_selected.saturating_sub(1);
+            model
+                .history_list_state
+                .select(Some(model.history_selected));
+        }
+        Message::ScrollHistoryDown => {
+            let maximum = model
+                .rows
+                .get(model.selected)
+                .and_then(|row| row.report.as_ref())
+                .map_or(0, |report| report.commit_messages.len().saturating_sub(1));
+            model.history_selected = model.history_selected.saturating_add(1).min(maximum);
+            model
+                .history_list_state
+                .select(Some(model.history_selected));
+        }
+        Message::Tick if !model.finished => model.frame = model.frame.wrapping_add(1),
+        Message::Tick => {}
+        Message::Finish => return Ok(Effect::Finish),
+        Message::Cancel => return Ok(Effect::Cancel),
+    }
+    Ok(Effect::None)
+}
+
+fn message_for_key(model: &DiffModel, code: KeyCode, modifiers: KeyModifiers) -> Option<Message> {
+    if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
+        return Some(Message::Cancel);
+    }
+    match code {
+        KeyCode::Char('q') | KeyCode::Esc if model.history_open => Some(Message::CloseHistory),
+        KeyCode::Up | KeyCode::Char('k') if model.history_open => Some(Message::ScrollHistoryUp),
+        KeyCode::Down | KeyCode::Char('j') if model.history_open => {
+            Some(Message::ScrollHistoryDown)
+        }
+        KeyCode::Char('q') | KeyCode::Esc => Some(Message::Finish),
+        KeyCode::Up | KeyCode::Char('k') => Some(Message::MoveUp),
+        KeyCode::Down | KeyCode::Char('j') => Some(Message::MoveDown),
+        KeyCode::Home => Some(Message::SelectFirst),
+        KeyCode::End => Some(Message::SelectLast),
+        KeyCode::Char('o') => Some(Message::OpenTicket),
+        KeyCode::Char('h') => Some(Message::OpenHistory),
+        _ => None,
     }
 }
 
@@ -199,9 +259,9 @@ pub(crate) async fn run(
     let result = loop {
         draw(&mut terminal, &mut model)?;
         tokio::select! {
-            update = updates.recv(), if updates_open => match update {
-                Some(update) => {
-                    model.apply(update)?;
+            received = updates.recv(), if updates_open => match received {
+                Some(scan_update) => {
+                    update(&mut model, Message::Scan(Box::new(scan_update)))?;
                     if model.finished {
                         updates_open = false;
                     }
@@ -216,52 +276,29 @@ pub(crate) async fn run(
                     if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                         continue;
                     }
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('c')
-                    {
-                        break Err(CliError::ReportCancelled);
-                    }
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc if model.history_open => {
-                            model.close_history();
-                        }
-                        KeyCode::Up | KeyCode::Char('k') if model.history_open => {
-                            model.scroll_history_up();
-                        }
-                        KeyCode::Down | KeyCode::Char('j') if model.history_open => {
-                            model.scroll_history_down();
-                        }
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            break Ok(model.completed_report());
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => model.move_up(),
-                        KeyCode::Down | KeyCode::Char('j') => model.move_down(),
-                        KeyCode::Home => model.select(0),
-                        KeyCode::End => {
-                            model.select(model.rows.len().saturating_sub(1));
-                        }
-                        KeyCode::Char('o') => {
-                            if let Some(url) = model.selected_issue_url() {
-                                if let Err(error) = browser.open(url) {
-                                    model.warning = Some(format!(
+                    let Some(message) = message_for_key(&model, key.code, key.modifiers) else {
+                        continue;
+                    };
+                    match update(&mut model, message)? {
+                        Effect::None => {}
+                        Effect::OpenUrl(url) => {
+                            if let Err(error) = browser.open(&url) {
+                                update(
+                                    &mut model,
+                                    Message::OpenTicketFailed(format!(
                                         "Could not open Jira: {}",
                                         terminal_text::escape(&error.to_string())
-                                    ));
-                                }
-                            } else {
-                                model.warning = Some(
-                                    "The selected branch does not have a loaded Jira ticket."
-                                        .to_owned(),
-                                );
+                                    )),
+                                )?;
                             }
                         }
-                        KeyCode::Char('h') => model.open_history(),
-                        _ => {}
+                        Effect::Finish => break Ok(model.completed_report()),
+                        Effect::Cancel => break Err(CliError::ReportCancelled),
                     }
                 }
             },
             _ = ticker.tick(), if !model.finished => {
-                model.frame = model.frame.wrapping_add(1);
+                update(&mut model, Message::Tick)?;
             }
         }
     };
@@ -535,11 +572,14 @@ mod tests {
     fn renders_skeleton_rows_before_measurements_finish() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut model = DiffModel::new();
-        model.apply(DiffUpdate::Skeleton {
-            environment: "qa".to_owned(),
-            main: "main".to_owned(),
-            branches: vec!["feature/PROJ-123-login".to_owned()],
-        })?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec!["feature/PROJ-123-login".to_owned()],
+            })),
+        )?;
         let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
         terminal.draw(|frame| render(frame, &mut model))?;
         let rendered = terminal.backend().to_string();
@@ -553,28 +593,34 @@ mod tests {
     #[test]
     fn loaded_jira_details_are_visible() -> Result<(), Box<dyn std::error::Error>> {
         let mut model = DiffModel::new();
-        model.apply(DiffUpdate::Skeleton {
-            environment: "qa".to_owned(),
-            main: "main".to_owned(),
-            branches: vec!["feature/PROJ-123-login".to_owned()],
-        })?;
-        model.apply(DiffUpdate::Measured(PromotionBranch {
-            branch: "feature/PROJ-123-login".to_owned(),
-            started: "2024-01-01".to_owned(),
-            last: "2024-01-02".to_owned(),
-            ahead: 2,
-            last_author: "Pat".to_owned(),
-            commit_messages: vec!["Add login".to_owned(), "Add login tests".to_owned()],
-            jira: JiraIssueState::Loaded(graduate::promotion::JiraIssueSummary {
-                key: "PROJ-123".to_owned(),
-                api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
-                summary: "Add login".to_owned(),
-                status: "Ready for QA".to_owned(),
-                assignee: Some("Pat".to_owned()),
-                fix_versions: vec!["1.2".to_owned()],
-                url: "https://example.atlassian.net/browse/PROJ-123".to_owned(),
-            }),
-        }))?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec!["feature/PROJ-123-login".to_owned()],
+            })),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Measured(PromotionBranch {
+                branch: "feature/PROJ-123-login".to_owned(),
+                started: "2024-01-01".to_owned(),
+                last: "2024-01-02".to_owned(),
+                ahead: 2,
+                last_author: "Pat".to_owned(),
+                commit_messages: vec!["Add login".to_owned(), "Add login tests".to_owned()],
+                jira: JiraIssueState::Loaded(graduate::promotion::JiraIssueSummary {
+                    key: "PROJ-123".to_owned(),
+                    api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
+                    summary: "Add login".to_owned(),
+                    status: "Ready for QA".to_owned(),
+                    assignee: Some("Pat".to_owned()),
+                    fix_versions: vec!["1.2".to_owned()],
+                    url: "https://example.atlassian.net/browse/PROJ-123".to_owned(),
+                }),
+            }))),
+        )?;
         let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
         terminal.draw(|frame| render(frame, &mut model))?;
         let rendered = terminal.backend().to_string();
@@ -588,23 +634,29 @@ mod tests {
     #[test]
     fn history_list_scrolls_to_any_number_of_commits() -> Result<(), Box<dyn std::error::Error>> {
         let mut model = DiffModel::new();
-        model.apply(DiffUpdate::Skeleton {
-            environment: "qa".to_owned(),
-            main: "main".to_owned(),
-            branches: vec!["feature/PROJ-123-login".to_owned()],
-        })?;
-        model.apply(DiffUpdate::Measured(PromotionBranch {
-            branch: "feature/PROJ-123-login".to_owned(),
-            started: "2024-01-01".to_owned(),
-            last: "2024-01-02".to_owned(),
-            ahead: 50,
-            last_author: "Pat".to_owned(),
-            commit_messages: (1..=50).map(|index| format!("Commit {index}")).collect(),
-            jira: JiraIssueState::NoTicket,
-        }))?;
-        model.open_history();
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec!["feature/PROJ-123-login".to_owned()],
+            })),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Measured(PromotionBranch {
+                branch: "feature/PROJ-123-login".to_owned(),
+                started: "2024-01-01".to_owned(),
+                last: "2024-01-02".to_owned(),
+                ahead: 50,
+                last_author: "Pat".to_owned(),
+                commit_messages: (1..=50).map(|index| format!("Commit {index}")).collect(),
+                jira: JiraIssueState::NoTicket,
+            }))),
+        )?;
+        update(&mut model, Message::OpenHistory)?;
         for _ in 1..50 {
-            model.scroll_history_down();
+            update(&mut model, Message::ScrollHistoryDown)?;
         }
         let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
 
@@ -633,17 +685,20 @@ mod tests {
     #[test]
     fn moving_to_another_branch_clears_the_open_ticket_warning() -> Result<(), CliError> {
         let mut model = DiffModel::new();
-        model.apply(DiffUpdate::Skeleton {
-            environment: "qa".to_owned(),
-            main: "main".to_owned(),
-            branches: vec![
-                "feature/no-ticket".to_owned(),
-                "feature/PROJ-123".to_owned(),
-            ],
-        })?;
-        model.warning = Some("The selected branch does not have a loaded Jira ticket.".to_owned());
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec![
+                    "feature/no-ticket".to_owned(),
+                    "feature/PROJ-123".to_owned(),
+                ],
+            })),
+        )?;
+        update(&mut model, Message::OpenTicket)?;
 
-        model.move_down();
+        update(&mut model, Message::MoveDown)?;
 
         assert_eq!(model.selected, 1);
         assert!(model.warning.is_none());
@@ -654,17 +709,23 @@ mod tests {
     fn moving_up_after_scrolling_moves_the_selection_within_the_viewport(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut model = DiffModel::new();
-        model.apply(DiffUpdate::Skeleton {
-            environment: "qa".to_owned(),
-            main: "main".to_owned(),
-            branches: (0..20).map(|index| format!("branch-{index:02}")).collect(),
-        })?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: (0..20).map(|index| format!("branch-{index:02}")).collect(),
+            })),
+        )?;
         let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
 
-        model.select(15);
+        update(&mut model, Message::SelectLast)?;
+        for _ in 0..4 {
+            update(&mut model, Message::MoveUp)?;
+        }
         terminal.draw(|frame| render(frame, &mut model))?;
         let before = terminal.backend().to_string();
-        model.move_up();
+        update(&mut model, Message::MoveUp)?;
         terminal.draw(|frame| render(frame, &mut model))?;
         let after = terminal.backend().to_string();
 
