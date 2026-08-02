@@ -109,9 +109,14 @@ if [ "$WANTS_TUI" = 1 ]; then
       TERMINAL_COLUMNS=120
     fi
     printf -v ESCAPED_COMMAND '%q ' "${DIFF_COMMAND[@]}"
-    script -qefc \
-      "stty rows $TERMINAL_ROWS cols $TERMINAL_COLUMNS; exec $ESCAPED_COMMAND" \
-      /dev/null <&3 >&3 2>&3
+    PTY_COMMAND="stty rows $TERMINAL_ROWS cols $TERMINAL_COLUMNS; exec $ESCAPED_COMMAND"
+    if script --version >/dev/null 2>&1; then
+      # util-linux script (Linux): command is passed via -c
+      script -qefc "$PTY_COMMAND" /dev/null <&3 >&3 2>&3
+    else
+      # BSD script (macOS): command is passed as positional arguments
+      script -qe /dev/null /bin/sh -c "$PTY_COMMAND" <&3 >&3 2>&3
+    fi
   else
     printf '%s\n' \
       'Could not open the TUI because this process has no controlling terminal.' \
