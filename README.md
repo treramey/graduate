@@ -53,8 +53,8 @@ visible.
 
 Press `s` to cycle the table sort between branch name, start date, last
 activity, and ahead count; the active column heading shows the sort direction.
-Ahead counts are right-aligned, and a row repeats its Jira key only when the
-key differs from the branch name.
+Ahead counts are right-aligned, and a branch whose name carries no Jira key
+shows a muted `no ticket`.
 
 Graduate fetches `origin`, discovers the remote default branch (falling back
 to `main`, `master`, `trunk`, or `develop`), and streams alphabetically sorted

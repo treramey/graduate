@@ -732,7 +732,7 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, model: &mut DiffModel, show_j
         if show_jira {
             match &row.report {
                 Some(report) => {
-                    let (key, status) = jira_cells(&row.branch, &report.jira, flagged);
+                    let (key, status) = jira_cells(&report.jira, flagged);
                     cells.push(key);
                     cells.push(status);
                 }
@@ -878,18 +878,12 @@ fn inspector_status(selected: Option<&PromotionBranch>) -> Vec<Line<'static>> {
     }
 }
 
-fn jira_cells(
-    branch: &str,
-    state: &JiraIssueState,
-    flagged: bool,
-) -> (Cell<'static>, Cell<'static>) {
-    let key = match state.key().map(terminal_text::escape) {
-        None => "—".to_owned(),
-        Some(key) if key.eq_ignore_ascii_case(&terminal_text::escape(branch)) => String::new(),
-        Some(key) => key,
-    };
+fn jira_cells(state: &JiraIssueState, flagged: bool) -> (Cell<'static>, Cell<'static>) {
+    let key = state
+        .key()
+        .map_or_else(|| "—".to_owned(), terminal_text::escape);
     let (status, style) = match state {
-        JiraIssueState::NoTicket => ("—".to_owned(), Palette::muted()),
+        JiraIssueState::NoTicket => ("no ticket".to_owned(), Palette::muted()),
         JiraIssueState::NotConfigured { .. } => ("not configured".to_owned(), Palette::warning()),
         JiraIssueState::Loading { .. } => ("loading…".to_owned(), Palette::muted()),
         JiraIssueState::NotFound { .. } => ("not found".to_owned(), Palette::muted()),
@@ -1681,6 +1675,7 @@ mod tests {
 
         assert_eq!(started_column - branch_column, 26);
         assert!(rendered.contains("2011-01-01  2011-01-02"));
+        assert!(row_a.contains("no ticket"));
         assert_eq!(row_a.chars().nth(ahead_end), Some('3'));
         assert_eq!(row_b.chars().nth(ahead_end), Some('8'));
         Ok(())
@@ -1744,7 +1739,7 @@ mod tests {
     }
 
     #[test]
-    fn identical_jira_key_is_not_repeated_in_the_table_row(
+    fn jira_keys_stay_visible_even_when_they_match_the_branch_name(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut model = DiffModel::new();
         update(
@@ -1776,7 +1771,7 @@ mod tests {
             .find(|line| line.contains("2024-01-01"))
             .ok_or("table row was not rendered")?;
 
-        assert_eq!(row.matches("CLAIMS-9").count(), 1);
+        assert_eq!(row.matches("CLAIMS-9").count(), 2);
         assert!(row.contains("not found"));
         Ok(())
     }
