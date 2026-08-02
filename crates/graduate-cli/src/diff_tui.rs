@@ -1,5 +1,6 @@
 //! Streaming terminal list for environment promotion reports.
 
+use std::cmp::Ordering;
 use std::time::Duration;
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
@@ -34,10 +35,54 @@ struct BranchRow {
     report: Option<PromotionBranch>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SortKey {
+    Branch,
+    Started,
+    Last,
+    Ahead,
+}
+
+impl SortKey {
+    fn next(self) -> Self {
+        match self {
+            Self::Branch => Self::Started,
+            Self::Started => Self::Last,
+            Self::Last => Self::Ahead,
+            Self::Ahead => Self::Branch,
+        }
+    }
+
+    fn indicator(self) -> &'static str {
+        match self {
+            Self::Ahead => " ▼",
+            _ => " ▲",
+        }
+    }
+}
+
+fn compare_rows(sort: SortKey, a: &BranchRow, b: &BranchRow) -> Ordering {
+    let by_branch = a.branch.cmp(&b.branch);
+    match sort {
+        SortKey::Branch => by_branch,
+        SortKey::Started | SortKey::Last | SortKey::Ahead => match (&a.report, &b.report) {
+            (Some(left), Some(right)) => match sort {
+                SortKey::Started => left.started.cmp(&right.started).then(by_branch),
+                SortKey::Last => left.last.cmp(&right.last).then(by_branch),
+                _ => right.ahead.cmp(&left.ahead).then(by_branch),
+            },
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => by_branch,
+        },
+    }
+}
+
 struct DiffModel {
     environment: String,
     main: String,
     rows: Vec<BranchRow>,
+    sort: SortKey,
     selected: usize,
     table_state: TableState,
     finished: bool,
@@ -56,6 +101,7 @@ enum Message {
     SelectLast,
     OpenTicket,
     OpenTicketFailed(String),
+    CycleSort,
     OpenHistory,
     CloseHistory,
     ScrollHistoryUp,
@@ -78,6 +124,7 @@ impl DiffModel {
             environment: String::new(),
             main: String::new(),
             rows: Vec::new(),
+            sort: SortKey::Branch,
             selected: 0,
             table_state: TableState::default(),
             finished: false,
@@ -108,11 +155,25 @@ impl DiffModel {
         }
     }
 
+    fn apply_sort(&mut self) {
+        let selected_branch = self.rows.get(self.selected).map(|row| row.branch.clone());
+        self.rows.sort_by(|a, b| compare_rows(self.sort, a, b));
+        if let Some(branch) = selected_branch {
+            if let Some(position) = self.rows.iter().position(|row| row.branch == branch) {
+                self.selected = position;
+                self.table_state.select(Some(position));
+            }
+        }
+    }
+
     fn completed_report(self) -> PromotionReport {
+        let mut branches: Vec<PromotionBranch> =
+            self.rows.into_iter().filter_map(|row| row.report).collect();
+        branches.sort_by(|a, b| a.branch.cmp(&b.branch));
         PromotionReport {
             environment: self.environment,
             main: self.main,
-            branches: self.rows.into_iter().filter_map(|row| row.report).collect(),
+            branches,
         }
     }
 }
@@ -146,6 +207,9 @@ fn update(model: &mut DiffModel, message: Message) -> Result<Effect, CliError> {
                 {
                     row.report = Some(report);
                 }
+                if model.sort != SortKey::Branch {
+                    model.apply_sort();
+                }
             }
             DiffUpdate::Jira { branch, state } => {
                 if let Some(report) = model
@@ -175,6 +239,10 @@ fn update(model: &mut DiffModel, message: Message) -> Result<Effect, CliError> {
                 Some("The selected branch does not have a loaded Jira ticket.".to_owned());
         }
         Message::OpenTicketFailed(message) => model.warning = Some(message),
+        Message::CycleSort => {
+            model.sort = model.sort.next();
+            model.apply_sort();
+        }
         Message::OpenHistory => {
             if model
                 .rows
@@ -186,7 +254,7 @@ fn update(model: &mut DiffModel, message: Message) -> Result<Effect, CliError> {
                 model.history_selected = 0;
                 model.history_list_state = TableState::default().with_selected(Some(0));
             } else {
-                model.warning = Some("Branch history is still being measured.".to_owned());
+                model.warning = Some("Measuring branch history…".to_owned());
             }
         }
         Message::CloseHistory => {
@@ -237,6 +305,7 @@ fn message_for_key(model: &DiffModel, code: KeyCode, modifiers: KeyModifiers) ->
         KeyCode::Home => Some(Message::SelectFirst),
         KeyCode::End => Some(Message::SelectLast),
         KeyCode::Char('o') => Some(Message::OpenTicket),
+        KeyCode::Char('s') if !model.history_open => Some(Message::CycleSort),
         KeyCode::Char('h') => Some(Message::OpenHistory),
         _ => None,
     }
@@ -598,77 +667,123 @@ fn render_title(frame: &mut Frame<'_>, area: Rect, model: &DiffModel, center_sum
 }
 
 fn render_table(frame: &mut Frame<'_>, area: Rect, model: &mut DiffModel, show_jira: bool) {
-    let labels = if show_jira {
-        vec!["BRANCH", "STARTED", "LAST", "AHEAD", "JIRA", "STATUS"]
-    } else {
-        vec!["BRANCH", "STARTED", "LAST", "AHEAD"]
+    let sort_label = |label: &str, key: SortKey| {
+        if model.sort == key {
+            format!("{label}{}", key.indicator())
+        } else {
+            label.to_owned()
+        }
     };
+    let mut labels = vec![
+        (
+            sort_label("BRANCH", SortKey::Branch),
+            HorizontalAlignment::Left,
+        ),
+        (
+            sort_label("STARTED", SortKey::Started),
+            HorizontalAlignment::Left,
+        ),
+        (sort_label("LAST", SortKey::Last), HorizontalAlignment::Left),
+        (
+            sort_label("AHEAD", SortKey::Ahead),
+            HorizontalAlignment::Right,
+        ),
+    ];
+    if show_jira {
+        labels.push(("JIRA".to_owned(), HorizontalAlignment::Left));
+        labels.push(("STATUS".to_owned(), HorizontalAlignment::Left));
+    }
     let header = Row::new(
         labels
             .into_iter()
-            .map(|label| Cell::from(Line::from(label).alignment(HorizontalAlignment::Left))),
+            .map(|(label, alignment)| Cell::from(Line::from(label).alignment(alignment))),
     )
     .style(Palette::muted().add_modifier(Modifier::BOLD))
     .bottom_margin(1);
     let rows = model.rows.iter().map(|row| {
-        let mut values = match &row.report {
-            Some(report) => {
-                vec![
-                    terminal_text::escape(&report.branch),
-                    report.started.clone(),
-                    report.last.clone(),
-                    report.ahead.to_string(),
-                ]
-            }
+        let flagged = row
+            .report
+            .as_ref()
+            .is_some_and(|report| !report.merged_environments.is_empty());
+        let branch = terminal_text::escape(&row.branch);
+        let branch = if flagged {
+            format!("{branch} ⚠")
+        } else {
+            branch
+        };
+        let mut cells = match &row.report {
+            Some(report) => vec![
+                Cell::from(branch),
+                Cell::from(report.started.clone()),
+                Cell::from(report.last.clone()),
+                Cell::from(
+                    Line::from(report.ahead.to_string()).alignment(HorizontalAlignment::Right),
+                ),
+            ],
             None => vec![
-                terminal_text::escape(&row.branch),
-                "…".to_owned(),
-                "…".to_owned(),
-                "…".to_owned(),
+                Cell::from(branch),
+                placeholder_cell(),
+                placeholder_cell(),
+                Cell::from(
+                    Line::styled("…", Palette::muted()).alignment(HorizontalAlignment::Right),
+                ),
             ],
         };
         if show_jira {
             match &row.report {
                 Some(report) => {
-                    let (key, status) = jira_columns(&report.jira);
-                    values.extend([key, status]);
+                    let (key, status) = jira_cells(&row.branch, &report.jira, flagged);
+                    cells.push(key);
+                    cells.push(status);
                 }
-                None => values.extend(["…".to_owned(), "measuring".to_owned()]),
+                None => {
+                    cells.push(placeholder_cell());
+                    cells.push(Cell::from(Line::styled("measuring", Palette::muted())));
+                }
             }
         }
-        let cells = Row::new(values.into_iter().map(Cell::from));
-        if row
-            .report
-            .as_ref()
-            .is_some_and(|report| !report.merged_environments.is_empty())
-        {
+        let cells = Row::new(cells);
+        if flagged {
             cells.style(Palette::error())
         } else {
             cells
         }
     });
+    let longest_branch = model
+        .rows
+        .iter()
+        .map(|row| terminal_text::escape(&row.branch).chars().count())
+        .max()
+        .unwrap_or(0)
+        .saturating_add(2);
+    let branch_width = u16::try_from(longest_branch).unwrap_or(u16::MAX);
     let widths = if show_jira {
         vec![
-            Constraint::Min(24),
+            Constraint::Length(branch_width.max(24)),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(6),
+            Constraint::Length(7),
             Constraint::Length(12),
             Constraint::Length(16),
         ]
     } else {
         vec![
-            Constraint::Min(20),
+            Constraint::Length(branch_width.max(20)),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(6),
+            Constraint::Length(7),
         ]
     };
     let table = Table::new(rows, widths)
+        .column_spacing(2)
         .header(header)
         .row_highlight_style(Palette::action_focus())
         .highlight_symbol("› ");
     frame.render_stateful_widget(table, area, &mut model.table_state);
+}
+
+fn placeholder_cell() -> Cell<'static> {
+    Cell::from(Line::styled("…", Palette::muted()))
 }
 
 fn render_inspector(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
@@ -763,14 +878,47 @@ fn inspector_status(selected: Option<&PromotionBranch>) -> Vec<Line<'static>> {
     }
 }
 
-fn jira_columns(state: &JiraIssueState) -> (String, String) {
-    match state {
-        JiraIssueState::NoTicket => ("—".to_owned(), "—".to_owned()),
-        JiraIssueState::NotConfigured { key } => (key.clone(), "not configured".to_owned()),
-        JiraIssueState::Loading { key } => (key.clone(), "loading…".to_owned()),
-        JiraIssueState::NotFound { key } => (key.clone(), "—".to_owned()),
-        JiraIssueState::Loaded(issue) => (issue.key.clone(), issue.status.clone()),
-        JiraIssueState::Failed { key, .. } => (key.clone(), "Jira error".to_owned()),
+fn jira_cells(
+    branch: &str,
+    state: &JiraIssueState,
+    flagged: bool,
+) -> (Cell<'static>, Cell<'static>) {
+    let key = match state.key().map(terminal_text::escape) {
+        None => "—".to_owned(),
+        Some(key) if key.eq_ignore_ascii_case(&terminal_text::escape(branch)) => String::new(),
+        Some(key) => key,
+    };
+    let (status, style) = match state {
+        JiraIssueState::NoTicket => ("—".to_owned(), Palette::muted()),
+        JiraIssueState::NotConfigured { .. } => ("not configured".to_owned(), Palette::warning()),
+        JiraIssueState::Loading { .. } => ("loading…".to_owned(), Palette::muted()),
+        JiraIssueState::NotFound { .. } => ("not found".to_owned(), Palette::muted()),
+        JiraIssueState::Loaded(issue) => {
+            let status = terminal_text::escape(&issue.status);
+            let style = jira_status_style(&status);
+            (status, style)
+        }
+        JiraIssueState::Failed { .. } => ("Jira error".to_owned(), Palette::error()),
+    };
+    if flagged {
+        // The row's warning color must own every cell of a flagged branch.
+        (Cell::from(key), Cell::from(status))
+    } else {
+        (
+            Cell::from(Line::styled(key, Palette::muted())),
+            Cell::from(Line::styled(status, style)),
+        )
+    }
+}
+
+fn jira_status_style(status: &str) -> Style {
+    let lowered = status.to_ascii_lowercase();
+    if matches!(lowered.as_str(), "done" | "closed" | "resolved") {
+        Palette::success()
+    } else if lowered.contains("cancel") {
+        Palette::muted()
+    } else {
+        Palette::text()
     }
 }
 
@@ -937,6 +1085,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
             Span::raw(" open Jira   "),
             Span::styled("h", Palette::primary()),
             Span::raw(" git history   "),
+            Span::styled("s", Palette::primary()),
+            Span::raw(" sort   "),
             Span::styled("q", Palette::primary()),
             Span::raw(" close"),
         ])
@@ -1334,6 +1484,7 @@ mod tests {
             .any(|cell| cell.style().fg == Some(ratatui::style::Color::Red));
 
         assert!(rendered.contains("⚠ qa has been merged into this branch"));
+        assert!(rendered.contains("feature/PROJ-123-login ⚠"));
         assert!(red_cells);
 
         update(&mut model, Message::MoveDown)?;
@@ -1446,5 +1597,233 @@ mod tests {
         assert!(
             matches!(result, Err(CliError::Git(message)) if message.contains("before the scan completed"))
         );
+    }
+
+    fn measured(
+        branch: &str,
+        started: &str,
+        last: &str,
+        ahead: usize,
+        jira: JiraIssueState,
+    ) -> DiffUpdate {
+        DiffUpdate::Measured(PromotionBranch {
+            branch: branch.to_owned(),
+            started: started.to_owned(),
+            last: last.to_owned(),
+            ahead,
+            last_author: "Pat".to_owned(),
+            commits: Vec::new(),
+            merged_environments: Vec::new(),
+            jira,
+        })
+    }
+
+    fn character_position(line: &str, needle: &str) -> Option<usize> {
+        line.find(needle)
+            .map(|byte_index| line[..byte_index].chars().count())
+    }
+
+    #[test]
+    fn table_columns_stay_compact_and_ahead_counts_right_align(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = DiffModel::new();
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec!["aa".to_owned(), "bb".to_owned()],
+            })),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(measured(
+                "aa",
+                "2011-01-01",
+                "2011-01-02",
+                3,
+                JiraIssueState::NoTicket,
+            ))),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(measured(
+                "bb",
+                "2011-01-01",
+                "2011-01-02",
+                28,
+                JiraIssueState::NoTicket,
+            ))),
+        )?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
+
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let rendered = terminal.backend().to_string();
+        let lines = rendered.lines().collect::<Vec<_>>();
+        let header = lines
+            .iter()
+            .find(|line| line.contains("BRANCH") && line.contains("AHEAD"))
+            .ok_or("table heading was not rendered")?;
+        let branch_column =
+            character_position(header, "BRANCH").ok_or("BRANCH heading was not rendered")?;
+        let started_column =
+            character_position(header, "STARTED").ok_or("STARTED heading was not rendered")?;
+        let ahead_end =
+            character_position(header, "AHEAD").ok_or("AHEAD heading was not rendered")? + 4;
+        let row_a = lines
+            .iter()
+            .find(|line| line.contains("aa") && line.contains("2011-01-01"))
+            .ok_or("row aa was not rendered")?;
+        let row_b = lines
+            .iter()
+            .find(|line| line.contains("bb") && line.contains("2011-01-01"))
+            .ok_or("row bb was not rendered")?;
+
+        assert_eq!(started_column - branch_column, 26);
+        assert!(rendered.contains("2011-01-01  2011-01-02"));
+        assert_eq!(row_a.chars().nth(ahead_end), Some('3'));
+        assert_eq!(row_b.chars().nth(ahead_end), Some('8'));
+        Ok(())
+    }
+
+    #[test]
+    fn s_cycles_the_sort_and_selection_follows_the_branch() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut model = DiffModel::new();
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec!["aa".to_owned(), "bb".to_owned()],
+            })),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(measured(
+                "aa",
+                "2024-05-01",
+                "2024-05-02",
+                1,
+                JiraIssueState::NoTicket,
+            ))),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(measured(
+                "bb",
+                "2022-01-01",
+                "2022-01-02",
+                9,
+                JiraIssueState::NoTicket,
+            ))),
+        )?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
+
+        let message = message_for_key(&model, KeyCode::Char('s'), KeyModifiers::NONE)
+            .ok_or("s did not map to a sort message")?;
+        update(&mut model, message)?;
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let by_started = terminal.backend().to_string();
+
+        assert_eq!(model.rows[0].branch, "bb");
+        assert_eq!(model.selected, 1);
+        assert!(by_started.contains("STARTED ▲"));
+
+        update(&mut model, Message::CycleSort)?;
+        update(&mut model, Message::CycleSort)?;
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let by_ahead = terminal.backend().to_string();
+
+        assert_eq!(model.rows[0].branch, "bb");
+        assert!(by_ahead.contains("AHEAD ▼"));
+
+        let report = model.completed_report();
+        assert_eq!(report.branches[0].branch, "aa");
+        Ok(())
+    }
+
+    #[test]
+    fn identical_jira_key_is_not_repeated_in_the_table_row(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = DiffModel::new();
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec!["CLAIMS-9".to_owned()],
+            })),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(measured(
+                "CLAIMS-9",
+                "2024-01-01",
+                "2024-01-02",
+                2,
+                JiraIssueState::NotFound {
+                    key: "CLAIMS-9".to_owned(),
+                },
+            ))),
+        )?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
+
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let rendered = terminal.backend().to_string();
+        let row = rendered
+            .lines()
+            .find(|line| line.contains("2024-01-01"))
+            .ok_or("table row was not rendered")?;
+
+        assert_eq!(row.matches("CLAIMS-9").count(), 1);
+        assert!(row.contains("not found"));
+        Ok(())
+    }
+
+    #[test]
+    fn done_jira_statuses_render_in_the_success_color() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = DiffModel::new();
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec![
+                    "aaa-selected".to_owned(),
+                    "feature/PROJ-123-login".to_owned(),
+                ],
+            })),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(measured(
+                "feature/PROJ-123-login",
+                "2024-01-01",
+                "2024-01-02",
+                2,
+                JiraIssueState::Loaded(graduate::promotion::JiraIssueSummary {
+                    key: "PROJ-123".to_owned(),
+                    api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
+                    summary: "Add login".to_owned(),
+                    status: "Done".to_owned(),
+                    assignee: None,
+                    fix_versions: Vec::new(),
+                    url: "https://example.atlassian.net/browse/PROJ-123".to_owned(),
+                }),
+            ))),
+        )?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
+
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let green_cells = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.style().fg == Some(ratatui::style::Color::Green));
+
+        assert!(green_cells);
+        Ok(())
     }
 }

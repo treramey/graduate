@@ -51,20 +51,27 @@ branch table describes the selected branch. On terminals that are short but
 wide, Graduate moves the detail card beside the table so more rows stay
 visible.
 
+Press `s` to cycle the table sort between branch name, start date, last
+activity, and ahead count; the active column heading shows the sort direction.
+Ahead counts are right-aligned, and a row repeats its Jira key only when the
+key differs from the branch name.
+
 Graduate fetches `origin`, discovers the remote default branch (falling back
 to `main`, `master`, `trunk`, or `develop`), and streams alphabetically sorted
 rows into a terminal list. The list opens before the fetch and updates when
 scanning begins. Pass `--main <branch>` to set the main branch. When Jira is
 configured, a branch name that contains a Jira key such as `PROJ-123` gains
-the ticket summary, status, assignee, and fix versions. Tickets that Jira
-cannot find show a dash. Select a row and press `o` to open its ticket.
+the ticket summary, status, assignee, and fix versions. Completed statuses
+render green and canceled statuses are muted. Tickets that Jira cannot find
+show a muted `not found`. Select a row and press `o` to open its ticket.
 
 Press `h` to open a history sheet listing the selected branch's commits ahead
 of main, newest first. Each row shows the commit's short SHA, subject, author,
 and date. Press `h` or Escape to close the sheet.
 
-Graduate renders a feature branch in red when an environment branch was merged
-into it, and shows a footer warning when you select it. That branch's start
+Graduate renders a feature branch in red with a `⚠` marker beside its name
+when an environment branch was merged into it, and shows a footer warning when
+you select it. That branch's start
 date and ahead count include environment history rather than its own work.
 Before you promote it, rebuild the branch so it contains only its own commits,
 for example by rebasing it onto main. Graduate follows each environment

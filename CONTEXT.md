@@ -29,8 +29,10 @@
 - Promotion reports flag feature branches that had an environment branch
   merged into them by matching the environment's own merge commits in the
   branch's ahead-of-main history; merges of main are never flagged. Flagged
-  rows render red, selection shows a footer warning, and machine formats
-  carry `mergedEnvironments`.
+  rows render red with a `⚠` marker beside the branch name, selection shows a
+  footer warning, and machine formats carry `mergedEnvironments`.
+- The interactive promotion table sorts by branch name; `s` cycles branch,
+  started, last, and ahead sorts. Machine formats always stay alphabetical.
 - Promotion report automation defaults to JSON with camelCase fields and
   Jira-native issue field shapes. Use `--format` for table, YAML, or CSV and
   `--output` only with a safe relative path. PATs come from `GIT_PAT`, never a
