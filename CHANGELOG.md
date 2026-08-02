@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Excluded merge commits from promotion ahead counts and branch history, so
+  branches that repeatedly sync main no longer report inflated commit counts.
 - Added a compact master-detail promotion layout for short terminals with
   enough horizontal room, while keeping the full-width details-above-table
   layout on larger screens. Compact-height reports omit the Graduate artwork
