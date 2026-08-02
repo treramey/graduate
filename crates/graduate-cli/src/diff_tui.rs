@@ -707,7 +707,7 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, model: &mut DiffModel, show_j
             .is_some_and(|report| !report.merged_environments.is_empty());
         let branch = terminal_text::escape(&row.branch);
         let branch = if flagged {
-            format!("{branch} ⚠")
+            format!("{branch} ⚠️")
         } else {
             branch
         };
@@ -749,13 +749,14 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, model: &mut DiffModel, show_j
             cells
         }
     });
+    // Reserve a space plus two cells for the emoji-presentation ⚠️ marker.
     let longest_branch = model
         .rows
         .iter()
         .map(|row| terminal_text::escape(&row.branch).chars().count())
         .max()
         .unwrap_or(0)
-        .saturating_add(2);
+        .saturating_add(3);
     let branch_width = u16::try_from(longest_branch).unwrap_or(u16::MAX);
     let widths = if show_jira {
         vec![
@@ -1062,7 +1063,7 @@ fn environment_merge_warning(model: &DiffModel) -> Option<String> {
         "have"
     };
     Some(format!(
-        "⚠ {environments} {verb} been merged into this branch; its ahead count and dates include environment commits"
+        "⚠️ {environments} {verb} been merged into this branch; its ahead count and dates include environment commits"
     ))
 }
 
@@ -1477,8 +1478,8 @@ mod tests {
             .iter()
             .any(|cell| cell.style().fg == Some(ratatui::style::Color::Red));
 
-        assert!(rendered.contains("⚠ qa has been merged into this branch"));
-        assert!(rendered.contains("feature/PROJ-123-login ⚠"));
+        assert!(rendered.contains("⚠️ qa has been merged into this branch"));
+        assert!(rendered.contains("feature/PROJ-123-login ⚠️"));
         assert!(red_cells);
 
         update(&mut model, Message::MoveDown)?;

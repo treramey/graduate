@@ -69,7 +69,7 @@ Press `h` to open a history sheet listing the selected branch's commits ahead
 of main, newest first. Each row shows the commit's short SHA, subject, author,
 and date. Press `h` or Escape to close the sheet.
 
-Graduate renders a feature branch in red with a `⚠` marker beside its name
+Graduate renders a feature branch in red with a `⚠️` marker beside its name
 when an environment branch was merged into it, and shows a footer warning when
 you select it. That branch's start
 date and ahead count include environment history rather than its own work.
