@@ -7,10 +7,22 @@
 
 ## Changesets
 
-User-visible pull requests MUST include `.changeset/<descriptive-name>.md` for
-`@treramey/graduate`: use `patch` for fixes/chores, `minor` for features, and
-`major` for breaking changes. Run `pnpm changeset` to create it. Documentation-
-only and internal CI changes do not require a changeset.
+Every pull request that touches Rust or Cargo files MUST include a changeset.
+Create one at `.changeset/<descriptive-name>.md`:
+
+```markdown
+---
+"@treramey/graduate": patch
+---
+
+Brief description of the change
+```
+
+Use `patch` for fixes/chores, `minor` for new features, and `major` for
+breaking changes. Run `pnpm changeset` to create it interactively, or write the
+file directly. For changes with no user-visible impact, run
+`pnpm changeset --empty`. The Policy CI check will fail without a changeset;
+documentation-only and internal CI changes are exempt.
 
 ## Generated skills
 

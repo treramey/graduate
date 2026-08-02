@@ -1,0 +1,43 @@
+name: Policy
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  changesets:
+    name: Changeset policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Enforce changeset file
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          changed=$(git diff --name-only "origin/$BASE_REF"...HEAD)
+          if ! grep -qE '\.rs$|(^|/)Cargo\.(toml|lock)$' <<<"$changed"; then
+            echo "No Rust/Cargo files changed; skipping changeset requirement."
+            exit 0
+          fi
+          if ! grep -qE '^\.changeset/[^/]+\.md$' <<<"$changed" || ! grep -E '^\.changeset/[^/]+\.md$' <<<"$changed" | grep -qv '^\.changeset/README\.md$'; then
+            echo "::error::A changeset file is required! Run 'pnpm changeset' to describe this change, or 'pnpm changeset --empty' if it has no user-visible impact."
+            exit 1
+          fi
+          echo "Changeset file found!"
+      - name: Validate changeset package name
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          for f in $(git diff --name-only "origin/$BASE_REF"...HEAD | grep -E '^\.changeset/[^/]+\.md$' | grep -v '^\.changeset/README\.md$'); do
+            [ -f "$f" ] || continue
+            if grep -qE '"(graduate|graduate-cli|@treramey/graduate-cli)"' "$f"; then
+              echo "::error file=$f::Wrong package name. Use '\"@treramey/graduate\"'."
+              exit 1
+            fi
+          done
+          echo "Changeset package names valid!"
