@@ -2,4 +2,4 @@
 "@treramey/graduate": patch
 ---
 
-Render promotion-report merge warnings with the emoji-presentation `⚠️` marker.
+Keep the text-presentation `⚠` merge-warning marker; the emoji-presentation form left a stray trailing character on the footer row in terminals that draw it two columns wide.

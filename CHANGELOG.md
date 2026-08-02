@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Flagged environment merges that an environment rebuild or pull-style
+  self-merge moved off the environment branch's first-parent line, so stale
+  feature branches carrying older environment history keep their
+  `mergedEnvironments` warning.
+
 ### Changed
 
 - Clarified customer-facing text: rewrote the README introduction and

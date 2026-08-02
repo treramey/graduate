@@ -29,7 +29,7 @@
 - Promotion reports flag feature branches that had an environment branch
   merged into them by matching the environment's own merge commits in the
   branch's ahead-of-main history; merges of main are never flagged. Flagged
-  rows render red with a `⚠️` marker beside the branch name, selection shows a
+  rows render red with a `⚠` marker beside the branch name, selection shows a
   footer warning, and machine formats carry `mergedEnvironments`.
 - The interactive promotion table sorts by branch name; `s` cycles branch,
   started, last, and ahead sorts. Machine formats always stay alphabetical.

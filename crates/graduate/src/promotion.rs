@@ -37,6 +37,45 @@ impl JiraIssueState {
     }
 }
 
+/// Jira lookups that resolved to `NotFound`, out of every resolved lookup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotFoundSummary {
+    pub not_found: usize,
+    pub resolved: usize,
+}
+
+/// Detect a likely Jira site or permission problem across a report.
+///
+/// Jira Cloud answers 404 for tickets the account cannot browse, so a report
+/// where nearly every lookup misses usually means one systemic problem, not
+/// many bad branch names. Returns a summary when at least three lookups
+/// resolved and at least four in five of them returned not found. Branches
+/// without a ticket key and lookups still in flight are ignored.
+#[must_use]
+pub fn systemic_not_found<'a, I>(states: I) -> Option<NotFoundSummary>
+where
+    I: IntoIterator<Item = &'a JiraIssueState>,
+{
+    let mut not_found = 0usize;
+    let mut resolved = 0usize;
+    for state in states {
+        match state {
+            JiraIssueState::NotFound { .. } => {
+                not_found += 1;
+                resolved += 1;
+            }
+            JiraIssueState::Loaded(_) | JiraIssueState::Failed { .. } => resolved += 1,
+            JiraIssueState::NoTicket
+            | JiraIssueState::NotConfigured { .. }
+            | JiraIssueState::Loading { .. } => {}
+        }
+    }
+    (resolved >= 3 && not_found * 5 >= resolved * 4).then_some(NotFoundSummary {
+        not_found,
+        resolved,
+    })
+}
+
 /// One commit that belongs to a promotion branch but not the main branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromotionCommit {
@@ -105,6 +144,76 @@ pub fn jira_key_from_branch(branch: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn not_found(key: &str) -> JiraIssueState {
+        JiraIssueState::NotFound {
+            key: key.to_owned(),
+        }
+    }
+
+    fn loaded(key: &str) -> JiraIssueState {
+        JiraIssueState::Loaded(JiraIssueSummary {
+            key: key.to_owned(),
+            api_url: String::new(),
+            summary: String::new(),
+            status: String::new(),
+            assignee: None,
+            fix_versions: Vec::new(),
+            url: String::new(),
+        })
+    }
+
+    #[test]
+    fn flags_a_report_where_most_lookups_return_not_found() {
+        let states = vec![
+            not_found("A-1"),
+            not_found("A-2"),
+            not_found("A-3"),
+            not_found("A-4"),
+            loaded("A-5"),
+        ];
+        assert_eq!(
+            systemic_not_found(&states),
+            Some(NotFoundSummary {
+                not_found: 4,
+                resolved: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn ignores_ticketless_branches_and_in_flight_lookups() {
+        let states = vec![
+            not_found("A-1"),
+            not_found("A-2"),
+            not_found("A-3"),
+            JiraIssueState::NoTicket,
+            JiraIssueState::Loading {
+                key: "A-4".to_owned(),
+            },
+        ];
+        assert_eq!(
+            systemic_not_found(&states),
+            Some(NotFoundSummary {
+                not_found: 3,
+                resolved: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn stays_quiet_when_misses_are_a_minority_or_the_sample_is_small() {
+        let mixed = vec![
+            not_found("A-1"),
+            not_found("A-2"),
+            not_found("A-3"),
+            loaded("A-4"),
+            loaded("A-5"),
+        ];
+        assert_eq!(systemic_not_found(&mixed), None);
+        let small = vec![not_found("A-1"), not_found("A-2")];
+        assert_eq!(systemic_not_found(&small), None);
+    }
 
     #[test]
     fn extracts_and_normalizes_a_ticket_key() {

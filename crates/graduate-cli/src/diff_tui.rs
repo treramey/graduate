@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
-use graduate::promotion::{JiraIssueState, PromotionBranch};
+use graduate::promotion::{systemic_not_found, JiraIssueState, PromotionBranch};
 use ratatui::layout::{Constraint, HorizontalAlignment, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -707,7 +707,7 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, model: &mut DiffModel, show_j
             .is_some_and(|report| !report.merged_environments.is_empty());
         let branch = terminal_text::escape(&row.branch);
         let branch = if flagged {
-            format!("{branch} ⚠️")
+            format!("{branch} ⚠")
         } else {
             branch
         };
@@ -749,14 +749,13 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, model: &mut DiffModel, show_j
             cells
         }
     });
-    // Reserve a space plus two cells for the emoji-presentation ⚠️ marker.
     let longest_branch = model
         .rows
         .iter()
         .map(|row| terminal_text::escape(&row.branch).chars().count())
         .max()
         .unwrap_or(0)
-        .saturating_add(3);
+        .saturating_add(2);
     let branch_width = u16::try_from(longest_branch).unwrap_or(u16::MAX);
     let widths = if show_jira {
         vec![
@@ -880,14 +879,17 @@ fn inspector_status(selected: Option<&PromotionBranch>) -> Vec<Line<'static>> {
 }
 
 fn jira_cells(state: &JiraIssueState, flagged: bool) -> (Cell<'static>, Cell<'static>) {
-    let key = state
-        .key()
-        .map_or_else(|| "—".to_owned(), terminal_text::escape);
+    // Only a Jira-validated ticket key may appear in the ticket column.
+    let key = match state {
+        JiraIssueState::Loaded(issue) => terminal_text::escape(&issue.key),
+        _ => String::new(),
+    };
     let (status, style) = match state {
-        JiraIssueState::NoTicket => ("no ticket".to_owned(), Palette::muted()),
+        JiraIssueState::NoTicket | JiraIssueState::NotFound { .. } => {
+            ("not found".to_owned(), Palette::muted())
+        }
         JiraIssueState::NotConfigured { .. } => ("not configured".to_owned(), Palette::warning()),
         JiraIssueState::Loading { .. } => ("loading…".to_owned(), Palette::muted()),
-        JiraIssueState::NotFound { .. } => ("not found".to_owned(), Palette::muted()),
         JiraIssueState::Loaded(issue) => {
             let status = terminal_text::escape(&issue.status);
             let style = jira_status_style(&status);
@@ -1063,7 +1065,23 @@ fn environment_merge_warning(model: &DiffModel) -> Option<String> {
         "have"
     };
     Some(format!(
-        "⚠️ {environments} {verb} been merged into this branch; its ahead count and dates include environment commits"
+        "⚠ {environments} {verb} been merged into this branch; its ahead count and dates include environment commits"
+    ))
+}
+
+fn systemic_not_found_hint(model: &DiffModel) -> Option<String> {
+    if !model.finished {
+        return None;
+    }
+    let summary = systemic_not_found(
+        model
+            .rows
+            .iter()
+            .filter_map(|row| row.report.as_ref().map(|report| &report.jira)),
+    )?;
+    Some(format!(
+        "⚠ {} of {} ticket lookups returned not found; check your Jira site and project access",
+        summary.not_found, summary.resolved
     ))
 }
 
@@ -1072,6 +1090,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
         Line::styled(terminal_text::escape(warning), Palette::warning())
     } else if let Some(warning) = environment_merge_warning(model) {
         Line::styled(terminal_text::escape(&warning), Palette::error())
+    } else if let Some(hint) = systemic_not_found_hint(model) {
+        Line::styled(terminal_text::escape(&hint), Palette::warning())
     } else {
         Line::from(vec![
             Span::styled("↑/↓", Palette::primary()),
@@ -1478,8 +1498,8 @@ mod tests {
             .iter()
             .any(|cell| cell.style().fg == Some(ratatui::style::Color::Red));
 
-        assert!(rendered.contains("⚠️ qa has been merged into this branch"));
-        assert!(rendered.contains("feature/PROJ-123-login ⚠️"));
+        assert!(rendered.contains("⚠ qa has been merged into this branch"));
+        assert!(rendered.contains("feature/PROJ-123-login ⚠"));
         assert!(red_cells);
 
         update(&mut model, Message::MoveDown)?;
@@ -1676,7 +1696,7 @@ mod tests {
 
         assert_eq!(started_column - branch_column, 26);
         assert!(rendered.contains("2011-01-01  2011-01-02"));
-        assert!(row_a.contains("no ticket"));
+        assert!(row_a.contains("not found"));
         assert_eq!(row_a.chars().nth(ahead_end), Some('3'));
         assert_eq!(row_b.chars().nth(ahead_end), Some('8'));
         Ok(())
@@ -1740,7 +1760,7 @@ mod tests {
     }
 
     #[test]
-    fn jira_keys_stay_visible_even_when_they_match_the_branch_name(
+    fn unvalidated_jira_keys_leave_the_ticket_column_blank(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut model = DiffModel::new();
         update(
@@ -1772,8 +1792,44 @@ mod tests {
             .find(|line| line.contains("2024-01-01"))
             .ok_or("table row was not rendered")?;
 
-        assert_eq!(row.matches("CLAIMS-9").count(), 2);
+        assert_eq!(row.matches("CLAIMS-9").count(), 1);
         assert!(row.contains("not found"));
+        Ok(())
+    }
+
+    #[test]
+    fn mostly_not_found_lookups_show_a_configuration_hint() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut model = DiffModel::new();
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec!["AA-1".to_owned(), "BB-2".to_owned(), "CC-3".to_owned()],
+            })),
+        )?;
+        for branch in ["AA-1", "BB-2", "CC-3"] {
+            update(
+                &mut model,
+                Message::Scan(Box::new(measured(
+                    branch,
+                    "2024-01-01",
+                    "2024-01-02",
+                    1,
+                    JiraIssueState::NotFound {
+                        key: branch.to_owned(),
+                    },
+                ))),
+            )?;
+        }
+        update(&mut model, Message::Scan(Box::new(DiffUpdate::Finished)))?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
+
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let rendered = terminal.backend().to_string();
+
+        assert!(rendered.contains("3 of 3 ticket lookups returned not found"));
         Ok(())
     }
 

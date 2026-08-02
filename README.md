@@ -53,8 +53,9 @@ visible.
 
 Press `s` to cycle the table sort between branch name, start date, last
 activity, and ahead count; the active column heading shows the sort direction.
-Ahead counts are right-aligned, and a branch whose name carries no Jira key
-shows a muted `no ticket`.
+Ahead counts are right-aligned. The Jira column only shows ticket keys that
+Jira validated; every other branch leaves the column blank and shows a muted
+`not found`.
 
 Graduate fetches `origin`, discovers the remote default branch (falling back
 to `main`, `master`, `trunk`, or `develop`), and streams alphabetically sorted
@@ -63,21 +64,27 @@ scanning begins. Pass `--main <branch>` to set the main branch. When Jira is
 configured, a branch name that contains a Jira key such as `PROJ-123` gains
 the ticket summary, status, assignee, and fix versions. Completed statuses
 render green and canceled statuses are muted. Tickets that Jira cannot find
-show a muted `not found`. Select a row and press `o` to open its ticket.
+show a blank key and a muted `not found`. When nearly every lookup misses,
+the footer warns you to check the Jira site and project access, because Jira
+answers 404 for tickets an account cannot browse. Select a row and press `o`
+to open its ticket.
 
 Press `h` to open a history sheet listing the selected branch's commits ahead
 of main, newest first. Each row shows the commit's short SHA, subject, author,
 and date. Press `h` or Escape to close the sheet.
 
-Graduate renders a feature branch in red with a `⚠️` marker beside its name
+Graduate renders a feature branch in red with a `⚠` marker beside its name
 when an environment branch was merged into it, and shows a footer warning when
 you select it. That branch's start
 date and ahead count include environment history rather than its own work.
 Before you promote it, rebuild the branch so it contains only its own commits,
 for example by rebasing it onto main. Graduate follows each environment
 branch's own merge commits, so a branch that only merged the main branch is
-never flagged. Machine formats expose the same signal as a
-`mergedEnvironments` field.
+never flagged. Environment merges stay flagged even after the environment
+branch is rebuilt or synced with pull-style self-merges, because Graduate
+also recognizes older environment merge commits by their recorded merge
+subjects. Machine formats expose the same signal as a `mergedEnvironments`
+field.
 
 Non-interactive runs emit JSON by default, with camelCase report fields and
 Jira issue data in the same `fields.status.name`, `fields.assignee.displayName`,
