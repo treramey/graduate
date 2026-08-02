@@ -19,6 +19,10 @@ use crate::diff_tui;
 use crate::error::CliError;
 use crate::jira::JiraClient;
 
+/// Long-lived environment aggregation branches that are never promoted to
+/// main and must not appear as feature rows.
+const KNOWN_ENVIRONMENTS: [&str; 3] = ["qa", "staging", "cycle"];
+
 #[derive(Clone, Debug)]
 pub(crate) enum DiffUpdate {
     Skeleton {
@@ -230,6 +234,13 @@ fn scan_repository(
     let main_id = reference_id(&repository, &main_ref)?;
     let environment_ancestors = ancestors(&repository, environment_id)?;
     let main_ancestors = ancestors(&repository, main_id)?;
+    let environment_markers = environment_merge_markers(
+        &repository,
+        &prefix,
+        &options.environment,
+        &main,
+        &main_ancestors,
+    )?;
 
     let mut candidates = Vec::new();
     let references = repository.references().map_err(gitoxide_error)?;
@@ -265,7 +276,14 @@ fn scan_repository(
             Some(key) => JiraIssueState::NotConfigured { key },
             None => JiraIssueState::NoTicket,
         };
-        let row = measure_branch(&repository, &main_ancestors, branch, id, jira)?;
+        let row = measure_branch(
+            &repository,
+            &main_ancestors,
+            &environment_markers,
+            branch,
+            id,
+            jira,
+        )?;
         updates
             .send(DiffUpdate::Measured(row))
             .map_err(|_| CliError::ReportCancelled)?;
@@ -327,9 +345,59 @@ fn ancestors(
     Ok(found)
 }
 
+/// Merge commits made on an environment branch's own first-parent line,
+/// keyed by commit id and valued by the environment branch name.
+///
+/// A feature branch that can reach one of these commits has had that
+/// environment branch merged into it. Merges that only pull main into the
+/// environment are skipped, so a feature branch that merged main is never
+/// flagged.
+fn environment_merge_markers(
+    repository: &gix::Repository,
+    prefix: &str,
+    environment: &str,
+    main: &str,
+    main_ancestors: &HashSet<gix::ObjectId>,
+) -> Result<HashMap<gix::ObjectId, String>, CliError> {
+    let mut markers = HashMap::new();
+    let mut names = vec![environment];
+    names.extend(
+        KNOWN_ENVIRONMENTS
+            .iter()
+            .copied()
+            .filter(|name| *name != environment),
+    );
+    for name in names {
+        if name == main {
+            continue;
+        }
+        let Ok(tip) = reference_id(repository, &format!("{prefix}{name}")) else {
+            continue;
+        };
+        let mut visited = HashSet::new();
+        let mut current = Some(tip);
+        while let Some(id) = current {
+            if main_ancestors.contains(&id) || !visited.insert(id) {
+                break;
+            }
+            let commit = repository.find_commit(id).map_err(gitoxide_error)?;
+            let mut parents = commit.parent_ids().map(|parent| parent.detach());
+            let first = parents.next();
+            if let Some(second) = parents.next() {
+                if !main_ancestors.contains(&second) {
+                    markers.entry(id).or_insert_with(|| name.to_owned());
+                }
+            }
+            current = first;
+        }
+    }
+    Ok(markers)
+}
+
 fn measure_branch(
     repository: &gix::Repository,
     main_ancestors: &HashSet<gix::ObjectId>,
+    environment_markers: &HashMap<gix::ObjectId, String>,
     branch: String,
     tip: gix::ObjectId,
     jira: JiraIssueState,
@@ -341,11 +409,17 @@ fn measure_branch(
     let last_author = author.name.to_str_lossy().into_owned();
     let mut unique = HashSet::new();
     let mut commits = Vec::new();
+    let mut merged_environments = Vec::new();
     let mut pending = VecDeque::from([tip]);
     let mut started_seconds = author_time.seconds;
     while let Some(id) = pending.pop_front() {
         if main_ancestors.contains(&id) || !unique.insert(id) {
             continue;
+        }
+        if let Some(environment) = environment_markers.get(&id) {
+            if !merged_environments.contains(environment) {
+                merged_environments.push(environment.clone());
+            }
         }
         let commit = repository.find_commit(id).map_err(gitoxide_error)?;
         pending.extend(commit.parent_ids().map(|parent| parent.detach()));
@@ -378,6 +452,7 @@ fn measure_branch(
         ));
     }
     commits.sort_by_key(|commit| std::cmp::Reverse(commit.0));
+    merged_environments.sort();
     Ok(PromotionBranch {
         branch,
         started: unix_date(started_seconds),
@@ -385,6 +460,7 @@ fn measure_branch(
         ahead: commits.len(),
         last_author,
         commits: commits.into_iter().map(|(_, commit)| commit).collect(),
+        merged_environments,
         jira,
     })
 }
@@ -393,7 +469,7 @@ fn excluded_branch(branch: &str, environment: &str, main: &str) -> bool {
     branch == "HEAD"
         || branch == environment
         || branch == main
-        || matches!(branch, "qa" | "staging" | "cycle")
+        || KNOWN_ENVIRONMENTS.contains(&branch)
         || branch.starts_with("backup/")
 }
 
@@ -643,6 +719,7 @@ fn report_value(report: &PromotionReport) -> serde_json::Value {
                 "last": branch.last,
                 "ahead": branch.ahead,
                 "lastAuthor": branch.last_author,
+                "mergedEnvironments": branch.merged_environments,
                 "jiraIssue": issue,
                 "jiraIssueKey": issue_key,
                 "jiraError": jira_error,
@@ -705,6 +782,7 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
             "last",
             "ahead",
             "lastAuthor",
+            "mergedEnvironments",
             "jiraIssue.key",
             "jiraIssue.fields.status.name",
             "jiraIssue.fields.summary",
@@ -717,6 +795,7 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
     )?;
     for row in &report.branches {
         let ahead = row.ahead.to_string();
+        let merged_environments = row.merged_environments.join(", ");
         let (key, status, summary, assignee, versions, api_url, browse_url, jira_error) =
             match &row.jira {
                 JiraIssueState::Loaded(issue) => (
@@ -788,6 +867,7 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
                 &row.last,
                 &ahead,
                 &row.last_author,
+                &merged_environments,
                 &key,
                 &status,
                 &summary,
@@ -939,6 +1019,7 @@ mod tests {
                 ahead: 2,
                 last_author: "Pat".to_owned(),
                 commits: Vec::new(),
+                merged_environments: vec!["qa".to_owned()],
                 jira: JiraIssueState::Failed {
                     key: "PROJ-123".to_owned(),
                     message: "request timed out".to_owned(),
@@ -953,7 +1034,8 @@ mod tests {
             .next()
             .is_some_and(|line| line.ends_with("\"jiraError\"")));
         assert!(csv.lines().nth(1).is_some_and(|line| {
-            line.contains("\"PROJ-123\",\"\",\"\"") && line.ends_with("\"request timed out\"")
+            line.contains("\"qa\",\"PROJ-123\",\"\",\"\"")
+                && line.ends_with("\"request timed out\"")
         }));
         Ok(())
     }
@@ -1036,6 +1118,7 @@ mod tests {
                 ahead: 2,
                 last_author: "Pat".to_owned(),
                 commits: Vec::new(),
+                merged_environments: vec!["qa".to_owned()],
                 jira: JiraIssueState::Loaded(graduate::promotion::JiraIssueSummary {
                     key: "PROJ-123".to_owned(),
                     api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
@@ -1051,6 +1134,7 @@ mod tests {
         let value = report_value(&report);
 
         assert_eq!(value["branches"][0]["lastAuthor"], "Pat");
+        assert_eq!(value["branches"][0]["mergedEnvironments"][0], "qa");
         assert_eq!(
             value["branches"][0]["jiraIssue"]["fields"]["assignee"]["displayName"],
             "Pat"
@@ -1282,6 +1366,155 @@ mod tests {
                 && commits.len() == 1
                 && commits[0].subject == "feature"
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn environment_merges_into_a_feature_branch_are_flagged(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        run_git(directory.path(), &["init", "-q", "-b", "main"])?;
+        run_git(directory.path(), &["config", "user.name", "Test Author"])?;
+        run_git(
+            directory.path(),
+            &["config", "user.email", "test@example.com"],
+        )?;
+        std::fs::write(directory.path().join("base"), "base\n")?;
+        run_git(directory.path(), &["add", "base"])?;
+        commit(directory.path(), "base", "2024-01-01T00:00:00Z")?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "feature/PROJ-200-first"],
+        )?;
+        std::fs::write(directory.path().join("one"), "one\n")?;
+        run_git(directory.path(), &["add", "one"])?;
+        commit(directory.path(), "first feature", "2024-02-01T00:00:00Z")?;
+        run_git(directory.path(), &["checkout", "-q", "-b", "qa", "main"])?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feature/PROJ-200-first",
+                "-m",
+                "promote first",
+            ],
+        )?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "feature/PROJ-201-second", "main"],
+        )?;
+        std::fs::write(directory.path().join("two"), "two\n")?;
+        run_git(directory.path(), &["add", "two"])?;
+        commit(directory.path(), "second feature", "2024-02-02T00:00:00Z")?;
+        run_git(
+            directory.path(),
+            &["merge", "-q", "--no-ff", "qa", "-m", "sync qa"],
+        )?;
+        run_git(directory.path(), &["checkout", "-q", "qa"])?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feature/PROJ-201-second",
+                "-m",
+                "promote second",
+            ],
+        )?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "feature/PROJ-202-third", "main"],
+        )?;
+        std::fs::write(directory.path().join("three"), "three\n")?;
+        run_git(directory.path(), &["add", "three"])?;
+        commit(directory.path(), "third feature", "2024-02-03T00:00:00Z")?;
+        run_git(directory.path(), &["checkout", "-q", "main"])?;
+        std::fs::write(directory.path().join("main-file"), "main\n")?;
+        run_git(directory.path(), &["add", "main-file"])?;
+        commit(directory.path(), "main work", "2024-02-04T00:00:00Z")?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "feature/PROJ-202-third"],
+        )?;
+        run_git(
+            directory.path(),
+            &["merge", "-q", "--no-ff", "main", "-m", "sync main"],
+        )?;
+        run_git(directory.path(), &["checkout", "-q", "qa"])?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feature/PROJ-202-third",
+                "-m",
+                "promote third",
+            ],
+        )?;
+        for branch in [
+            "main",
+            "qa",
+            "feature/PROJ-200-first",
+            "feature/PROJ-201-second",
+            "feature/PROJ-202-third",
+        ] {
+            run_git(
+                directory.path(),
+                &[
+                    "update-ref",
+                    &format!("refs/remotes/origin/{branch}"),
+                    &format!("refs/heads/{branch}"),
+                ],
+            )?;
+        }
+        run_git(
+            directory.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )?;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        scan_repository(
+            &ScanOptions {
+                repository: directory.path().to_path_buf(),
+                environment: "qa".to_owned(),
+                main: None,
+                remote: "origin".to_owned(),
+                jira_configured: false,
+                fetch_before_scan: false,
+            },
+            &sender,
+        )?;
+        drop(sender);
+        let updates = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        let merged_environments = |branch: &str| {
+            updates.iter().find_map(|update| match update {
+                DiffUpdate::Measured(row) if row.branch == branch => {
+                    Some(row.merged_environments.clone())
+                }
+                _ => None,
+            })
+        };
+
+        assert_eq!(
+            merged_environments("feature/PROJ-200-first").as_deref(),
+            Some(&[][..])
+        );
+        assert_eq!(
+            merged_environments("feature/PROJ-201-second").as_deref(),
+            Some(&["qa".to_owned()][..])
+        );
+        assert_eq!(
+            merged_environments("feature/PROJ-202-third").as_deref(),
+            Some(&[][..])
+        );
         Ok(())
     }
 

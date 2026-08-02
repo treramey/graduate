@@ -55,6 +55,9 @@ pub struct PromotionBranch {
     pub ahead: usize,
     pub last_author: String,
     pub commits: Vec<PromotionCommit>,
+    /// Environment branches whose merge history is reachable from this
+    /// branch, meaning the environment was merged into the feature branch.
+    pub merged_environments: Vec<String>,
     pub jira: JiraIssueState,
 }
 

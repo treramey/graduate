@@ -26,6 +26,11 @@
 - Promotion reports use Gitoxide for refs and commit traversal. Their fetch
   seam preserves Git credential-helper behavior and supports non-persistent
   PAT authentication.
+- Promotion reports flag feature branches that had an environment branch
+  merged into them by matching the environment's own merge commits in the
+  branch's ahead-of-main history; merges of main are never flagged. Flagged
+  rows render red, selection shows a footer warning, and machine formats
+  carry `mergedEnvironments`.
 - Promotion report automation defaults to JSON with camelCase fields and
   Jira-native issue field shapes. Use `--format` for table, YAML, or CSV and
   `--output` only with a safe relative path. PATs come from `GIT_PAT`, never a

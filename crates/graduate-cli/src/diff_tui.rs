@@ -636,7 +636,16 @@ fn render_table(frame: &mut Frame<'_>, area: Rect, model: &mut DiffModel, show_j
                 None => values.extend(["…".to_owned(), "measuring".to_owned()]),
             }
         }
-        Row::new(values.into_iter().map(Cell::from))
+        let cells = Row::new(values.into_iter().map(Cell::from));
+        if row
+            .report
+            .as_ref()
+            .is_some_and(|report| !report.merged_environments.is_empty())
+        {
+            cells.style(Palette::error())
+        } else {
+            cells
+        }
     });
     let widths = if show_jira {
         vec![
@@ -899,9 +908,27 @@ fn report_metadata(report: &PromotionBranch) -> Vec<Line<'static>> {
     ]
 }
 
+fn environment_merge_warning(model: &DiffModel) -> Option<String> {
+    let report = model.rows.get(model.selected)?.report.as_ref()?;
+    if report.merged_environments.is_empty() {
+        return None;
+    }
+    let environments = report.merged_environments.join(", ");
+    let verb = if report.merged_environments.len() == 1 {
+        "has"
+    } else {
+        "have"
+    };
+    Some(format!(
+        "⚠ {environments} {verb} been merged into this branch; its ahead count and dates include environment commits"
+    ))
+}
+
 fn render_footer(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
     let help = if let Some(warning) = &model.warning {
         Line::styled(terminal_text::escape(warning), Palette::warning())
+    } else if let Some(warning) = environment_merge_warning(model) {
+        Line::styled(terminal_text::escape(&warning), Palette::error())
     } else {
         Line::from(vec![
             Span::styled("↑/↓", Palette::primary()),
@@ -1028,6 +1055,7 @@ mod tests {
                 ahead: 2,
                 last_author: "Pat".to_owned(),
                 commits: vec![test_commit("Add login"), test_commit("Add login tests")],
+                merged_environments: Vec::new(),
                 jira: JiraIssueState::Loaded(graduate::promotion::JiraIssueSummary {
                     key: "PROJ-123".to_owned(),
                     api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
@@ -1075,6 +1103,7 @@ mod tests {
                 ahead: 2,
                 last_author: "Pat".to_owned(),
                 commits: Vec::new(),
+                merged_environments: Vec::new(),
                 jira: JiraIssueState::NotConfigured {
                     key: "PROJ-123".to_owned(),
                 },
@@ -1123,6 +1152,7 @@ mod tests {
                 ahead: 2,
                 last_author: "Pat".to_owned(),
                 commits: Vec::new(),
+                merged_environments: Vec::new(),
                 jira: JiraIssueState::NotConfigured {
                     key: "PROJ-123".to_owned(),
                 },
@@ -1161,6 +1191,7 @@ mod tests {
                 commits: (1..=50)
                     .map(|index| test_commit(&format!("Commit {index}")))
                     .collect(),
+                merged_environments: Vec::new(),
                 jira: JiraIssueState::NoTicket,
             }))),
         )?;
@@ -1192,6 +1223,7 @@ mod tests {
                 ahead: 1,
                 last_author: "Pat".to_owned(),
                 commits: vec![test_commit("DEMO-101 Add authentication")],
+                merged_environments: Vec::new(),
                 jira: JiraIssueState::NoTicket,
             }),
         });
@@ -1246,6 +1278,70 @@ mod tests {
         assert!(!lines[top].contains("2024-01-02"));
         assert!(bottom.saturating_sub(top) >= 8);
         assert!(bottom.saturating_sub(top) < 12);
+        Ok(())
+    }
+
+    #[test]
+    fn environment_merged_branch_renders_red_with_a_footer_warning(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = DiffModel::new();
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec![
+                    "feature/PROJ-123-login".to_owned(),
+                    "feature/PROJ-124-clean".to_owned(),
+                ],
+            })),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Measured(PromotionBranch {
+                branch: "feature/PROJ-123-login".to_owned(),
+                started: "2021-12-09".to_owned(),
+                last: "2024-01-02".to_owned(),
+                ahead: 3675,
+                last_author: "Pat".to_owned(),
+                commits: Vec::new(),
+                merged_environments: vec!["qa".to_owned()],
+                jira: JiraIssueState::NoTicket,
+            }))),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Measured(PromotionBranch {
+                branch: "feature/PROJ-124-clean".to_owned(),
+                started: "2024-01-01".to_owned(),
+                last: "2024-01-02".to_owned(),
+                ahead: 2,
+                last_author: "Pat".to_owned(),
+                commits: Vec::new(),
+                merged_environments: Vec::new(),
+                jira: JiraIssueState::NoTicket,
+            }))),
+        )?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
+
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let rendered = terminal.backend().to_string();
+        let red_cells = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.style().fg == Some(ratatui::style::Color::Red));
+
+        assert!(rendered.contains("⚠ qa has been merged into this branch"));
+        assert!(red_cells);
+
+        update(&mut model, Message::MoveDown)?;
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let rendered = terminal.backend().to_string();
+
+        assert!(!rendered.contains("has been merged into this branch"));
+        assert!(rendered.contains("open Jira"));
         Ok(())
     }
 

@@ -68,6 +68,14 @@ branch's commits ahead of the resolved main branch in newest-first order. The
 sheet shows each commit's short SHA, subject, author, and date alongside its
 list position, and uses `h` or Escape to close.
 
+Feature branches that have had an environment branch merged into them are
+rendered in red, and selecting one shows a warning in the footer. Such a
+branch's start date and ahead count include environment history rather than
+its own work, so the merge direction should be corrected before promotion.
+Detection follows each environment branch's own merge commits, so a branch
+that only merged the main branch is never flagged. Machine formats expose the
+same signal as a `mergedEnvironments` field.
+
 For machine use, Graduate follows API-native output conventions. Non-interactive
 runs emit JSON by default, with camelCase report fields and Jira issue data in
 the same `fields.status.name`, `fields.assignee.displayName`, and
