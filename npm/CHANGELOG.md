@@ -1,5 +1,12 @@
 # @treramey/graduate
 
+## 1.2.1
+
+### Patch Changes
+
+- f6a9bda: Clarify customer-facing text: rewrite the README introduction and promotion-report guidance, simplify CLI help and setup wizard copy, label dry-run output explicitly, and add a remediation hint to the Jira authentication error.
+- 86c820a: Improve promotion-report table legibility: size the branch column to its content with wider column gaps, right-align ahead counts, repeat a Jira key only when it differs from the branch name, show explicit `not found` and `loading…` statuses with color-coded done and canceled tickets, mark environment-merged branches with a `⚠` beside the name, and add an `s` key that cycles the table sort by branch, start date, last activity, or ahead count.
+
 ## 1.2.0
 
 ### Minor Changes
