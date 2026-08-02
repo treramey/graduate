@@ -175,14 +175,14 @@ async fn run_from_environment(
     .map_err(|error| CliError::InvalidInput(error.to_string()))?;
     if args.dry_run && !args.verify {
         println!(
-            "Authentication inputs are valid. Jira verification and configuration changes are planned; nothing was saved."
+            "Dry run: authentication inputs are valid. Jira verification was skipped and nothing was saved."
         );
         return Ok(());
     }
     let identity = verifier.verify(&credentials).await?;
     if args.dry_run {
         println!(
-            "Authentication inputs are valid and Jira verification succeeded. Configuration changes are planned; nothing was saved."
+            "Dry run: authentication inputs are valid and Jira verification succeeded; nothing was saved."
         );
         return Ok(());
     }

@@ -36,7 +36,7 @@ pub(crate) struct DiffArgs {
     /// Environment branch to inspect, such as qa, staging, or cycle.
     #[arg(value_name = "ENVIRONMENT")]
     pub(crate) environment: String,
-    /// Main branch name. By default, use origin/HEAD, then try common names.
+    /// Main branch name. Defaults to origin/HEAD, then common branch names.
     #[arg(long, value_name = "BRANCH")]
     pub(crate) main: Option<String>,
     /// Remote that owns the environment and feature branches.
@@ -101,13 +101,13 @@ pub(crate) struct SetupArgs {
 pub(crate) enum SetupSystem {
     /// Configure Jira Cloud using Atlassian credentials.
     ///
-    /// Interactive setup requires terminal-capable stdin and stderr and opens
-    /// Ratatui for Jira account details, Atlassian API token, and Review & save.
-    /// Use Tab and Shift-Tab to move and Enter to continue. The Atlassian token
-    /// page opens only after you explicitly enter the token stage. Escape goes
-    /// back, or cancels from Jira account details; Ctrl-C cancels from any
-    /// stage. Use --from-env for unattended setup or --no-open to keep the
-    /// token URL in the terminal without launching a browser.
+    /// Interactive setup must run in a terminal. It opens a full-screen
+    /// interface with three stages: Jira account details, Atlassian API token,
+    /// and Review & save. Use Tab and Shift-Tab to move and Enter to continue.
+    /// The Atlassian token page opens only after you enter the token stage.
+    /// Escape goes back; on the Jira account page it cancels. Ctrl-C cancels
+    /// from any stage. Use --from-env for unattended setup or --no-open to
+    /// keep the token URL in the terminal without launching a browser.
     Jira(JiraSetupArgs),
 }
 

@@ -31,7 +31,7 @@ pub enum JiraValidationError {
     AtlassianEmailUnsafe,
     #[error("Atlassian API token is required")]
     AtlassianTokenRequired,
-    #[error("Jira identity contained an empty account ID")]
+    #[error("Jira identity contains an empty account ID")]
     AccountIdRequired,
 }
 

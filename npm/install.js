@@ -37,7 +37,7 @@ async function install() {
     await Promise.all([download(base, archive), download(`${base}.sha256`, `${archive}.sha256`)]);
     const expected = fs.readFileSync(`${archive}.sha256`, "utf8").trim().split(/\s+/)[0].toLowerCase();
     const actual = crypto.createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
-    if (actual !== expected) throw new Error("SHA256 checksum mismatch");
+    if (actual !== expected) throw new Error(`SHA256 checksum mismatch for ${platform.artifact}`);
 
     fs.rmSync(installDir, { recursive: true, force: true });
     fs.mkdirSync(installDir, { recursive: true });
@@ -56,7 +56,7 @@ async function install() {
         fs.renameSync(path.join(installDir, directory.name, platform.binary), binary);
       }
     }
-    if (!fs.existsSync(binary)) throw new Error(`Released archive did not contain ${platform.binary}`);
+    if (!fs.existsSync(binary)) throw new Error(`Release archive did not contain ${platform.binary}`);
     if (process.platform !== "win32") fs.chmodSync(binary, 0o755);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });

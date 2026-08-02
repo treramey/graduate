@@ -97,7 +97,7 @@ fn jira_setup_help_describes_interactive_and_environment_paths() -> Result<(), B
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Interactive setup requires terminal-capable stdin and stderr",
+            "Interactive setup must run in a terminal",
         ))
         .stdout(predicate::str::contains(
             "Use Tab and Shift-Tab to move and Enter to continue",
@@ -171,7 +171,7 @@ fn interactive_jira_setup_rejects_redirected_terminals() -> Result<(), Box<dyn E
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "interactive setup requires terminal-capable stdin and stderr",
+            "interactive setup must run in a terminal",
         ));
     Ok(())
 }

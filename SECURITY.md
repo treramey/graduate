@@ -7,16 +7,8 @@ Report vulnerabilities with GitHub private vulnerability reporting under
 private data, terminal escape payloads, or exploit details.
 
 Include the affected version, platform, reproduction, impact, and suggested
-fix if known. Maintainers should acknowledge reports within seven days and
+fix if known. Maintainers will acknowledge reports within seven days and
 coordinate disclosure after a patch is available.
-
-## Terminal rendering
-
-Treat future external content as untrusted data. Human and TUI renderers must
-prevent remote values from introducing terminal controls, synthetic rows, or
-misleading diagnostics. Tests must never initialize a developer's real
-terminal, and every terminal lifecycle path must restore raw mode, the cursor,
-and the alternate screen.
 
 ## Authentication credential handling
 

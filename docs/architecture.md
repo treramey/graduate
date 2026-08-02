@@ -15,7 +15,7 @@ actions.
 ## Command flow
 
 1. Clap parses arguments without terminating inside application code.
-2. Like Drag, Graduate requires an explicit top-level command.
+2. Graduate requires an explicit top-level command.
 3. Interactive Jira setup verifies terminal-capable stdin and stderr before
    Crossterm enters raw mode and the alternate screen.
 4. Jira authentication events drive deterministic transitions in
@@ -61,6 +61,9 @@ actions.
 - Jira setup never writes interactive application data to stdout.
 - Interactive setup fails before enabling raw mode on a non-terminal.
 - Terminal restoration attempts every pending cleanup step even if one fails.
+- Human and TUI renderers treat external content as untrusted and prevent
+  remote values from introducing terminal controls, synthetic rows, or
+  misleading diagnostics.
 - Tests never initialize the developer's real terminal.
 - Generated skills are reproducible from the checked-in CLI generator.
 - Tokens never appear in result text, errors, review screens, or debug output.

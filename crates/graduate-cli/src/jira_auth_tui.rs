@@ -381,7 +381,7 @@ pub(crate) async fn run(
 ) -> Result<CompletedLogin, CliError> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(CliError::InvalidInput(
-            "interactive setup requires terminal-capable stdin and stderr; use `gd auth setup jira --from-env` for automation".to_owned(),
+            "interactive setup must run in a terminal; use `gd auth setup jira --from-env` for automation".to_owned(),
         ));
     }
 
@@ -791,7 +791,7 @@ fn render_resize_message(frame: &mut Frame<'_>, area: Rect) {
         Line::from(format!(
             "Resize to at least {MIN_TERMINAL_WIDTH} columns by {MIN_TERMINAL_HEIGHT} rows to continue."
         )),
-        Line::from("Your entered authentication values are preserved.").dim(),
+        Line::from("Your input is preserved.").dim(),
         Line::from("Ctrl-C cancels without saving.").dim(),
     ]);
     frame.render_widget(

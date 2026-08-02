@@ -13,7 +13,9 @@ pub(crate) enum CliError {
     InvalidInput(String),
     #[error("configuration error: {0}")]
     Config(String),
-    #[error("Jira rejected the Atlassian email or API token")]
+    #[error(
+        "Jira rejected the Atlassian email or API token; run `gd auth setup jira` to update them"
+    )]
     Authentication,
     #[error("Jira verification failed with HTTP status {0}")]
     JiraStatus(u16),

@@ -40,7 +40,7 @@ For automation, provide `ATLASSIAN_HOST`, `ATLASSIAN_EMAIL`, and
 saving. Dry-run networking requires explicit `--verify`. Never print or copy
 the token from environment variables or `~/.graduate/config.json`.
 
-Interactive setup requires terminal-capable stdin and stderr. Use Tab and
+Interactive setup must run in a terminal. Use Tab and
 Shift-Tab to move, Enter to continue, Escape to go back or cancel, and Ctrl-C
 to cancel from any stage.
 
@@ -48,7 +48,7 @@ to cancel from any stage.
 
 Run `gd diff <environment>` to stream feature branches that are in an
 environment but not the remote default branch. Use `--main <branch>` to
-override main. Non-interactive runs default to API-native JSON. Use `--format
+override main. Non-interactive runs default to JSON. Use `--format
 json|table|yaml|csv` and `--output <relative-path>` for other report surfaces.
 Configured Jira credentials enrich keys found in branch names. Provide headless
 Git authentication only through `GIT_PAT`; never print it.

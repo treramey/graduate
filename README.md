@@ -2,10 +2,10 @@
 
 **Inspect Jira Cloud from the terminal.**
 
-Graduate is a Jira Cloud CLI and terminal interface. It keeps domain behavior
-independent from terminal and network I/O so commands remain predictable and
-testable. The `graduate` core owns validated Jira sites, credentials,
-identities, and Jira authentication transitions; `graduate-cli` owns external I/O.
+Graduate is a Jira Cloud CLI and terminal interface. It shows which feature
+branches are in an environment such as `qa` but have not reached `main`,
+enriched with each branch's Jira ticket, and includes a guided setup for Jira
+Cloud credentials.
 
 ## Install
 
@@ -34,8 +34,8 @@ cargo install --path crates/graduate-cli
 gd auth setup jira
 ```
 
-Like Drag, Graduate requires an explicit command. Run `gd --help` to list the
-available commands.
+Graduate requires an explicit command. Run `gd --help` to list the available
+commands.
 
 ## Promotion reports
 
@@ -46,41 +46,36 @@ reached the repository's main branch:
 gd diff qa
 ```
 
-Move between branches with the arrow keys or `j`/`k`. The viewport scrolls
-smoothly with the selection, and selection-specific Jira warnings clear when
-you move to another branch. The default layout keeps a full-width detail card
-above the branch table. Short terminals with enough horizontal room adapt to a
-master-detail layout, placing the branch table beside a persistent inspector so
-more rows remain visible. Compact-height reports also omit the Graduate artwork
-to prioritize report content.
+Move between branches with the arrow keys or `j`/`k`. A detail card above the
+branch table describes the selected branch. On terminals that are short but
+wide, Graduate moves the detail card beside the table so more rows stay
+visible.
 
-Graduate fetches `origin`, discovers the remote default branch (then falls back
+Graduate fetches `origin`, discovers the remote default branch (falling back
 to `main`, `master`, `trunk`, or `develop`), and streams alphabetically sorted
-rows into a terminal list. The interface opens before the interactive fetch and
-updates when scanning begins. Pass `--main <branch>` for a custom main branch.
-Branch names containing a Jira key such as `PROJ-123` are enriched with the
-ticket summary, status, assignee, and fix versions when Jira is configured.
-Missing Jira tickets show a `not found` status. Select a row and press `o` to
-open its ticket.
+rows into a terminal list. The list opens before the fetch and updates when
+scanning begins. Pass `--main <branch>` to set the main branch. When Jira is
+configured, a branch name that contains a Jira key such as `PROJ-123` gains
+the ticket summary, status, assignee, and fix versions. Tickets that Jira
+cannot find show a dash. Select a row and press `o` to open its ticket.
 
-Press `h` to open a content-adaptive history sheet listing the selected
-branch's commits ahead of the resolved main branch in newest-first order. The
-sheet shows each commit's short SHA, subject, author, and date alongside its
-list position, and uses `h` or Escape to close.
+Press `h` to open a history sheet listing the selected branch's commits ahead
+of main, newest first. Each row shows the commit's short SHA, subject, author,
+and date. Press `h` or Escape to close the sheet.
 
-Feature branches that have had an environment branch merged into them are
-rendered in red, and selecting one shows a warning in the footer. Such a
-branch's start date and ahead count include environment history rather than
-its own work, so the merge direction should be corrected before promotion.
-Detection follows each environment branch's own merge commits, so a branch
-that only merged the main branch is never flagged. Machine formats expose the
-same signal as a `mergedEnvironments` field.
+Graduate renders a feature branch in red when an environment branch was merged
+into it, and shows a footer warning when you select it. That branch's start
+date and ahead count include environment history rather than its own work.
+Before you promote it, rebuild the branch so it contains only its own commits,
+for example by rebasing it onto main. Graduate follows each environment
+branch's own merge commits, so a branch that only merged the main branch is
+never flagged. Machine formats expose the same signal as a
+`mergedEnvironments` field.
 
-For machine use, Graduate follows API-native output conventions. Non-interactive
-runs emit JSON by default, with camelCase report fields and Jira issue data in
-the same `fields.status.name`, `fields.assignee.displayName`, and
-`fields.fixVersions` shapes returned by Jira. Select another representation
-with `--format json|table|yaml|csv`, and write it with `-o, --output <path>`:
+Non-interactive runs emit JSON by default, with camelCase report fields and
+Jira issue data in the same `fields.status.name`, `fields.assignee.displayName`,
+and `fields.fixVersions` shapes that Jira returns. Select another format with
+`--format json|table|yaml|csv`, and write it to a file with `-o, --output <path>`:
 
 ```bash
 mkdir -p reports
@@ -100,18 +95,17 @@ Run the interactive Jira authentication wizard:
 gd auth setup jira
 ```
 
-Graduate uses the same Jira Cloud authentication method as Drag: Jira site,
-Atlassian account email, and Atlassian API token. The token is masked, verified
-with the read-only Jira `/rest/api/3/myself` endpoint, and saved only after the
-review screen is confirmed. Existing tokens can be retained without being
-loaded into an editable field.
+Graduate authenticates with a Jira site, an Atlassian account email, and an
+Atlassian API token. The wizard masks the token, verifies it with the
+read-only Jira `/rest/api/3/myself` endpoint, and saves it only after you
+confirm the review screen. You can keep an existing token without displaying
+it.
 
-The interactive wizard follows Drag's guided layout: boxed, focusable inputs;
-explicit Continue, Connect, and Save actions; Tab and Shift-Tab navigation; and
-a final connection manifest. Text fields support cursor movement and
-Unicode-aware editing. Graduate omits Drag's Tempo authentication step. Set
-`GRADUATE_REDUCED_MOTION=1` to replace moving setup effects with short fades.
-The setup interface supports terminal panes at least 76 columns by 48 rows.
+The wizard uses boxed, focusable inputs with explicit Continue, Connect, and
+Save actions; move between them with Tab and Shift-Tab. Text fields support
+cursor movement and Unicode-aware editing. Set `GRADUATE_REDUCED_MOTION=1` to
+replace moving setup effects with short fades. Setup requires a terminal at
+least 76 columns by 48 rows.
 
 For unattended setup:
 
@@ -131,10 +125,8 @@ gd auth setup jira --from-env --dry-run
 
 Add `--verify` to the dry-run for an explicit read-only Jira check. The default
 configuration path is `~/.graduate/config.json`; override it with `--config` or
-`GRADUATE_CONFIG`. Graduate stores connections in a versioned, provider-tagged
-configuration so other ticket systems can be added without mixing credential
-formats. Graduate reads the original flat Jira configuration and writes the new
-schema after the next successful setup.
+`GRADUATE_CONFIG`. Configuration files from earlier Graduate versions still
+work; Graduate upgrades them on the next successful setup.
 
 ## Workspace
 
@@ -148,9 +140,8 @@ See [`docs/architecture.md`](docs/architecture.md) for the design rules.
 
 ## AI agent skills
 
-Graduate includes repository-controlled Agent Skills generated from its CLI
-contract. Generation stages and validates the complete update before replacing
-existing skill artifacts:
+Graduate generates portable Agent Skills from its command definitions. It
+validates the complete set before replacing any existing skill files:
 
 ```bash
 cargo run -- generate-skills --force
@@ -172,7 +163,7 @@ touching a real remote or Jira configuration:
 
 ```bash
 pnpm test:diff                         # interactive TUI
-pnpm --silent test:diff -- --format json  # clean API-native JSON
+pnpm --silent test:diff -- --format json  # machine-readable JSON
 pnpm --silent test:diff -- --format table
 pnpm --silent test:diff -- --format yaml
 pnpm --silent test:diff -- --format csv
@@ -182,8 +173,8 @@ The fixture contains two branches in `qa` but not `main`, plus one branch that
 has already graduated and must be excluded. Set
 `GRADUATE_DIFF_FIXTURE_KEEP=1` to retain the temporary repository for inspection
 or to test `--output` files. The interactive launcher creates a pseudo-terminal
-with the controlling terminal's dimensions; if it cannot find one, it exits with
-instructions instead of silently falling back to JSON.
+with the controlling terminal's dimensions; if no controlling terminal exists,
+it exits with instructions instead of silently falling back to JSON.
 
 ## License
 

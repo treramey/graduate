@@ -1,6 +1,7 @@
 # Contributing
 
-Discuss substantial behavior or compatibility changes before implementation.
+Open a GitHub issue to discuss substantial behavior or compatibility changes
+before you implement them.
 
 ## Local checks
 
