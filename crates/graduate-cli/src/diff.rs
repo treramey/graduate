@@ -676,7 +676,7 @@ fn format_table(report: &PromotionReport) -> String {
         let status = match &row.jira {
             JiraIssueState::Loaded(issue) => issue.status.as_str(),
             JiraIssueState::Failed { .. } => "error",
-            JiraIssueState::NotFound { .. } => "not found",
+            JiraIssueState::NotFound { .. } => "—",
             JiraIssueState::NotConfigured { .. } => "not configured",
             JiraIssueState::Loading { .. } => "loading",
             JiraIssueState::NoTicket => "—",

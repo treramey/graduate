@@ -325,14 +325,16 @@ fn draw(terminal: &mut StderrTerminal, model: &mut DiffModel) -> Result<(), CliE
 fn render(frame: &mut Frame<'_>, model: &mut DiffModel) {
     let area = theme::constrain_content_width(frame.area());
     if frame.area().height <= MASTER_DETAIL_MAX_HEIGHT {
-        let [_top_padding, title, _title_margin, main, footer] = Layout::vertical([
-            Constraint::Length(SPACE_1X),
-            Constraint::Length(1),
-            Constraint::Length(SPACE_1X),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
+        let [_top_padding, title, _title_margin, main, _footer_margin, footer] =
+            Layout::vertical([
+                Constraint::Length(SPACE_1X),
+                Constraint::Length(1),
+                Constraint::Length(SPACE_1X),
+                Constraint::Fill(1),
+                Constraint::Length(SPACE_1X),
+                Constraint::Length(1),
+            ])
+            .areas(area);
         render_title(frame, title, model, true);
         render_report(frame, main, model);
         render_footer(frame, footer, model);
@@ -341,15 +343,17 @@ fn render(frame: &mut Frame<'_>, model: &mut DiffModel) {
         }
         return;
     }
-    let [_top_padding, header, _header_padding, title, main, footer] = Layout::vertical([
-        Constraint::Length(SPACE_2X),
-        Constraint::Length(theme::GRADUATE_ART_HEIGHT),
-        Constraint::Length(SPACE_1X),
-        Constraint::Length(3),
-        Constraint::Fill(1),
-        Constraint::Length(3),
-    ])
-    .areas(area);
+    let [_top_padding, header, _header_padding, title, main, _footer_margin, footer] =
+        Layout::vertical([
+            Constraint::Length(SPACE_2X),
+            Constraint::Length(theme::GRADUATE_ART_HEIGHT),
+            Constraint::Length(SPACE_1X),
+            Constraint::Length(3),
+            Constraint::Fill(1),
+            Constraint::Length(SPACE_1X),
+            Constraint::Length(3),
+        ])
+        .areas(area);
     theme::render_brand_header(frame, header);
     render_title(frame, title, model, false);
     render_report(frame, main, model);
@@ -393,6 +397,7 @@ fn render_history(frame: &mut Frame<'_>, model: &mut DiffModel) {
     frame
         .buffer_mut()
         .set_style(outer, Style::new().add_modifier(Modifier::DIM));
+    let viewport = theme::constrain_content_width(outer);
     let context_width = terminal_text::escape(&report.branch).chars().count()
         + format!("  ·  {} commits  ·  newest first", report.commits.len()).len();
     let commit_width = report
@@ -409,10 +414,7 @@ fn render_history(frame: &mut Frame<'_>, model: &mut DiffModel) {
     let desired_width = u16::try_from(context_width.max(commit_width).max(title_width))
         .unwrap_or(u16::MAX)
         .saturating_add(6);
-    let width = desired_width
-        .clamp(50, 90)
-        .min(outer.width.saturating_sub(4))
-        .max(1);
+    let width = desired_width.max(50).min(viewport.width).max(1);
     let desired_height = u16::try_from(report.commits.len())
         .unwrap_or(u16::MAX)
         .saturating_add(13);
@@ -421,7 +423,7 @@ fn render_history(frame: &mut Frame<'_>, model: &mut DiffModel) {
         .min(outer.height.saturating_sub(4))
         .max(MIN_HISTORY_HEIGHT.min(outer.height));
     let area = Rect::new(
-        outer.x + outer.width.saturating_sub(width) / 2,
+        viewport.x + viewport.width.saturating_sub(width) / 2,
         outer.y + outer.height.saturating_sub(height) / 2,
         width,
         height,
@@ -754,10 +756,10 @@ fn inspector_status(selected: Option<&PromotionBranch>) -> Vec<Line<'static>> {
 
 fn jira_columns(state: &JiraIssueState) -> (String, String) {
     match state {
-        JiraIssueState::NoTicket => ("—".to_owned(), "no ticket".to_owned()),
+        JiraIssueState::NoTicket => ("—".to_owned(), "—".to_owned()),
         JiraIssueState::NotConfigured { key } => (key.clone(), "not configured".to_owned()),
         JiraIssueState::Loading { key } => (key.clone(), "loading…".to_owned()),
-        JiraIssueState::NotFound { key } => (key.clone(), "not found".to_owned()),
+        JiraIssueState::NotFound { key } => (key.clone(), "—".to_owned()),
         JiraIssueState::Loaded(issue) => (issue.key.clone(), issue.status.clone()),
         JiraIssueState::Failed { key, .. } => (key.clone(), "Jira error".to_owned()),
     }

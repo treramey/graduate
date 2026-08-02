@@ -8,6 +8,11 @@ All notable changes to this project will be documented in this file.
 
 - Excluded merge commits from promotion ahead counts and branch history, so
   branches that repeatedly sync main no longer report inflated commit counts.
+- Standardized missing Jira tickets to a dash in the promotion status column,
+  replacing the mixed `not found` and `no ticket` labels.
+- Added a one-row margin between the promotion table and the footer bar.
+- Let the Git history sheet grow to the full content viewport width instead
+  of capping at 90 columns.
 - Added a compact master-detail promotion layout for short terminals with
   enough horizontal room, while keeping the full-width details-above-table
   layout on larger screens. Compact-height reports omit the Graduate artwork
