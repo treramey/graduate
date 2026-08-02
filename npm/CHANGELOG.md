@@ -1,5 +1,16 @@
 # @treramey/graduate
 
+## 1.2.0
+
+### Minor Changes
+
+- f9ed0dd: Flag promotion-report branches that have had an environment branch merged into them. Flagged rows render in red, selecting one explains in the footer that its ahead count and dates include environment commits, and JSON/CSV outputs gain a `mergedEnvironments` field.
+
+### Patch Changes
+
+- 785a232: Exclude merge commits from promotion ahead counts and the history sheet, so long-lived branches that sync often with main no longer report inflated ahead numbers.
+- 785a232: Show a dash for missing Jira tickets in the promotion report status column, add a margin between the report table and the footer bar, and let the Git history sheet grow to the full viewport width.
+
 ## 1.1.1
 
 ### Patch Changes
