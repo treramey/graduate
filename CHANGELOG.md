@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Recovered promoted work whose feature branch was deleted after its pull
+  request completed. The promotion report now also groups the non-merge
+  commits unique to the environment by the Jira key in their subject and
+  adds one row per key that no surviving branch already covers, so tickets
+  merged from since-deleted branches appear instead of vanishing. Merge
+  commits are skipped, so environment sync merges never produce rows.
+
 ### Fixed
 
 - Flagged environment merges that an environment rebuild or pull-style

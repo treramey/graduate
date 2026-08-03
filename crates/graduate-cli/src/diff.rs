@@ -259,11 +259,28 @@ fn scan_repository(
         }
     }
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    let covered_keys = candidates
+        .iter()
+        .filter_map(|(branch, _)| jira_key_from_branch(branch))
+        .collect::<HashSet<_>>();
+    let recovered = recover_deleted_branch_tickets(
+        &repository,
+        environment_id,
+        &main_ancestors,
+        &covered_keys,
+        options.jira_configured,
+    )?;
+    let mut branches = candidates
+        .iter()
+        .map(|(name, _)| name.clone())
+        .chain(recovered.iter().map(|row| row.branch.clone()))
+        .collect::<Vec<_>>();
+    branches.sort();
     updates
         .send(DiffUpdate::Skeleton {
             environment: options.environment.clone(),
             main: main.clone(),
-            branches: candidates.iter().map(|(name, _)| name.clone()).collect(),
+            branches,
         })
         .map_err(|_| CliError::ReportCancelled)?;
 
@@ -282,6 +299,11 @@ fn scan_repository(
             id,
             jira,
         )?;
+        updates
+            .send(DiffUpdate::Measured(row))
+            .map_err(|_| CliError::ReportCancelled)?;
+    }
+    for row in recovered {
         updates
             .send(DiffUpdate::Measured(row))
             .map_err(|_| CliError::ReportCancelled)?;
@@ -526,6 +548,110 @@ fn measure_branch(
         merged_environments,
         jira,
     })
+}
+
+/// Work that reached the environment through a branch whose remote ref no
+/// longer exists (deleted when its pull request completed) or whose current
+/// tip is no longer reachable from the environment.
+///
+/// Non-merge commits unique to the environment are grouped by the Jira key
+/// in their subject, one synthetic row per key, named after the key. Keys in
+/// `covered_keys` already have a real branch row and are skipped. Merge
+/// commits are skipped entirely: environment sync merges ("master into qa")
+/// carry no promotable work, and a real feature merge always brings the
+/// branch's own commits into the range.
+fn recover_deleted_branch_tickets(
+    repository: &gix::Repository,
+    environment_tip: gix::ObjectId,
+    main_ancestors: &HashSet<gix::ObjectId>,
+    covered_keys: &HashSet<String>,
+    jira_configured: bool,
+) -> Result<Vec<PromotionBranch>, CliError> {
+    struct TicketWork {
+        started: i64,
+        last: i64,
+        last_author: String,
+        commits: Vec<(i64, PromotionCommit)>,
+    }
+    let mut tickets: HashMap<String, TicketWork> = HashMap::new();
+    let mut visited = HashSet::new();
+    let mut pending = VecDeque::from([environment_tip]);
+    while let Some(id) = pending.pop_front() {
+        if main_ancestors.contains(&id) || !visited.insert(id) {
+            continue;
+        }
+        let commit = repository.find_commit(id).map_err(gitoxide_error)?;
+        let parents = commit
+            .parent_ids()
+            .map(|parent| parent.detach())
+            .collect::<Vec<_>>();
+        pending.extend(parents.iter().copied());
+        if parents.len() > 1 {
+            continue;
+        }
+        let message = commit.message_raw().map_err(gitoxide_error)?;
+        let subject = message
+            .to_str_lossy()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let Some(key) = jira_key_from_branch(&subject) else {
+            continue;
+        };
+        if covered_keys.contains(&key) {
+            continue;
+        }
+        let author = commit.author().map_err(gitoxide_error)?;
+        let seconds = author.time().map_err(gitoxide_error)?.seconds;
+        let author_name = author.name.to_str_lossy().into_owned();
+        let id = id.to_string();
+        let entry = tickets.entry(key).or_insert_with(|| TicketWork {
+            started: seconds,
+            last: seconds,
+            last_author: author_name.clone(),
+            commits: Vec::new(),
+        });
+        entry.started = entry.started.min(seconds);
+        if seconds >= entry.last {
+            entry.last = seconds;
+            entry.last_author = author_name.clone();
+        }
+        entry.commits.push((
+            seconds,
+            PromotionCommit {
+                short_id: id.chars().take(7).collect(),
+                subject,
+                author: author_name,
+                date: unix_date(seconds),
+            },
+        ));
+    }
+    let mut rows = tickets
+        .into_iter()
+        .map(|(key, work)| {
+            let mut commits = work.commits;
+            commits.sort_by_key(|commit| std::cmp::Reverse(commit.0));
+            let jira = if jira_configured {
+                JiraIssueState::Loading { key: key.clone() }
+            } else {
+                JiraIssueState::NotConfigured { key: key.clone() }
+            };
+            PromotionBranch {
+                branch: key,
+                started: unix_date(work.started),
+                last: unix_date(work.last),
+                ahead: commits.len(),
+                last_author: work.last_author,
+                commits: commits.into_iter().map(|(_, commit)| commit).collect(),
+                merged_environments: Vec::new(),
+                jira,
+            }
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.branch.cmp(&right.branch));
+    Ok(rows)
 }
 
 fn excluded_branch(branch: &str, environment: &str, main: &str) -> bool {
@@ -2174,6 +2300,260 @@ mod tests {
             merged.as_deref(),
             Some(&["qa".to_owned(), "staging".to_owned()][..])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn work_from_a_deleted_branch_is_recovered_by_commit_subject_jira_key(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        run_git(directory.path(), &["init", "-q", "-b", "main"])?;
+        run_git(directory.path(), &["config", "user.name", "Test Author"])?;
+        run_git(
+            directory.path(),
+            &["config", "user.email", "test@example.com"],
+        )?;
+        std::fs::write(directory.path().join("file"), "base\n")?;
+        run_git(directory.path(), &["add", "file"])?;
+        commit(directory.path(), "base", "2024-01-01T00:00:00Z")?;
+        run_git(directory.path(), &["checkout", "-q", "-b", "PROJ-500"])?;
+        std::fs::write(directory.path().join("file"), "base\nwidget\n")?;
+        run_git(directory.path(), &["add", "file"])?;
+        commit(
+            directory.path(),
+            "PROJ-500: add widget",
+            "2024-02-01T00:00:00Z",
+        )?;
+        std::fs::write(directory.path().join("file"), "base\nwidget\npolish\n")?;
+        run_git(directory.path(), &["add", "file"])?;
+        commit(
+            directory.path(),
+            "PROJ-500: polish widget",
+            "2024-02-02T00:00:00Z",
+        )?;
+        run_git(directory.path(), &["checkout", "-q", "-b", "qa", "main"])?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "PROJ-500",
+                "-m",
+                "Merged PR 1: PROJ-500",
+            ],
+        )?;
+        // Only main and qa exist on the remote: the feature branch was
+        // deleted when its pull request completed.
+        for branch in ["main", "qa"] {
+            run_git(
+                directory.path(),
+                &[
+                    "update-ref",
+                    &format!("refs/remotes/origin/{branch}"),
+                    &format!("refs/heads/{branch}"),
+                ],
+            )?;
+        }
+        run_git(
+            directory.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )?;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        scan_repository(
+            &ScanOptions {
+                repository: directory.path().to_path_buf(),
+                environment: "qa".to_owned(),
+                main: None,
+                remote: "origin".to_owned(),
+                jira_configured: false,
+                fetch_before_scan: false,
+            },
+            &sender,
+        )?;
+        drop(sender);
+        let updates = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+
+        assert!(matches!(
+            updates.first(),
+            Some(DiffUpdate::Skeleton { branches, .. }) if branches == &["PROJ-500"]
+        ));
+        assert!(matches!(
+            updates.get(1),
+            Some(DiffUpdate::Measured(PromotionBranch {
+                branch,
+                started,
+                last,
+                ahead: 2,
+                commits,
+                jira: JiraIssueState::NotConfigured { key },
+                ..
+            })) if branch == "PROJ-500"
+                && started == "2024-02-01"
+                && last == "2024-02-02"
+                && commits.len() == 2
+                && commits[0].subject == "PROJ-500: polish widget"
+                && commits[1].subject == "PROJ-500: add widget"
+                && key == "PROJ-500"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn merge_commit_subjects_never_create_recovered_ticket_rows(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        run_git(directory.path(), &["init", "-q", "-b", "main"])?;
+        run_git(directory.path(), &["config", "user.name", "Test Author"])?;
+        run_git(
+            directory.path(),
+            &["config", "user.email", "test@example.com"],
+        )?;
+        std::fs::write(directory.path().join("file"), "base\n")?;
+        run_git(directory.path(), &["add", "file"])?;
+        commit(directory.path(), "base", "2024-01-01T00:00:00Z")?;
+        // A branch whose commits carry no ticket key, merged with a subject
+        // that does: the key must not surface because merge commits are
+        // skipped and no non-merge commit names it.
+        run_git(directory.path(), &["checkout", "-q", "-b", "throwaway"])?;
+        std::fs::write(directory.path().join("file"), "base\nwork\n")?;
+        run_git(directory.path(), &["add", "file"])?;
+        commit(directory.path(), "no ticket here", "2024-02-01T00:00:00Z")?;
+        run_git(directory.path(), &["checkout", "-q", "-b", "qa", "main"])?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "throwaway",
+                "-m",
+                "Merged PR 3: PROJ-700",
+            ],
+        )?;
+        for branch in ["main", "qa"] {
+            run_git(
+                directory.path(),
+                &[
+                    "update-ref",
+                    &format!("refs/remotes/origin/{branch}"),
+                    &format!("refs/heads/{branch}"),
+                ],
+            )?;
+        }
+        run_git(
+            directory.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )?;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        scan_repository(
+            &ScanOptions {
+                repository: directory.path().to_path_buf(),
+                environment: "qa".to_owned(),
+                main: None,
+                remote: "origin".to_owned(),
+                jira_configured: false,
+                fetch_before_scan: false,
+            },
+            &sender,
+        )?;
+        drop(sender);
+        let updates = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+
+        assert!(matches!(
+            updates.first(),
+            Some(DiffUpdate::Skeleton { branches, .. }) if branches.is_empty()
+        ));
+        assert_eq!(updates.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_surviving_branch_suppresses_the_recovered_row_for_its_key(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        run_git(directory.path(), &["init", "-q", "-b", "main"])?;
+        run_git(directory.path(), &["config", "user.name", "Test Author"])?;
+        run_git(
+            directory.path(),
+            &["config", "user.email", "test@example.com"],
+        )?;
+        std::fs::write(directory.path().join("file"), "base\n")?;
+        run_git(directory.path(), &["add", "file"])?;
+        commit(directory.path(), "base", "2024-01-01T00:00:00Z")?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "feature/PROJ-123-login"],
+        )?;
+        std::fs::write(directory.path().join("file"), "base\nfeature\n")?;
+        run_git(directory.path(), &["add", "file"])?;
+        commit(
+            directory.path(),
+            "PROJ-123: add login",
+            "2024-02-01T00:00:00Z",
+        )?;
+        run_git(directory.path(), &["checkout", "-q", "-b", "qa", "main"])?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feature/PROJ-123-login",
+                "-m",
+                "promote",
+            ],
+        )?;
+        for branch in ["main", "qa", "feature/PROJ-123-login"] {
+            run_git(
+                directory.path(),
+                &[
+                    "update-ref",
+                    &format!("refs/remotes/origin/{branch}"),
+                    &format!("refs/heads/{branch}"),
+                ],
+            )?;
+        }
+        run_git(
+            directory.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )?;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        scan_repository(
+            &ScanOptions {
+                repository: directory.path().to_path_buf(),
+                environment: "qa".to_owned(),
+                main: None,
+                remote: "origin".to_owned(),
+                jira_configured: false,
+                fetch_before_scan: false,
+            },
+            &sender,
+        )?;
+        drop(sender);
+        let updates = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+
+        assert!(matches!(
+            updates.first(),
+            Some(DiffUpdate::Skeleton { branches, .. })
+                if branches == &["feature/PROJ-123-login"]
+        ));
+        assert_eq!(updates.len(), 2);
         Ok(())
     }
 

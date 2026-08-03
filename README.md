@@ -46,6 +46,11 @@ reached the repository's main branch:
 gd diff qa
 ```
 
+Branches deleted after their pull request completed still appear: Graduate
+groups the non-merge commits unique to the environment by the Jira key in
+their subject and adds one row per key, named after the key, when no
+surviving branch covers it.
+
 Move between branches with the arrow keys or `j`/`k`. A detail card above the
 branch table describes the selected branch. On terminals that are short but
 wide, Graduate moves the detail card beside the table so more rows stay
