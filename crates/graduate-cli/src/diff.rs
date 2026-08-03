@@ -575,8 +575,9 @@ fn fetch_remote_name(remote: &str, interactive: bool) -> Result<(), CliError> {
             ])
             .env("GIT_PAT", pat)
             .env("GIT_TERMINAL_PROMPT", "0")
-            .stdout(Stdio::null());
-        return check_fetch(authenticated.status(), true, !interactive);
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        return check_fetch(authenticated.output(), true, !interactive);
     }
     if !interactive {
         let mut unattended = Command::new("git");
@@ -589,14 +590,16 @@ fn fetch_remote_name(remote: &str, interactive: bool) -> Result<(), CliError> {
                 remote,
             ])
             .env("GIT_TERMINAL_PROMPT", "0")
-            .stdout(Stdio::null());
-        return check_fetch(unattended.status(), false, true);
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        return check_fetch(unattended.output(), false, true);
     }
     let mut command = Command::new("git");
     command
         .args(["fetch", "--prune", remote])
-        .stdout(Stdio::null());
-    check_fetch(command.status(), false, false)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    check_fetch(command.output(), false, false)
 }
 
 fn fetch_status_message(remote: &str, has_pat: bool, interactive: bool) -> Option<String> {
@@ -614,28 +617,38 @@ fn fetch_status_message(remote: &str, has_pat: bool, interactive: bool) -> Optio
 }
 
 fn check_fetch(
-    result: io::Result<std::process::ExitStatus>,
+    result: io::Result<std::process::Output>,
     used_pat: bool,
     unattended: bool,
 ) -> Result<(), CliError> {
     match result {
-        Ok(status) if status.success() => Ok(()),
-        Ok(_) if used_pat => Err(CliError::Git(
-            "could not fetch the remote; the PAT was rejected, expired, or lacks repository read access"
-                .to_owned(),
-        )),
-        Ok(_) if unattended => Err(CliError::Git(
-            "could not fetch the remote with cached credentials; set GIT_PAT for a headless run"
-                .to_owned(),
-        )),
-        Ok(_) => Err(CliError::Git(
-            "could not fetch the remote; complete authentication and run the command again"
-                .to_owned(),
-        )),
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) if used_pat => Err(CliError::Git(with_git_stderr(
+            "could not fetch the remote; the PAT was rejected, expired, or lacks repository read access",
+            &output,
+        ))),
+        Ok(output) if unattended => Err(CliError::Git(with_git_stderr(
+            "could not fetch the remote with cached credentials; set GIT_PAT for a headless run",
+            &output,
+        ))),
+        Ok(output) => Err(CliError::Git(with_git_stderr(
+            "could not fetch the remote; complete authentication and run the command again",
+            &output,
+        ))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Err(CliError::Git(
             "could not run git fetch because the git executable was not found".to_owned(),
         )),
         Err(error) => Err(CliError::Io(error)),
+    }
+}
+
+fn with_git_stderr(message: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        message.to_owned()
+    } else {
+        format!("{message}\n{stderr}")
     }
 }
 
