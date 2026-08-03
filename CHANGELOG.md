@@ -9,7 +9,10 @@ All notable changes to this project will be documented in this file.
 - Flagged environment merges that an environment rebuild or pull-style
   self-merge moved off the environment branch's first-parent line, so stale
   feature branches carrying older environment history keep their
-  `mergedEnvironments` warning.
+  `mergedEnvironments` warning. Merge subjects that name an environment as
+  the merge target or source both count, so a `--no-ff` merge of an
+  environment into a feature branch stays flagged even after the environment
+  branch is reset.
 
 ### Changed
 

@@ -82,9 +82,10 @@ for example by rebasing it onto main. Graduate follows each environment
 branch's own merge commits, so a branch that only merged the main branch is
 never flagged. Environment merges stay flagged even after the environment
 branch is rebuilt or synced with pull-style self-merges, because Graduate
-also recognizes older environment merge commits by their recorded merge
-subjects. Machine formats expose the same signal as a `mergedEnvironments`
-field.
+also recognizes merge commits whose recorded subject names an environment
+branch as the merge target or source, including `--no-ff` merges of an
+environment into a feature branch. Machine formats expose the same signal as
+a `mergedEnvironments` field.
 
 Non-interactive runs emit JSON by default, with camelCase report fields and
 Jira issue data in the same `fields.status.name`, `fields.assignee.displayName`,

@@ -234,13 +234,10 @@ fn scan_repository(
     let main_id = reference_id(&repository, &main_ref)?;
     let environment_ancestors = ancestors(&repository, environment_id)?;
     let main_ancestors = ancestors(&repository, main_id)?;
-    let environment_markers = environment_merge_markers(
-        &repository,
-        &prefix,
-        &options.environment,
-        &main,
-        &main_ancestors,
-    )?;
+    let names = environment_names(&options.environment, &main);
+    let environment_markers =
+        environment_merge_markers(&repository, &prefix, &names, &main_ancestors)?;
+    let environment_subjects = environment_subjects(&names);
 
     let mut candidates = Vec::new();
     let references = repository.references().map_err(gitoxide_error)?;
@@ -280,6 +277,7 @@ fn scan_repository(
             &repository,
             &main_ancestors,
             &environment_markers,
+            &environment_subjects,
             branch,
             id,
             jira,
@@ -345,25 +343,9 @@ fn ancestors(
     Ok(found)
 }
 
-/// Merge commits that carry environment branch history, keyed by commit id
-/// and valued by the environment branch name.
-///
-/// A feature branch that can reach one of these commits has had that
-/// environment branch merged into it. Merges made on an environment branch's
-/// own first-parent line always count. Merges elsewhere in the environment's
-/// history count when their subject line records the environment as the
-/// merge target, which recovers environment merges that pull-style
-/// environment self-merges and environment rebuilds moved off the
-/// first-parent line. Merges that only pull main into the environment are
-/// skipped, so a feature branch that merged main is never flagged.
-fn environment_merge_markers(
-    repository: &gix::Repository,
-    prefix: &str,
-    environment: &str,
-    main: &str,
-    main_ancestors: &HashSet<gix::ObjectId>,
-) -> Result<HashMap<gix::ObjectId, String>, CliError> {
-    let mut markers = HashMap::new();
+/// Environment branch names to detect merges for: the requested environment
+/// first, then the other known environments, never the main branch.
+fn environment_names<'a>(environment: &'a str, main: &str) -> Vec<&'a str> {
     let mut names = vec![environment];
     names.extend(
         KNOWN_ENVIRONMENTS
@@ -372,104 +354,80 @@ fn environment_merge_markers(
             .filter(|name| *name != environment),
     );
     names.retain(|name| *name != main);
-    let subjects = names
-        .iter()
-        .map(|name| (format!(" into {}", name.to_ascii_lowercase()), *name))
-        .collect::<Vec<_>>();
-    let mut visited = HashSet::new();
-    for name in &names {
+    names
+}
+
+/// Merge commits made on an environment branch's own first-parent line,
+/// keyed by commit id and valued by the environment branch name.
+///
+/// A feature branch that can reach one of these commits has had that
+/// environment branch merged into it. Merges that only pull main into the
+/// environment are skipped, so a feature branch that merged main is never
+/// flagged.
+fn environment_merge_markers(
+    repository: &gix::Repository,
+    prefix: &str,
+    names: &[&str],
+    main_ancestors: &HashSet<gix::ObjectId>,
+) -> Result<HashMap<gix::ObjectId, String>, CliError> {
+    let mut markers = HashMap::new();
+    for name in names {
         let Ok(tip) = reference_id(repository, &format!("{prefix}{name}")) else {
             continue;
         };
-        first_parent_markers(repository, name, tip, main_ancestors, &mut markers)?;
-        subject_markers(
-            repository,
-            &subjects,
-            tip,
-            main_ancestors,
-            &mut visited,
-            &mut markers,
-        )?;
+        let mut visited = HashSet::new();
+        let mut current = Some(tip);
+        while let Some(id) = current {
+            if main_ancestors.contains(&id) || !visited.insert(id) {
+                break;
+            }
+            let commit = repository.find_commit(id).map_err(gitoxide_error)?;
+            let mut parents = commit.parent_ids().map(|parent| parent.detach());
+            let first = parents.next();
+            if let Some(second) = parents.next() {
+                if !main_ancestors.contains(&second) {
+                    markers.entry(id).or_insert_with(|| (*name).to_owned());
+                }
+            }
+            current = first;
+        }
     }
     Ok(markers)
 }
 
-/// Merge commits made on the environment branch's own first-parent line.
-fn first_parent_markers(
-    repository: &gix::Repository,
-    environment: &str,
-    tip: gix::ObjectId,
-    main_ancestors: &HashSet<gix::ObjectId>,
-    markers: &mut HashMap<gix::ObjectId, String>,
-) -> Result<(), CliError> {
-    let mut visited = HashSet::new();
-    let mut current = Some(tip);
-    while let Some(id) = current {
-        if main_ancestors.contains(&id) || !visited.insert(id) {
-            break;
-        }
-        let commit = repository.find_commit(id).map_err(gitoxide_error)?;
-        let mut parents = commit.parent_ids().map(|parent| parent.detach());
-        let first = parents.next();
-        if let Some(second) = parents.next() {
-            if !main_ancestors.contains(&second) {
-                markers.entry(id).or_insert_with(|| environment.to_owned());
-            }
-        }
-        current = first;
-    }
-    Ok(())
+/// Lowercase merge-subject patterns that reveal an environment branch as the
+/// merge target or source.
+struct EnvironmentSubject {
+    /// Environment name reported in `merged_environments`.
+    environment: String,
+    /// `Merge branch 'X' into qa`: the merge was made on the environment.
+    target: String,
+    /// `Merge branch 'qa' into X`: the environment was merged into the line.
+    source: String,
+    /// `Merge remote-tracking branch 'origin/qa'` and similar remote forms.
+    remote_source: String,
 }
 
-/// Merge commits anywhere in the environment's history whose recorded
-/// subject names an environment branch as the merge target.
-fn subject_markers(
-    repository: &gix::Repository,
-    subjects: &[(String, &str)],
-    tip: gix::ObjectId,
-    main_ancestors: &HashSet<gix::ObjectId>,
-    visited: &mut HashSet<gix::ObjectId>,
-    markers: &mut HashMap<gix::ObjectId, String>,
-) -> Result<(), CliError> {
-    let mut pending = VecDeque::from([tip]);
-    while let Some(id) = pending.pop_front() {
-        if main_ancestors.contains(&id) || !visited.insert(id) {
-            continue;
-        }
-        let commit = repository.find_commit(id).map_err(gitoxide_error)?;
-        let parents = commit
-            .parent_ids()
-            .map(|parent| parent.detach())
-            .collect::<Vec<_>>();
-        pending.extend(parents.iter().copied());
-        let Some(second) = parents.get(1) else {
-            continue;
-        };
-        if main_ancestors.contains(second) || markers.contains_key(&id) {
-            continue;
-        }
-        let message = commit.message_raw().map_err(gitoxide_error)?;
-        let subject = message
-            .to_str_lossy()
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        if let Some((_, environment)) = subjects
-            .iter()
-            .find(|(suffix, _)| subject.ends_with(suffix.as_str()))
-        {
-            markers.insert(id, (*environment).to_owned());
-        }
-    }
-    Ok(())
+fn environment_subjects(names: &[&str]) -> Vec<EnvironmentSubject> {
+    names
+        .iter()
+        .map(|name| {
+            let lower = name.to_ascii_lowercase();
+            EnvironmentSubject {
+                environment: (*name).to_owned(),
+                target: format!(" into {lower}"),
+                source: format!("branch '{lower}'"),
+                remote_source: format!("/{lower}'"),
+            }
+        })
+        .collect()
 }
 
 fn measure_branch(
     repository: &gix::Repository,
     main_ancestors: &HashSet<gix::ObjectId>,
     environment_markers: &HashMap<gix::ObjectId, String>,
+    environment_subjects: &[EnvironmentSubject],
     branch: String,
     tip: gix::ObjectId,
     jira: JiraIssueState,
@@ -494,9 +452,39 @@ fn measure_branch(
             }
         }
         let commit = repository.find_commit(id).map_err(gitoxide_error)?;
-        pending.extend(commit.parent_ids().map(|parent| parent.detach()));
-        if commit.parent_ids().count() > 1 {
-            // Merge commits carry no promotable work of their own.
+        let parents = commit
+            .parent_ids()
+            .map(|parent| parent.detach())
+            .collect::<Vec<_>>();
+        pending.extend(parents.iter().copied());
+        if parents.len() > 1 {
+            // Merge commits carry no promotable work of their own, but their
+            // recorded subjects reveal environment merges that survive even
+            // after the environment branch itself is rebuilt.
+            let brings_foreign_history = parents
+                .get(1)
+                .is_some_and(|second| !main_ancestors.contains(second));
+            if brings_foreign_history {
+                let message = commit.message_raw().map_err(gitoxide_error)?;
+                let subject = message
+                    .to_str_lossy()
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                if subject.starts_with("merge ") {
+                    for candidate in environment_subjects {
+                        if (subject.ends_with(&candidate.target)
+                            || subject.contains(&candidate.source)
+                            || subject.contains(&candidate.remote_source))
+                            && !merged_environments.contains(&candidate.environment)
+                        {
+                            merged_environments.push(candidate.environment.clone());
+                        }
+                    }
+                }
+            }
             continue;
         }
         let commit_author = commit.author().map_err(gitoxide_error)?;
@@ -1749,6 +1737,196 @@ mod tests {
         assert_eq!(
             merged_environments("feature/PROJ-302-clean").as_deref(),
             Some(&[][..])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_ff_environment_merges_survive_an_environment_reset(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        run_git(directory.path(), &["init", "-q", "-b", "main"])?;
+        run_git(directory.path(), &["config", "user.name", "Test Author"])?;
+        run_git(
+            directory.path(),
+            &["config", "user.email", "test@example.com"],
+        )?;
+        std::fs::write(directory.path().join("base"), "base\n")?;
+        run_git(directory.path(), &["add", "base"])?;
+        commit(directory.path(), "base", "2024-01-01T00:00:00Z")?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "feature/PROJ-400-noise"],
+        )?;
+        std::fs::write(directory.path().join("noise"), "noise\n")?;
+        run_git(directory.path(), &["add", "noise"])?;
+        commit(directory.path(), "noise feature", "2024-02-01T00:00:00Z")?;
+        run_git(directory.path(), &["checkout", "-q", "-b", "qa", "main"])?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feature/PROJ-400-noise",
+                "-m",
+                "promote noise",
+            ],
+        )?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "feature/PROJ-401-dependent", "main"],
+        )?;
+        std::fs::write(directory.path().join("dependent"), "dependent\n")?;
+        run_git(directory.path(), &["add", "dependent"])?;
+        commit(
+            directory.path(),
+            "dependent feature",
+            "2024-02-02T00:00:00Z",
+        )?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "qa",
+                "-m",
+                "Merge branch 'qa' into feature/PROJ-401-dependent",
+            ],
+        )?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "feature/PROJ-402-sibling", "main"],
+        )?;
+        std::fs::write(directory.path().join("sibling"), "sibling\n")?;
+        run_git(directory.path(), &["add", "sibling"])?;
+        commit(directory.path(), "sibling feature", "2024-02-03T00:00:00Z")?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feature/PROJ-400-noise",
+                "-m",
+                "Merge branch 'feature/PROJ-400-noise' into feature/PROJ-402-sibling",
+            ],
+        )?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "feature/PROJ-403-remote", "main"],
+        )?;
+        std::fs::write(directory.path().join("remote"), "remote\n")?;
+        run_git(directory.path(), &["add", "remote"])?;
+        commit(directory.path(), "remote feature", "2024-02-04T00:00:00Z")?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "qa",
+                "-m",
+                "Merge remote-tracking branch 'origin/qa'",
+            ],
+        )?;
+        // Reset the environment so the old promote-noise merge leaves its
+        // first-parent line, then promote the features onto the new line.
+        run_git(directory.path(), &["branch", "-q", "-f", "qa", "main"])?;
+        run_git(directory.path(), &["checkout", "-q", "qa"])?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feature/PROJ-401-dependent",
+                "-m",
+                "promote dependent",
+            ],
+        )?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feature/PROJ-402-sibling",
+                "-m",
+                "promote sibling",
+            ],
+        )?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feature/PROJ-403-remote",
+                "-m",
+                "promote remote",
+            ],
+        )?;
+        for branch in [
+            "main",
+            "qa",
+            "feature/PROJ-401-dependent",
+            "feature/PROJ-402-sibling",
+            "feature/PROJ-403-remote",
+        ] {
+            run_git(
+                directory.path(),
+                &[
+                    "update-ref",
+                    &format!("refs/remotes/origin/{branch}"),
+                    &format!("refs/heads/{branch}"),
+                ],
+            )?;
+        }
+        run_git(
+            directory.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )?;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        scan_repository(
+            &ScanOptions {
+                repository: directory.path().to_path_buf(),
+                environment: "qa".to_owned(),
+                main: None,
+                remote: "origin".to_owned(),
+                jira_configured: false,
+                fetch_before_scan: false,
+            },
+            &sender,
+        )?;
+        drop(sender);
+        let updates = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        let merged_environments = |branch: &str| {
+            updates.iter().find_map(|update| match update {
+                DiffUpdate::Measured(row) if row.branch == branch => {
+                    Some(row.merged_environments.clone())
+                }
+                _ => None,
+            })
+        };
+
+        assert_eq!(
+            merged_environments("feature/PROJ-401-dependent").as_deref(),
+            Some(&["qa".to_owned()][..])
+        );
+        assert_eq!(
+            merged_environments("feature/PROJ-402-sibling").as_deref(),
+            Some(&[][..])
+        );
+        assert_eq!(
+            merged_environments("feature/PROJ-403-remote").as_deref(),
+            Some(&["qa".to_owned()][..])
         );
         Ok(())
     }
