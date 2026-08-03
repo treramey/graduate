@@ -1,5 +1,31 @@
 # @treramey/graduate
 
+## 1.3.0
+
+### Minor Changes
+
+- 1ba5b4c: Recover promoted work whose feature branch no longer exists. Hosting
+  platforms often delete the source branch when a pull request completes,
+  which made that work invisible to the branch-based promotion report even
+  though its commits still sit in the environment. Graduate now also scans
+  the non-merge commits unique to the environment, groups them by the Jira
+  key in their subject, and adds one row per key that no surviving branch
+  already covers. Merge commits are skipped, so environment sync merges
+  never produce rows.
+
+### Patch Changes
+
+- 949b39e: Show only Jira-validated ticket keys in promotion report ticket columns; branches without a validated ticket leave the key blank and read `not found`.
+- 520267d: Keep the text-presentation `⚠` merge-warning marker; the emoji-presentation form left a stray trailing character on the footer row in terminals that draw it two columns wide.
+- 949b39e: Keep environment-merge warnings on stale feature branches after the
+  environment branch is rebuilt or synced with pull-style self-merges.
+  Graduate now recognizes merge commits whose recorded subject names an
+  environment branch as the merge target or source, so `--no-ff` merges of an
+  environment into a feature branch stay flagged even after the environment
+  branch is reset.
+- a126624: Always show a promotion row's Jira key instead of hiding keys that match the branch name, and label branches whose names carry no Jira key with a muted `no ticket` status.
+- 949b39e: Warn in the promotion report footer when nearly every Jira lookup returns not found, pointing at the Jira site or project access instead of individual branches.
+
 ## 1.2.1
 
 ### Patch Changes
