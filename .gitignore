@@ -7,7 +7,6 @@ lcov.info
 
 # Local agent tooling
 /.pi/
-/.agents/
 /VENT.md
 /skills-lock.json
 

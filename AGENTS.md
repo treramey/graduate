@@ -5,6 +5,12 @@
 - Keep feature workflow in `<feature>.rs` and terminal rendering and events in a flat `<feature>_tui.rs` sibling.
 - Read `CONTEXT.md` and `docs/architecture.md` before changing behavior.
 
+## Demo videos
+
+- Demo recordings use [VHS](https://github.com/charmbracelet/vhs) `.tape` files.
+- Read `.agent/skills/vhs.md` before writing, editing, or reviewing a tape.
+- Test every changed tape locally with `vhs <file>.tape` before committing.
+
 ## Changesets
 
 Every pull request that touches Rust or Cargo files MUST include a changeset.
