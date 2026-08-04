@@ -510,15 +510,8 @@ fn render_age_report(frame: &mut Frame<'_>, model: &mut DiffModel) {
     frame
         .buffer_mut()
         .set_style(outer, Style::new().add_modifier(Modifier::DIM));
-    let viewport = theme::constrain_content_width(outer);
-    let width = viewport.width.clamp(1, 100);
     let height = outer.height.saturating_sub(4).clamp(1, 34);
-    let area = Rect::new(
-        viewport.x + viewport.width.saturating_sub(width) / 2,
-        outer.y + outer.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let area = modal_area(outer, height);
     let card = Block::default()
         .borders(Borders::ALL)
         .border_style(Palette::muted())
@@ -708,24 +701,6 @@ fn render_history(frame: &mut Frame<'_>, model: &mut DiffModel) {
     frame
         .buffer_mut()
         .set_style(outer, Style::new().add_modifier(Modifier::DIM));
-    let viewport = theme::constrain_content_width(outer);
-    let context_width = terminal_text::escape(&report.branch).chars().count()
-        + format!("  ·  {} commits  ·  newest first", report.commits.len()).len();
-    let commit_width = report
-        .commits
-        .iter()
-        .map(|commit| {
-            terminal_text::escape(&commit.subject).chars().count()
-                + terminal_text::escape(&commit.author).chars().count()
-                + 40
-        })
-        .max()
-        .unwrap_or(0);
-    let title_width = terminal_text::escape(&model.main).chars().count() + 20;
-    let desired_width = u16::try_from(context_width.max(commit_width).max(title_width))
-        .unwrap_or(u16::MAX)
-        .saturating_add(6);
-    let width = desired_width.max(50).min(viewport.width).max(1);
     let desired_height = u16::try_from(report.commits.len())
         .unwrap_or(u16::MAX)
         .saturating_add(13);
@@ -733,12 +708,7 @@ fn render_history(frame: &mut Frame<'_>, model: &mut DiffModel) {
         .min(24)
         .min(outer.height.saturating_sub(4))
         .max(MIN_HISTORY_HEIGHT.min(outer.height));
-    let area = Rect::new(
-        viewport.x + viewport.width.saturating_sub(width) / 2,
-        outer.y + outer.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let area = modal_area(outer, height);
     let rows = report.commits.iter().map(|commit| {
         Row::new([
             terminal_text::escape(&commit.short_id),
@@ -830,6 +800,16 @@ fn render_history(frame: &mut Frame<'_>, model: &mut DiffModel) {
         .alignment(HorizontalAlignment::Center),
         footer,
     );
+}
+
+fn modal_area(outer: Rect, height: u16) -> Rect {
+    let viewport = theme::constrain_content_width(outer);
+    Rect::new(
+        viewport.x,
+        outer.y + outer.height.saturating_sub(height) / 2,
+        viewport.width.max(1),
+        height,
+    )
 }
 
 fn render_history_divider(frame: &mut Frame<'_>, area: Rect) {
@@ -1376,6 +1356,12 @@ mod tests {
     }
 
     #[test]
+    fn every_modal_uses_the_wide_content_viewport() {
+        assert_eq!(modal_area(Rect::new(0, 0, 160, 48), 34).width, 115);
+        assert_eq!(modal_area(Rect::new(0, 0, 90, 48), 24).width, 90);
+    }
+
+    #[test]
     fn renders_skeleton_rows_before_measurements_finish() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut model = test_model()?;
@@ -1624,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn history_sheet_adapts_to_its_content_and_explains_the_comparison(
+    fn history_sheet_uses_the_wide_modal_and_explains_the_comparison(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut model = test_model()?;
         model.main = "main".to_owned();

@@ -84,6 +84,8 @@ are no filler years or synthetic cutoff bucket. It calls out work written in
 the last 90 days and work older than one year, and identifies the branches
 carrying commits from the oldest observed year. Use the arrow keys or `j`/`k`
 to scroll long reports. Press `a` or Escape to close the report.
+The history and age-report modals share the same wide content viewport and
+narrow only when the terminal requires it.
 
 Graduate renders a feature branch in red with a `⚠` marker beside its name
 when an environment branch was merged into it, and shows a footer warning when

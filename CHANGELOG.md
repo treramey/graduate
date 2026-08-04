@@ -29,6 +29,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Standardized the Git-history and age-report modals on the same wide content
+  viewport, while preserving responsive narrowing on smaller terminals.
 - Clarified customer-facing text: rewrote the README introduction and
   promotion-report guidance, simplified CLI help and setup wizard copy,
   labeled dry-run output explicitly, and added a remediation hint to the
