@@ -12,6 +12,7 @@ use graduate::promotion::{
     jira_key_from_branch, AgeBucket, JiraIssueState, PromotionAgeReport, PromotionBranch,
     PromotionCommit, ReportDate,
 };
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
@@ -55,6 +56,13 @@ struct ScanOptions {
     remote: String,
     jira_configured: bool,
     fetch_before_scan: bool,
+    selected_branches: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiffParams {
+    branches: Vec<String>,
 }
 
 pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliError> {
@@ -63,8 +71,10 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
     if let Some(main) = &args.main {
         validate_ref_component("main branch", main)?;
     }
+    let selected_branches = parse_selected_branches(args.params.as_deref())?;
     let report_kind = args.report.unwrap_or(DiffReport::Branches);
     let interactive = args.report.is_none()
+        && args.params.is_none()
         && args.output_format.is_none()
         && args.output.is_none()
         && io::stdin().is_terminal()
@@ -86,6 +96,7 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
         remote: args.remote.clone(),
         jira_configured: credentials.is_some(),
         fetch_before_scan: !args.no_fetch && interactive,
+        selected_branches,
     };
     let coordinator = tokio::spawn(coordinate_scan(scan, credentials, updates_tx));
 
@@ -97,8 +108,8 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
     let coordinator_result = coordinator
         .await
         .map_err(|error| CliError::Git(format!("promotion scan task failed: {error}")))?;
-    let report = report_result?;
     coordinator_result?;
+    let report = report_result?;
     if !interactive {
         write_report(
             &report,
@@ -249,37 +260,31 @@ fn scan_repository(
         environment_merge_markers(&repository, &prefix, &names, &main_ancestors)?;
     let environment_subjects = environment_subjects(&names, &options.remote);
 
-    let mut candidates = Vec::new();
-    let references = repository.references().map_err(gitoxide_error)?;
-    let references = references
-        .prefixed(prefix.as_str())
-        .map_err(gitoxide_error)?;
-    for reference in references {
-        let mut reference = reference.map_err(gitoxide_error)?;
-        let full_name = reference.name().as_bstr().to_str_lossy();
-        let Some(branch) = full_name.strip_prefix(&prefix).map(str::to_owned) else {
-            continue;
-        };
-        if excluded_branch(&branch, &options.environment, &main) {
-            continue;
-        }
-        let id = reference.peel_to_id().map_err(gitoxide_error)?.detach();
-        if environment_ancestors.contains(&id) && !main_ancestors.contains(&id) {
-            candidates.push((branch, id));
-        }
-    }
+    let mut candidates = promotion_candidates(
+        &repository,
+        &prefix,
+        &options.environment,
+        &main,
+        &environment_ancestors,
+        &main_ancestors,
+        options.selected_branches.as_deref(),
+    )?;
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
     let covered_keys = candidates
         .iter()
         .filter_map(|(branch, _)| jira_key_from_branch(branch))
         .collect::<HashSet<_>>();
-    let recovered = recover_deleted_branch_tickets(
-        &repository,
-        environment_id,
-        &main_ancestors,
-        &covered_keys,
-        options.jira_configured,
-    )?;
+    let recovered = if options.selected_branches.is_none() {
+        recover_deleted_branch_tickets(
+            &repository,
+            environment_id,
+            &main_ancestors,
+            &covered_keys,
+            options.jira_configured,
+        )?
+    } else {
+        Vec::new()
+    };
     let mut branches = candidates
         .iter()
         .map(|(name, _)| name.clone())
@@ -319,6 +324,64 @@ fn scan_repository(
             .map_err(|_| CliError::ReportCancelled)?;
     }
     Ok(())
+}
+
+fn promotion_candidates(
+    repository: &gix::Repository,
+    prefix: &str,
+    environment: &str,
+    main: &str,
+    environment_ancestors: &HashSet<gix::ObjectId>,
+    main_ancestors: &HashSet<gix::ObjectId>,
+    selected_branches: Option<&[String]>,
+) -> Result<Vec<(String, gix::ObjectId)>, CliError> {
+    if let Some(selected_branches) = selected_branches {
+        let mut candidates = Vec::with_capacity(selected_branches.len());
+        for branch in selected_branches {
+            if excluded_branch(branch, environment, main) {
+                return Err(CliError::InvalidInput(format!(
+                    "--params branch `{branch}` is not a selectable feature branch"
+                )));
+            }
+            let reference = format!("{prefix}{branch}");
+            let id = reference_id(repository, &reference).map_err(|_| {
+                CliError::InvalidInput(format!(
+                    "--params branch `{branch}` does not exist on the selected remote"
+                ))
+            })?;
+            if main_ancestors.contains(&id) {
+                return Err(CliError::InvalidInput(format!(
+                    "--params branch `{branch}` has already reached `{main}`"
+                )));
+            }
+            if !environment_ancestors.contains(&id) {
+                return Err(CliError::InvalidInput(format!(
+                    "--params branch `{branch}` has not reached `{environment}`"
+                )));
+            }
+            candidates.push((branch.clone(), id));
+        }
+        return Ok(candidates);
+    }
+
+    let mut candidates = Vec::new();
+    let references = repository.references().map_err(gitoxide_error)?;
+    let references = references.prefixed(prefix).map_err(gitoxide_error)?;
+    for reference in references {
+        let mut reference = reference.map_err(gitoxide_error)?;
+        let full_name = reference.name().as_bstr().to_str_lossy();
+        let Some(branch) = full_name.strip_prefix(prefix).map(str::to_owned) else {
+            continue;
+        };
+        if excluded_branch(&branch, environment, main) {
+            continue;
+        }
+        let id = reference.peel_to_id().map_err(gitoxide_error)?.detach();
+        if environment_ancestors.contains(&id) && !main_ancestors.contains(&id) {
+            candidates.push((branch, id));
+        }
+    }
+    Ok(candidates)
 }
 
 fn resolve_main_branch(
@@ -793,8 +856,35 @@ fn with_git_stderr(message: &str, output: &std::process::Output) -> String {
     }
 }
 
+fn parse_selected_branches(params: Option<&str>) -> Result<Option<Vec<String>>, CliError> {
+    let Some(params) = params else {
+        return Ok(None);
+    };
+    let parsed: DiffParams = serde_json::from_str(params).map_err(|error| {
+        CliError::InvalidInput(format!(
+            "--params must be a JSON object like {{\"branches\":[\"feature/A\",\"feature/B\"]}}: {error}"
+        ))
+    })?;
+    if parsed.branches.is_empty() {
+        return Err(CliError::InvalidInput(
+            "--params branches must contain at least one feature branch".to_owned(),
+        ));
+    }
+    for branch in &parsed.branches {
+        validate_ref_component("--params branch", branch)?;
+    }
+    let mut branches = parsed.branches;
+    branches.sort();
+    branches.dedup();
+    Ok(Some(branches))
+}
+
 fn validate_ref_component(label: &str, value: &str) -> Result<(), CliError> {
-    if value.trim().is_empty() || value.starts_with('-') || value.chars().any(char::is_control) {
+    if value.trim().is_empty()
+        || value.starts_with('-')
+        || value.chars().any(char::is_control)
+        || gix::validate::reference::name_partial(value.as_bytes().as_bstr()).is_err()
+    {
         return Err(CliError::InvalidInput(format!(
             "{label} must be a non-empty Git branch or remote name"
         )));
@@ -1835,6 +1925,38 @@ mod tests {
     }
 
     #[test]
+    fn json_params_select_sort_and_deduplicate_branches() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let branches = parse_selected_branches(Some(
+            r#"{"branches":["feature/PROJ-2","feature/PROJ-1","feature/PROJ-2"]}"#,
+        ))?
+        .ok_or("JSON params did not select branches")?;
+
+        assert_eq!(branches, ["feature/PROJ-1", "feature/PROJ-2"]);
+        assert!(parse_selected_branches(None)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn json_params_reject_empty_or_unknown_selection_fields() {
+        let empty = parse_selected_branches(Some(r#"{"branches":[]}"#))
+            .err()
+            .map(|error| error.to_string());
+        let unknown = parse_selected_branches(Some(
+            r#"{"branches":["feature/PROJ-1"],"branch":"feature/PROJ-2"}"#,
+        ))
+        .err()
+        .map(|error| error.to_string());
+        let invalid_ref = parse_selected_branches(Some(r#"{"branches":["feature/bad branch"]}"#))
+            .err()
+            .map(|error| error.to_string());
+
+        assert!(empty.is_some_and(|message| message.contains("at least one feature branch")));
+        assert!(unknown.is_some_and(|message| message.contains("unknown field `branch`")));
+        assert!(invalid_ref.is_some_and(|message| message.contains("Git branch or remote name")));
+    }
+
+    #[test]
     fn stale_remote_head_falls_back_to_an_existing_main_name(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
@@ -1927,6 +2049,7 @@ mod tests {
                 remote: "origin".to_owned(),
                 jira_configured: false,
                 fetch_before_scan: false,
+                selected_branches: None,
             },
             &sender,
         )?;
@@ -1955,6 +2078,116 @@ mod tests {
                 && commits[0].date == "2024-02-01"
                 && commits[0].short_id.len() == 7
                 && key == "PROJ-123"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_can_scope_a_report_to_multiple_json_selected_branches(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        run_git(directory.path(), &["init", "-q", "-b", "main"])?;
+        run_git(directory.path(), &["config", "user.name", "Test Author"])?;
+        run_git(
+            directory.path(),
+            &["config", "user.email", "test@example.com"],
+        )?;
+        std::fs::write(directory.path().join("base"), "base\n")?;
+        run_git(directory.path(), &["add", "base"])?;
+        commit(directory.path(), "base", "2024-01-01T00:00:00Z")?;
+        run_git(directory.path(), &["branch", "qa", "main"])?;
+
+        for (branch, file, date) in [
+            ("feature/PROJ-1-first", "first", "2024-02-01T00:00:00Z"),
+            ("feature/PROJ-2-second", "second", "2024-02-02T00:00:00Z"),
+            ("feature/PROJ-3-third", "third", "2024-02-03T00:00:00Z"),
+        ] {
+            run_git(directory.path(), &["checkout", "-q", "main"])?;
+            run_git(directory.path(), &["checkout", "-q", "-b", branch])?;
+            std::fs::write(directory.path().join(file), format!("{file}\n"))?;
+            run_git(directory.path(), &["add", file])?;
+            commit(directory.path(), file, date)?;
+            run_git(directory.path(), &["checkout", "-q", "qa"])?;
+            run_git(
+                directory.path(),
+                &["merge", "-q", "--no-ff", branch, "-m", "promote"],
+            )?;
+        }
+        for branch in [
+            "main",
+            "qa",
+            "feature/PROJ-1-first",
+            "feature/PROJ-2-second",
+            "feature/PROJ-3-third",
+        ] {
+            run_git(
+                directory.path(),
+                &[
+                    "update-ref",
+                    &format!("refs/remotes/origin/{branch}"),
+                    &format!("refs/heads/{branch}"),
+                ],
+            )?;
+        }
+        run_git(
+            directory.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )?;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        scan_repository(
+            &ScanOptions {
+                repository: directory.path().to_path_buf(),
+                environment: "qa".to_owned(),
+                main: None,
+                remote: "origin".to_owned(),
+                jira_configured: false,
+                fetch_before_scan: false,
+                selected_branches: Some(vec![
+                    "feature/PROJ-3-third".to_owned(),
+                    "feature/PROJ-1-first".to_owned(),
+                ]),
+            },
+            &sender,
+        )?;
+        drop(sender);
+        let updates = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        let measured = updates
+            .iter()
+            .filter_map(|update| match update {
+                DiffUpdate::Measured(row) => Some(row.branch.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            updates.first(),
+            Some(DiffUpdate::Skeleton { branches, .. })
+                if branches == &["feature/PROJ-1-first", "feature/PROJ-3-third"]
+        ));
+        assert_eq!(measured, ["feature/PROJ-1-first", "feature/PROJ-3-third"]);
+
+        let (missing_sender, _missing_receiver) = mpsc::unbounded_channel();
+        let missing = scan_repository(
+            &ScanOptions {
+                repository: directory.path().to_path_buf(),
+                environment: "qa".to_owned(),
+                main: None,
+                remote: "origin".to_owned(),
+                jira_configured: false,
+                fetch_before_scan: false,
+                selected_branches: Some(vec!["feature/PROJ-404-missing".to_owned()]),
+            },
+            &missing_sender,
+        )
+        .err();
+        assert!(matches!(
+            missing,
+            Some(CliError::InvalidInput(message)) if message.contains("does not exist")
         ));
         Ok(())
     }
@@ -2031,6 +2264,7 @@ mod tests {
                 remote: "origin".to_owned(),
                 jira_configured: false,
                 fetch_before_scan: false,
+                selected_branches: None,
             },
             &sender,
         )?;
@@ -2171,6 +2405,7 @@ mod tests {
                 remote: "origin".to_owned(),
                 jira_configured: false,
                 fetch_before_scan: false,
+                selected_branches: None,
             },
             &sender,
         )?;
@@ -2335,6 +2570,7 @@ mod tests {
                 remote: "origin".to_owned(),
                 jira_configured: false,
                 fetch_before_scan: false,
+                selected_branches: None,
             },
             &sender,
         )?;
@@ -2521,6 +2757,7 @@ mod tests {
                 remote: "origin".to_owned(),
                 jira_configured: false,
                 fetch_before_scan: false,
+                selected_branches: None,
             },
             &sender,
         )?;
@@ -2651,6 +2888,7 @@ mod tests {
                 remote: "origin".to_owned(),
                 jira_configured: false,
                 fetch_before_scan: false,
+                selected_branches: None,
             },
             &sender,
         )?;
@@ -2761,6 +2999,7 @@ mod tests {
                 remote: "origin".to_owned(),
                 jira_configured: false,
                 fetch_before_scan: false,
+                selected_branches: None,
             },
             &sender,
         )?;
@@ -2850,6 +3089,7 @@ mod tests {
                 remote: "origin".to_owned(),
                 jira_configured: false,
                 fetch_before_scan: false,
+                selected_branches: None,
             },
             &sender,
         )?;
@@ -2941,6 +3181,7 @@ mod tests {
                 remote: "origin".to_owned(),
                 jira_configured: false,
                 fetch_before_scan: false,
+                selected_branches: None,
             },
             &sender,
         )?;
@@ -3019,6 +3260,7 @@ mod tests {
                 remote: "origin".to_owned(),
                 jira_configured: false,
                 fetch_before_scan: false,
+                selected_branches: None,
             },
             &sender,
         )?;

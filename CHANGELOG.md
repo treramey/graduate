@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Added `gd diff --params '{"branches":[...]}'` for agent-friendly branch and
+  age reports scoped to several exact feature branches, with strict validation
+  for missing, unpromoted, or already-graduated selections.
 - Added an advanced `gd diff --report age` report with authored-date-derived
   year buckets, explicit 90-day and one-year decision thresholds,
   oldest-branch details, structured JSON/YAML/CSV output, and an `a` hotkey

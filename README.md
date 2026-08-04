@@ -111,6 +111,20 @@ mkdir -p reports
 gd diff qa --format csv --output reports/qa.csv
 ```
 
+Agents can scope a report to several exact remote feature branches with JSON
+parameters:
+
+```bash
+gd diff qa --params '{"branches":["feature/PROJ-123","feature/PROJ-456"]}'
+gd diff qa --report age --params '{"branches":["feature/PROJ-123","feature/PROJ-456"]}'
+```
+
+`--params` selects unattended output, sorts and deduplicates the requested
+names, and applies the same scope to branch or age reports. Graduate fails with
+an explicit error if a requested branch does not exist, has not reached the
+environment, or has already reached main. Scoped reports include only the
+named remote branches and do not add recovered rows for deleted branch refs.
+
 Select the advanced age report explicitly for automation or a printable table:
 
 ```bash
@@ -118,7 +132,8 @@ gd diff qa --report age
 gd diff qa --report age --format table
 ```
 
-Supplying `--report branches|age` selects unattended output even in a terminal.
+Supplying `--report branches|age` or `--params` selects unattended output even
+in a terminal.
 The age report's JSON includes a schema version, UTC `asOf` date, explicit
 inclusive/exclusive threshold dates, percentages, stable assessment kinds, and
 the branches carrying the oldest work. Commits shared by several branches count

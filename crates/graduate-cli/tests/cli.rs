@@ -82,6 +82,7 @@ fn diff_help_describes_promotion_and_automation_options() -> Result<(), Box<dyn 
         .stdout(predicate::str::contains("<ENVIRONMENT>"))
         .stdout(predicate::str::contains("--main <BRANCH>"))
         .stdout(predicate::str::contains("--report <REPORT>"))
+        .stdout(predicate::str::contains("--params <JSON>"))
         .stdout(predicate::str::contains("--format <FORMAT>"))
         .stdout(predicate::str::contains("-o, --output <PATH>"))
         .stdout(predicate::str::contains("--csv").not())

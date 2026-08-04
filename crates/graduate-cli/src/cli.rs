@@ -45,6 +45,9 @@ pub(crate) struct DiffArgs {
     /// Report to emit. Supplying this flag selects unattended output.
     #[arg(long, value_name = "REPORT", value_enum)]
     pub(crate) report: Option<DiffReport>,
+    /// JSON parameters. Use {"branches":["feature/A","feature/B"]} to scope the report.
+    #[arg(long, value_name = "JSON")]
+    pub(crate) params: Option<String>,
     /// Output format. Non-interactive output defaults to json.
     #[arg(long = "format", value_name = "FORMAT", value_enum)]
     pub(crate) output_format: Option<ReportFormat>,
@@ -64,6 +67,7 @@ impl std::fmt::Debug for DiffArgs {
             .field("main", &self.main)
             .field("remote", &self.remote)
             .field("report", &self.report)
+            .field("params", &self.params)
             .field("output_format", &self.output_format)
             .field("output", &self.output)
             .field("no_fetch", &self.no_fetch)
@@ -176,6 +180,22 @@ mod tests {
         let cli = Cli::try_parse_from(["gd", "diff", "qa", "--report", "age"])?;
 
         assert!(format!("{cli:?}").contains("Age"));
+        Ok(())
+    }
+
+    #[test]
+    fn diff_accepts_json_parameters_for_multiple_branches() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from([
+            "gd",
+            "diff",
+            "qa",
+            "--params",
+            r#"{"branches":["feature/PROJ-1","feature/PROJ-2"]}"#,
+        ])?;
+        let debug = format!("{cli:?}");
+
+        assert!(debug.contains("feature/PROJ-1"));
+        assert!(debug.contains("feature/PROJ-2"));
         Ok(())
     }
 }

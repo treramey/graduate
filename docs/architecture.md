@@ -82,6 +82,9 @@ actions.
 - Promotion candidates are remote branch tips reachable from the environment
   branch but not from main. PATs are passed to a one-shot credential helper and
   never persisted in Git configuration.
+- JSON-scoped promotion reports validate every requested remote branch against
+  the same environment-to-main candidate rule and fail instead of silently
+  omitting an invalid selection.
 - Non-interactive promotion reports default to structured JSON. Alternative
   formats use the bounded `--format` surface, and `--output` rejects absolute
   paths, parent traversal, and symbolic-link destinations.

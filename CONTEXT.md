@@ -31,6 +31,9 @@
   dates, with explicit UTC thresholds and the branches carrying commits from
   the oldest observed year. The TUI opens the same scrollable projection with
   `a` after scanning completes.
+- `gd diff <environment> --params '{"branches":[...]}'` selects unattended
+  output scoped to exact remote branches. Requested branches must exist, be
+  reachable from the environment, and remain absent from main.
 - Promotion reports flag feature branches that had an environment branch
   merged into them by matching the environment's own merge commits in the
   branch's ahead-of-main history; merges of main are never flagged. Flagged

@@ -34,6 +34,12 @@ json|table|yaml|csv` and `--output <relative-path>` for other report surfaces.
 Configured Jira credentials enrich keys found in branch names. Provide headless
 Git authentication only through `GIT_PAT`; never print it.
 
+Scope a report to exact remote branches with `--params
+'{"branches":["feature/PROJ-123","feature/PROJ-456"]}'`. This always selects
+unattended output and works with either the default branch report or `--report
+age`. Requested branches must exist, be in the environment, and remain absent
+from main; invalid selections fail explicitly.
+
 Use `gd diff <environment> --report age` for the advanced commit-age report.
 Supplying `--report branches|age` always selects unattended output. Prefer JSON
 for agents: the age document has `schemaVersion`, UTC `asOf`, stable assessment
