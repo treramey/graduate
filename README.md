@@ -78,6 +78,11 @@ Press `h` to open a history sheet listing the selected branch's commits ahead
 of main, newest first. Each row shows the commit's short SHA, subject, author,
 and date. Press `h` or Escape to close the sheet.
 
+Press `a` after the scan completes to open the age report. It buckets unique
+unshipped commits by authored year, calls out work written in the last 90 days
+and work older than one year, and identifies the branches carrying the oldest
+commits. Press `a` or Escape to close the report.
+
 Graduate renders a feature branch in red with a `⚠` marker beside its name
 when an environment branch was merged into it, and shows a footer warning when
 you select it. That branch's start
@@ -101,6 +106,21 @@ and `fields.fixVersions` shapes that Jira returns. Select another format with
 mkdir -p reports
 gd diff qa --format csv --output reports/qa.csv
 ```
+
+Select the advanced age report explicitly for automation or a printable table:
+
+```bash
+gd diff qa --report age
+gd diff qa --report age --format table
+```
+
+Supplying `--report branches|age` selects unattended output even in a terminal.
+The age report's JSON includes a schema version, UTC `asOf` date, explicit
+inclusive/exclusive threshold dates, percentages, stable assessment kinds, and
+the branches carrying the oldest work. Commits shared by several branches count
+once in aggregate totals. CSV rows carry a `rowType` so agents can distinguish
+age buckets, decision thresholds, and oldest-branch details without parsing
+display text.
 
 Output paths are relative to the current directory and cannot traverse parent
 directories or symbolic links outside it. Set `GIT_PAT` for headless fetch authentication;
@@ -187,6 +207,8 @@ pnpm --silent test:diff -- --format json  # machine-readable JSON
 pnpm --silent test:diff -- --format table
 pnpm --silent test:diff -- --format yaml
 pnpm --silent test:diff -- --format csv
+pnpm --silent test:diff -- --report age
+pnpm --silent test:diff -- --report age --format table
 ```
 
 The fixture contains two branches in `qa` but not `main`, plus one branch that

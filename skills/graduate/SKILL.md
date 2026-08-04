@@ -34,6 +34,13 @@ json|table|yaml|csv` and `--output <relative-path>` for other report surfaces.
 Configured Jira credentials enrich keys found in branch names. Provide headless
 Git authentication only through `GIT_PAT`; never print it.
 
+Use `gd diff <environment> --report age` for the advanced commit-age report.
+Supplying `--report branches|age` always selects unattended output. Prefer JSON
+for agents: the age document has `schemaVersion`, UTC `asOf`, stable assessment
+kinds, explicit threshold dates, and `oldestBranches`. Aggregate totals count a
+commit once even when several branches contain it. In the interactive report,
+press `a` after scanning completes to open the same age projection.
+
 ## Current command contract
 
 ```text

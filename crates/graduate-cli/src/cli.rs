@@ -42,6 +42,9 @@ pub(crate) struct DiffArgs {
     /// Remote that owns the environment and feature branches.
     #[arg(long, value_name = "REMOTE", default_value = "origin")]
     pub(crate) remote: String,
+    /// Report to emit. Supplying this flag selects unattended output.
+    #[arg(long, value_name = "REPORT", value_enum)]
+    pub(crate) report: Option<DiffReport>,
     /// Output format. Non-interactive output defaults to json.
     #[arg(long = "format", value_name = "FORMAT", value_enum)]
     pub(crate) output_format: Option<ReportFormat>,
@@ -60,11 +63,18 @@ impl std::fmt::Debug for DiffArgs {
             .field("environment", &self.environment)
             .field("main", &self.main)
             .field("remote", &self.remote)
+            .field("report", &self.report)
             .field("output_format", &self.output_format)
             .field("output", &self.output)
             .field("no_fetch", &self.no_fetch)
             .finish()
     }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum DiffReport {
+    Branches,
+    Age,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -158,6 +168,14 @@ mod tests {
 
         assert!(debug.contains("Json"));
         assert!(debug.contains("report.json"));
+        Ok(())
+    }
+
+    #[test]
+    fn diff_selects_the_age_report_explicitly() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["gd", "diff", "qa", "--report", "age"])?;
+
+        assert!(format!("{cli:?}").contains("Age"));
         Ok(())
     }
 }

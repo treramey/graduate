@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
-use graduate::promotion::{systemic_not_found, JiraIssueState, PromotionBranch};
+use graduate::promotion::{
+    systemic_not_found, JiraIssueState, PromotionAgeReport, PromotionBranch, ReportDate,
+};
 use ratatui::layout::{Constraint, HorizontalAlignment, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -16,7 +18,10 @@ use ratatui::Frame;
 use tokio::sync::mpsc;
 
 use crate::browser::BrowserLauncher;
-use crate::diff::{DiffUpdate, PromotionReport};
+use crate::diff::{
+    age_bucket_label, age_bucket_reading, current_report_date, share_percent, DiffUpdate,
+    PromotionReport,
+};
 use crate::error::CliError;
 use crate::terminal::StderrTerminal;
 use crate::terminal_text;
@@ -91,6 +96,8 @@ struct DiffModel {
     history_open: bool,
     history_selected: usize,
     history_list_state: TableState,
+    as_of: ReportDate,
+    age_report: Option<PromotionAgeReport>,
 }
 
 enum Message {
@@ -104,6 +111,8 @@ enum Message {
     CycleSort,
     OpenHistory,
     CloseHistory,
+    OpenAgeReport,
+    CloseAgeReport,
     ScrollHistoryUp,
     ScrollHistoryDown,
     Tick,
@@ -119,7 +128,7 @@ enum Effect {
 }
 
 impl DiffModel {
-    fn new() -> Self {
+    fn new(as_of: ReportDate) -> Self {
         Self {
             environment: String::new(),
             main: String::new(),
@@ -133,6 +142,8 @@ impl DiffModel {
             history_open: false,
             history_selected: 0,
             history_list_state: TableState::default(),
+            as_of,
+            age_report: None,
         }
     }
 
@@ -144,6 +155,7 @@ impl DiffModel {
             self.history_open = false;
             self.history_selected = 0;
             self.history_list_state = TableState::default();
+            self.age_report = None;
         }
     }
 
@@ -262,6 +274,23 @@ fn update(model: &mut DiffModel, message: Message) -> Result<Effect, CliError> {
             model.history_selected = 0;
             model.history_list_state = TableState::default();
         }
+        Message::OpenAgeReport if !model.finished => {
+            model.warning = Some("The age report is available when the scan completes.".to_owned());
+        }
+        Message::OpenAgeReport => {
+            let branches = model
+                .rows
+                .iter()
+                .filter_map(|row| row.report.clone())
+                .collect::<Vec<_>>();
+            model.age_report = Some(
+                PromotionAgeReport::new(&branches, model.as_of).map_err(|error| {
+                    CliError::Git(format!("could not build age report: {error}"))
+                })?,
+            );
+            model.warning = None;
+        }
+        Message::CloseAgeReport => model.age_report = None,
         Message::ScrollHistoryUp => {
             model.history_selected = model.history_selected.saturating_sub(1);
             model
@@ -292,6 +321,10 @@ fn message_for_key(model: &DiffModel, code: KeyCode, modifiers: KeyModifiers) ->
         return Some(Message::Cancel);
     }
     match code {
+        KeyCode::Char('q') | KeyCode::Char('a') | KeyCode::Esc if model.age_report.is_some() => {
+            Some(Message::CloseAgeReport)
+        }
+        _ if model.age_report.is_some() => None,
         KeyCode::Char('q') | KeyCode::Char('h') | KeyCode::Esc if model.history_open => {
             Some(Message::CloseHistory)
         }
@@ -307,6 +340,7 @@ fn message_for_key(model: &DiffModel, code: KeyCode, modifiers: KeyModifiers) ->
         KeyCode::Char('o') => Some(Message::OpenTicket),
         KeyCode::Char('s') if !model.history_open => Some(Message::CycleSort),
         KeyCode::Char('h') => Some(Message::OpenHistory),
+        KeyCode::Char('a') => Some(Message::OpenAgeReport),
         _ => None,
     }
 }
@@ -329,7 +363,7 @@ pub(crate) async fn run(
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(TICK_RATE);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut model = DiffModel::new();
+    let mut model = DiffModel::new(current_report_date()?);
     let mut updates_open = true;
 
     let result = loop {
@@ -407,7 +441,9 @@ fn render(frame: &mut Frame<'_>, model: &mut DiffModel) {
         render_title(frame, title, model, true);
         render_report(frame, main, model);
         render_footer(frame, footer, model);
-        if model.history_open {
+        if model.age_report.is_some() {
+            render_age_report(frame, model);
+        } else if model.history_open {
             render_history(frame, model);
         }
         return;
@@ -427,9 +463,183 @@ fn render(frame: &mut Frame<'_>, model: &mut DiffModel) {
     render_title(frame, title, model, false);
     render_report(frame, main, model);
     render_footer(frame, footer, model);
-    if model.history_open {
+    if model.age_report.is_some() {
+        render_age_report(frame, model);
+    } else if model.history_open {
         render_history(frame, model);
     }
+}
+
+fn render_age_report(frame: &mut Frame<'_>, model: &DiffModel) {
+    let Some(age) = model.age_report.as_ref() else {
+        return;
+    };
+    let outer = frame.area();
+    frame
+        .buffer_mut()
+        .set_style(outer, Style::new().add_modifier(Modifier::DIM));
+    let viewport = theme::constrain_content_width(outer);
+    let width = viewport.width.clamp(1, 100);
+    let height = outer.height.saturating_sub(4).clamp(1, 34);
+    let area = Rect::new(
+        viewport.x + viewport.width.saturating_sub(width) / 2,
+        outer.y + outer.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let card = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Palette::muted())
+        .style(Palette::overlay())
+        .padding(Padding::new(SPACE_1X, SPACE_1X, 0, 0));
+    let content = card.inner(area);
+    let [title, context, ages, oldest_title, oldest, footer] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(12),
+        Constraint::Length(2),
+        Constraint::Fill(1),
+        Constraint::Length(2),
+    ])
+    .areas(content);
+    let mut age_rows = age
+        .buckets
+        .iter()
+        .map(|bucket| {
+            Row::new([
+                age_bucket_label(bucket.period),
+                bucket.commits.to_string(),
+                format!("{:.1}%", share_percent(bucket.commits, age.total_commits)),
+                age_bucket_reading(age, bucket),
+            ])
+        })
+        .collect::<Vec<_>>();
+    age_rows.push(
+        Row::new([
+            "Written in last 90 days".to_owned(),
+            age.last_90_days.commits.to_string(),
+            format!(
+                "{:.1}%",
+                share_percent(age.last_90_days.commits, age.total_commits)
+            ),
+            "Genuinely in flight".to_owned(),
+        ])
+        .style(Palette::text().bold()),
+    );
+    age_rows.push(
+        Row::new([
+            "Older than one year".to_owned(),
+            age.older_than_one_year.commits.to_string(),
+            format!(
+                "{:.1}%",
+                share_percent(age.older_than_one_year.commits, age.total_commits)
+            ),
+            "Will not ship without a decision".to_owned(),
+        ])
+        .style(Palette::text().bold()),
+    );
+    let age_table = Table::new(
+        age_rows,
+        [
+            Constraint::Length(24),
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Min(24),
+        ],
+    )
+    .header(Row::new(["WRITTEN IN", "COMMITS", "SHARE", "READING"]).style(Palette::muted().bold()))
+    .column_spacing(1);
+    if content.height < 22 {
+        let [compact_title, compact_ages] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(content);
+        frame.render_widget(Clear, area);
+        frame.render_widget(card, area);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "The age of unshipped work — the decisive measure",
+                Palette::primary().bold(),
+            ))
+            .alignment(HorizontalAlignment::Center),
+            compact_title,
+        );
+        frame.render_widget(age_table, compact_ages);
+        return;
+    }
+    let oldest_rows = age.oldest_branches.iter().take(6).map(|branch| {
+        Row::new([
+            terminal_text::escape(&branch.branch),
+            branch.commits.to_string(),
+            branch.oldest.to_string(),
+            branch.newest.to_string(),
+        ])
+    });
+    let oldest_table = Table::new(
+        oldest_rows,
+        [
+            Constraint::Min(28),
+            Constraint::Length(8),
+            Constraint::Length(10),
+            Constraint::Length(10),
+        ],
+    )
+    .header(Row::new(["BRANCH", "COMMITS", "OLDEST", "NEWEST"]).style(Palette::muted().bold()))
+    .column_spacing(1);
+    let cutoff = age
+        .buckets
+        .last()
+        .map_or_else(String::new, |bucket| match bucket.period {
+            graduate::promotion::AgePeriod::Before(year) => format!("before {year}"),
+            period => age_bucket_label(period),
+        });
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(card, area);
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "The age of unshipped work — the decisive measure",
+            Palette::primary().bold(),
+        ))
+        .alignment(HorizontalAlignment::Center),
+        title,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("All "),
+            Span::styled(age.total_commits.to_string(), Palette::text().bold()),
+            Span::raw(" unique authored commits in "),
+            Span::styled(
+                terminal_text::escape(&model.environment),
+                Palette::text().bold(),
+            ),
+            Span::raw(" but not "),
+            Span::styled(terminal_text::escape(&model.main), Palette::text().bold()),
+            Span::styled(format!("  ·  as of {}", age.as_of), Palette::muted()),
+        ]))
+        .alignment(HorizontalAlignment::Center),
+        context,
+    );
+    frame.render_widget(age_table, ages);
+    let oldest_heading = if age.oldest_branches.len() > 6 {
+        format!(
+            "Top 6 of {} oldest branches {cutoff}",
+            age.oldest_branches.len()
+        )
+    } else {
+        format!("Oldest branches {cutoff}")
+    };
+    frame.render_widget(
+        Paragraph::new(Line::styled(oldest_heading, Palette::primary().bold())),
+        oldest_title,
+    );
+    frame.render_widget(oldest_table, oldest);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Esc/a", Palette::primary()),
+            Span::raw(" close age report"),
+        ]))
+        .alignment(HorizontalAlignment::Center),
+        footer,
+    );
 }
 
 fn render_report(frame: &mut Frame<'_>, area: Rect, model: &mut DiffModel) {
@@ -1100,6 +1310,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, model: &DiffModel) {
             Span::raw(" open Jira   "),
             Span::styled("h", Palette::primary()),
             Span::raw(" git history   "),
+            Span::styled("a", Palette::primary()),
+            Span::raw(" age report   "),
             Span::styled("s", Palette::primary()),
             Span::raw(" sort   "),
             Span::styled("q", Palette::primary()),
@@ -1119,6 +1331,7 @@ mod tests {
 
     fn test_commit(subject: &str) -> PromotionCommit {
         PromotionCommit {
+            id: format!("a1b2c3d-{subject}"),
             short_id: "a1b2c3d".to_owned(),
             subject: subject.to_owned(),
             author: "Pat".to_owned(),
@@ -1126,10 +1339,14 @@ mod tests {
         }
     }
 
+    fn test_model() -> Result<DiffModel, graduate::promotion::ReportDateError> {
+        Ok(DiffModel::new(ReportDate::parse("2026-08-04")?))
+    }
+
     #[test]
     fn renders_skeleton_rows_before_measurements_finish() -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1151,7 +1368,7 @@ mod tests {
     #[test]
     fn short_wide_report_places_selected_branch_inspector_beside_the_table(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         let mut terminal = Terminal::new(TestBackend::new(110, 32))?;
 
         terminal.draw(|frame| render(frame, &mut model))?;
@@ -1179,7 +1396,7 @@ mod tests {
 
     #[test]
     fn tall_report_stacks_details_above_the_full_table() -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
 
         terminal.draw(|frame| render(frame, &mut model))?;
@@ -1202,7 +1419,7 @@ mod tests {
 
     #[test]
     fn loaded_jira_details_are_visible() -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1250,7 +1467,7 @@ mod tests {
     #[test]
     fn inspector_separates_jira_status_from_branch_metadata(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1299,7 +1516,7 @@ mod tests {
     #[test]
     fn very_short_inspector_keeps_branch_metadata_visible() -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1336,7 +1553,7 @@ mod tests {
 
     #[test]
     fn history_list_scrolls_to_any_number_of_commits() -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1377,7 +1594,7 @@ mod tests {
     #[test]
     fn history_sheet_adapts_to_its_content_and_explains_the_comparison(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         model.main = "main".to_owned();
         model.rows.push(BranchRow {
             branch: "feature/PROJ-123-login".to_owned(),
@@ -1447,9 +1664,80 @@ mod tests {
     }
 
     #[test]
+    fn a_opens_and_closes_the_age_report_modal() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = DiffModel::new(ReportDate::parse("2026-08-04")?);
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Skeleton {
+                environment: "qa".to_owned(),
+                main: "main".to_owned(),
+                branches: vec!["feature/legacy".to_owned()],
+            })),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Measured(PromotionBranch {
+                branch: "feature/legacy".to_owned(),
+                started: "2019-12-31".to_owned(),
+                last: "2019-12-31".to_owned(),
+                ahead: 1,
+                last_author: "Pat".to_owned(),
+                commits: vec![PromotionCommit {
+                    id: "222222222222".to_owned(),
+                    short_id: "2222222".to_owned(),
+                    subject: "Legacy".to_owned(),
+                    author: "Pat".to_owned(),
+                    date: "2019-12-31".to_owned(),
+                }],
+                merged_environments: Vec::new(),
+                jira: JiraIssueState::NoTicket,
+            }))),
+        )?;
+        update(&mut model, Message::Scan(Box::new(DiffUpdate::Finished)))?;
+
+        let message = message_for_key(&model, KeyCode::Char('a'), KeyModifiers::NONE)
+            .ok_or("a did not map to the age report")?;
+        update(&mut model, message)?;
+        let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let rendered = terminal.backend().to_string();
+
+        assert!(rendered.contains("The age of unshipped work"));
+        assert!(rendered.contains("Before 2020"));
+        assert!(rendered.contains("Will not ship without a decision"));
+        assert!(rendered.contains("feature/legacy"));
+
+        let mut short_terminal = Terminal::new(TestBackend::new(110, 18))?;
+        short_terminal.draw(|frame| render(frame, &mut model))?;
+        let short_rendered = short_terminal.backend().to_string();
+        assert!(short_rendered.contains("The age of unshipped work"));
+        assert!(short_rendered.contains("Will not ship without a decision"));
+
+        let close = message_for_key(&model, KeyCode::Char('a'), KeyModifiers::NONE)
+            .ok_or("a did not close the age report")?;
+        update(&mut model, close)?;
+        assert!(model.age_report.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn age_report_waits_for_a_complete_scan() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = test_model()?;
+
+        update(&mut model, Message::OpenAgeReport)?;
+
+        assert!(model.age_report.is_none());
+        assert_eq!(
+            model.warning.as_deref(),
+            Some("The age report is available when the scan completes.")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn environment_merged_branch_renders_red_with_a_footer_warning(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1512,8 +1800,8 @@ mod tests {
     }
 
     #[test]
-    fn h_closes_the_open_history_sheet() -> Result<(), CliError> {
-        let mut model = DiffModel::new();
+    fn h_closes_the_open_history_sheet() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = test_model()?;
         model.history_open = true;
 
         let message = message_for_key(&model, KeyCode::Char('h'), KeyModifiers::NONE);
@@ -1527,7 +1815,7 @@ mod tests {
 
     #[test]
     fn narrow_report_stacks_details_above_the_table() -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         let mut terminal = Terminal::new(TestBackend::new(90, 48))?;
 
         terminal.draw(|frame| render(frame, &mut model))?;
@@ -1547,8 +1835,9 @@ mod tests {
     }
 
     #[test]
-    fn moving_to_another_branch_clears_the_open_ticket_warning() -> Result<(), CliError> {
-        let mut model = DiffModel::new();
+    fn moving_to_another_branch_clears_the_open_ticket_warning(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1572,7 +1861,7 @@ mod tests {
     #[test]
     fn moving_up_after_scrolling_moves_the_selection_within_the_viewport(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1606,12 +1895,13 @@ mod tests {
     }
 
     #[test]
-    fn update_channel_must_not_close_before_finished() {
-        let result = finish_after_update_channel_closes(DiffModel::new());
+    fn update_channel_must_not_close_before_finished() -> Result<(), Box<dyn std::error::Error>> {
+        let result = finish_after_update_channel_closes(test_model()?);
 
         assert!(
             matches!(result, Err(CliError::Git(message)) if message.contains("before the scan completed"))
         );
+        Ok(())
     }
 
     fn measured(
@@ -1641,7 +1931,7 @@ mod tests {
     #[test]
     fn table_columns_stay_compact_and_ahead_counts_right_align(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1705,7 +1995,7 @@ mod tests {
     #[test]
     fn s_cycles_the_sort_and_selection_follows_the_branch() -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1762,7 +2052,7 @@ mod tests {
     #[test]
     fn unvalidated_jira_keys_leave_the_ticket_column_blank(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1800,7 +2090,7 @@ mod tests {
     #[test]
     fn mostly_not_found_lookups_show_a_configuration_hint() -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1835,7 +2125,7 @@ mod tests {
 
     #[test]
     fn done_jira_statuses_render_in_the_success_color() -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = DiffModel::new();
+        let mut model = test_model()?;
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {

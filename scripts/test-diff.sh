@@ -90,7 +90,7 @@ run_diff() {
 WANTS_TUI=1
 for argument in "$@"; do
   case "$argument" in
-    --format|--format=*|-o|--output|--output=*) WANTS_TUI=0 ;;
+    --report|--report=*|--format|--format=*|-o|--output|--output=*) WANTS_TUI=0 ;;
   esac
 done
 

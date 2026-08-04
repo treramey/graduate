@@ -8,12 +8,15 @@ use std::sync::Arc;
 
 use gix::bstr::ByteSlice;
 use graduate::jira::JiraCredentials;
-use graduate::promotion::{jira_key_from_branch, JiraIssueState, PromotionBranch, PromotionCommit};
+use graduate::promotion::{
+    jira_key_from_branch, AgeBucket, AgePeriod, JiraIssueState, PromotionAgeReport,
+    PromotionBranch, PromotionCommit, ReportDate,
+};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use crate::browser::SystemBrowserLauncher;
-use crate::cli::{DiffArgs, ReportFormat};
+use crate::cli::{DiffArgs, DiffReport, ReportFormat};
 use crate::config::Config;
 use crate::diff_tui;
 use crate::error::CliError;
@@ -60,7 +63,9 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
     if let Some(main) = &args.main {
         validate_ref_component("main branch", main)?;
     }
-    let interactive = args.output_format.is_none()
+    let report_kind = args.report.unwrap_or(DiffReport::Branches);
+    let interactive = args.report.is_none()
+        && args.output_format.is_none()
         && args.output.is_none()
         && io::stdin().is_terminal()
         && io::stderr().is_terminal();
@@ -68,7 +73,11 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
         fetch_remote(&args, interactive)?;
     }
 
-    let credentials = Config::load(config_path)?.jira_credentials()?;
+    let credentials = if matches!(report_kind, DiffReport::Age) {
+        None
+    } else {
+        Config::load(config_path)?.jira_credentials()?
+    };
     let (updates_tx, updates_rx) = mpsc::unbounded_channel();
     let scan = ScanOptions {
         repository: std::env::current_dir()?,
@@ -93,6 +102,7 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
     if !interactive {
         write_report(
             &report,
+            report_kind,
             args.output_format.unwrap_or(ReportFormat::Json),
             args.output.as_deref(),
         )?;
@@ -529,6 +539,7 @@ fn measure_branch(
         commits.push((
             committed_at,
             PromotionCommit {
+                id: id.clone(),
                 short_id,
                 subject,
                 author,
@@ -621,6 +632,7 @@ fn recover_deleted_branch_tickets(
         entry.commits.push((
             seconds,
             PromotionCommit {
+                id: id.clone(),
                 short_id: id.chars().take(7).collect(),
                 subject,
                 author: author_name,
@@ -842,14 +854,33 @@ async fn collect_plain(
 
 fn write_report(
     report: &PromotionReport,
+    report_kind: DiffReport,
     format: ReportFormat,
     output: Option<&Path>,
 ) -> Result<(), CliError> {
-    let content = match format {
-        ReportFormat::Json => format!("{}\n", serde_json::to_string_pretty(&report_value(report))?),
-        ReportFormat::Yaml => serde_yaml::to_string(&report_value(report))?,
-        ReportFormat::Table => format_table(report),
-        ReportFormat::Csv => format_csv(report)?,
+    let content = match report_kind {
+        DiffReport::Branches => match format {
+            ReportFormat::Json => {
+                format!("{}\n", serde_json::to_string_pretty(&report_value(report))?)
+            }
+            ReportFormat::Yaml => serde_yaml::to_string(&report_value(report))?,
+            ReportFormat::Table => format_table(report),
+            ReportFormat::Csv => format_csv(report)?,
+        },
+        DiffReport::Age => {
+            let as_of = current_report_date()?;
+            let age = PromotionAgeReport::new(&report.branches, as_of)
+                .map_err(|error| CliError::Git(format!("could not build age report: {error}")))?;
+            match format {
+                ReportFormat::Json => format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(&age_report_value(report, &age))?
+                ),
+                ReportFormat::Yaml => serde_yaml::to_string(&age_report_value(report, &age))?,
+                ReportFormat::Table => format_age_table(report, &age),
+                ReportFormat::Csv => format_age_csv(report, &age)?,
+            }
+        }
     };
     if let Some(output) = output {
         let output = validate_output_path(output)?;
@@ -870,6 +901,16 @@ fn write_report(
         stdout.write_all(content.as_bytes())?;
     }
     Ok(())
+}
+
+pub(crate) fn current_report_date() -> Result<ReportDate, CliError> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| CliError::Git(format!("system clock predates the Unix epoch: {error}")))?;
+    let seconds = i64::try_from(elapsed.as_secs())
+        .map_err(|_| CliError::Git("system clock is outside the supported range".to_owned()))?;
+    ReportDate::parse(&unix_date(seconds))
+        .map_err(|error| CliError::Git(format!("could not determine report date: {error}")))
 }
 
 fn report_value(report: &PromotionReport) -> serde_json::Value {
@@ -935,6 +976,141 @@ fn report_value(report: &PromotionReport) -> serde_json::Value {
     })
 }
 
+fn age_report_value(report: &PromotionReport, age: &PromotionAgeReport) -> serde_json::Value {
+    let buckets = age
+        .buckets
+        .iter()
+        .map(|bucket| {
+            let period = match bucket.period {
+                AgePeriod::Year(year) => serde_json::json!({ "kind": "year", "year": year }),
+                AgePeriod::Before(year) => {
+                    serde_json::json!({ "kind": "beforeYear", "year": year })
+                }
+            };
+            let assessment = if bucket.commits == 0 {
+                serde_json::json!({ "kind": "noCommits", "summary": "No commits" })
+            } else {
+                match bucket.period {
+                    AgePeriod::Year(year) if year > age.as_of.year() => serde_json::json!({
+                        "kind": "futureDated",
+                        "summary": "Future-dated commits"
+                    }),
+                    AgePeriod::Year(year) if year == age.as_of.year() => serde_json::json!({
+                        "kind": "currentYear",
+                        "summary": "Plausibly in flight"
+                    }),
+                    AgePeriod::Year(year) if year == age.as_of.year() - 1 => serde_json::json!({
+                        "kind": "mostlyOverOneYearOld",
+                        "summary": "Mostly over a year old"
+                    }),
+                    AgePeriod::Year(year) => {
+                        let years = age.as_of.year().saturating_sub(year);
+                        serde_json::json!({
+                            "kind": "yearsOld",
+                            "years": years,
+                            "summary": age_bucket_reading(age, bucket)
+                        })
+                    }
+                    AgePeriod::Before(_) => serde_json::json!({
+                        "kind": "concentratedInBranches",
+                        "branches": age.oldest_branches.len(),
+                        "summary": age_bucket_reading(age, bucket)
+                    }),
+                }
+            };
+            serde_json::json!({
+                "period": period,
+                "commits": bucket.commits,
+                "sharePercent": share_percent(bucket.commits, age.total_commits),
+                "assessment": assessment,
+            })
+        })
+        .collect::<Vec<_>>();
+    let oldest_branches = age
+        .oldest_branches
+        .iter()
+        .map(|branch| {
+            serde_json::json!({
+                "branch": branch.branch,
+                "commits": branch.commits,
+                "oldestCommit": branch.oldest.to_string(),
+                "newestCommit": branch.newest.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schemaVersion": 1,
+        "report": "age",
+        "environment": report.environment,
+        "main": report.main,
+        "asOf": age.as_of.to_string(),
+        "counting": "uniqueCommitsAcrossBranches",
+        "totalCommits": age.total_commits,
+        "buckets": buckets,
+        "thresholds": {
+            "last90Days": {
+                "since": age.last_90_days.since.to_string(),
+                "inclusive": true,
+                "commits": age.last_90_days.commits,
+                "sharePercent": share_percent(age.last_90_days.commits, age.total_commits),
+                "assessment": {
+                    "kind": "genuinelyInFlight",
+                    "summary": "Genuinely in flight"
+                }
+            },
+            "olderThanOneYear": {
+                "before": age.older_than_one_year.before.to_string(),
+                "exclusive": true,
+                "commits": age.older_than_one_year.commits,
+                "sharePercent": share_percent(
+                    age.older_than_one_year.commits,
+                    age.total_commits
+                ),
+                "assessment": {
+                    "kind": "decisionRequired",
+                    "summary": "Will not ship without a decision"
+                }
+            }
+        },
+        "oldestBranches": oldest_branches,
+    })
+}
+
+pub(crate) fn age_bucket_label(period: AgePeriod) -> String {
+    match period {
+        AgePeriod::Year(year) => year.to_string(),
+        AgePeriod::Before(year) => format!("Before {year}"),
+    }
+}
+
+pub(crate) fn age_bucket_reading(age: &PromotionAgeReport, bucket: &AgeBucket) -> String {
+    if bucket.commits == 0 {
+        return "No commits".to_owned();
+    }
+    match bucket.period {
+        AgePeriod::Year(year) if year > age.as_of.year() => "Future-dated commits".to_owned(),
+        AgePeriod::Year(year) if year == age.as_of.year() => {
+            "Current year — plausibly in flight".to_owned()
+        }
+        AgePeriod::Year(year) if year == age.as_of.year() - 1 => {
+            "Mostly over a year old".to_owned()
+        }
+        AgePeriod::Year(year) => {
+            let years = age.as_of.year().saturating_sub(year);
+            format!("{years} years old")
+        }
+        AgePeriod::Before(_) => format!("Concentrated in {} branches", age.oldest_branches.len()),
+    }
+}
+
+pub(crate) fn share_percent(commits: usize, total: usize) -> f64 {
+    if total == 0 {
+        return 0.0;
+    }
+    let tenths = ((commits as u128) * 1_000 + (total as u128) / 2) / (total as u128);
+    tenths as f64 / 10.0
+}
+
 fn format_table(report: &PromotionReport) -> String {
     let mut output = format!(
         "Branches in {} but not {}\n{:<36} {:<10} {:<10} {:>5}  {:<12} {:<14} LAST AUTHOR\n",
@@ -973,6 +1149,63 @@ fn format_table(report: &PromotionReport) -> String {
             crate::terminal_text::escape(status),
             crate::terminal_text::escape(&row.last_author)
         ));
+    }
+    output
+}
+
+fn format_age_table(report: &PromotionReport, age: &PromotionAgeReport) -> String {
+    let mut output = format!(
+        "Age of unshipped work in {} but not {} (as of {})\n\
+         All {} unique authored commits across {} branches.\n\
+         {:<24} {:>10} {:>8}  READING\n",
+        crate::terminal_text::escape(&report.environment),
+        crate::terminal_text::escape(&report.main),
+        age.as_of,
+        age.total_commits,
+        report.branches.len(),
+        "WRITTEN IN",
+        "COMMITS",
+        "SHARE"
+    );
+    for bucket in &age.buckets {
+        output.push_str(&format!(
+            "{:<24} {:>10} {:>7.1}%  {}\n",
+            age_bucket_label(bucket.period),
+            bucket.commits,
+            share_percent(bucket.commits, age.total_commits),
+            age_bucket_reading(age, bucket)
+        ));
+    }
+    output.push_str(&format!(
+        "{:<24} {:>10} {:>7.1}%  Genuinely in flight\n",
+        "Written in last 90 days",
+        age.last_90_days.commits,
+        share_percent(age.last_90_days.commits, age.total_commits)
+    ));
+    output.push_str(&format!(
+        "{:<24} {:>10} {:>7.1}%  Will not ship without a decision\n",
+        "Older than one year",
+        age.older_than_one_year.commits,
+        share_percent(age.older_than_one_year.commits, age.total_commits)
+    ));
+
+    if let Some(AgePeriod::Before(cutoff)) = age.buckets.last().map(|bucket| bucket.period) {
+        output.push_str(&format!(
+            "\nOldest branches before {cutoff}\n{:<36} {:>8}  {:<10}  NEWEST\n",
+            "BRANCH", "COMMITS", "OLDEST"
+        ));
+        if age.oldest_branches.is_empty() {
+            output.push_str("(none)\n");
+        }
+        for branch in &age.oldest_branches {
+            output.push_str(&format!(
+                "{:<36} {:>8}  {:<10}  {}\n",
+                crate::terminal_text::escape(&branch.branch),
+                branch.commits,
+                branch.oldest,
+                branch.newest
+            ));
+        }
     }
     output
 }
@@ -1081,6 +1314,140 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
                 &api_url,
                 &browse_url,
                 &jira_error,
+            ],
+        )?;
+    }
+    String::from_utf8(file)
+        .map_err(|error| CliError::InvalidInput(format!("CSV was not valid UTF-8: {error}")))
+}
+
+fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<String, CliError> {
+    let mut file = Vec::new();
+    csv_row(
+        &mut file,
+        &[
+            "rowType",
+            "environment",
+            "main",
+            "asOf",
+            "counting",
+            "period",
+            "year",
+            "since",
+            "before",
+            "branch",
+            "commits",
+            "totalCommits",
+            "sharePercent",
+            "oldestCommit",
+            "newestCommit",
+            "assessment",
+        ],
+    )?;
+    let total = age.total_commits.to_string();
+    let as_of = age.as_of.to_string();
+    for bucket in &age.buckets {
+        let (period, year) = match bucket.period {
+            AgePeriod::Year(year) => ("year", year.to_string()),
+            AgePeriod::Before(year) => ("beforeYear", year.to_string()),
+        };
+        let commits = bucket.commits.to_string();
+        let share = format!("{:.1}", share_percent(bucket.commits, age.total_commits));
+        csv_row(
+            &mut file,
+            &[
+                "bucket",
+                &report.environment,
+                &report.main,
+                &as_of,
+                "uniqueCommitsAcrossBranches",
+                period,
+                &year,
+                "",
+                "",
+                "",
+                &commits,
+                &total,
+                &share,
+                "",
+                "",
+                &age_bucket_reading(age, bucket),
+            ],
+        )?;
+    }
+    let recent_commits = age.last_90_days.commits.to_string();
+    let recent_share = format!(
+        "{:.1}",
+        share_percent(age.last_90_days.commits, age.total_commits)
+    );
+    csv_row(
+        &mut file,
+        &[
+            "threshold",
+            &report.environment,
+            &report.main,
+            &as_of,
+            "uniqueCommitsAcrossBranches",
+            "last90Days",
+            "",
+            &age.last_90_days.since.to_string(),
+            "",
+            "",
+            &recent_commits,
+            &total,
+            &recent_share,
+            "",
+            "",
+            "Genuinely in flight",
+        ],
+    )?;
+    let older_commits = age.older_than_one_year.commits.to_string();
+    let older_share = format!(
+        "{:.1}",
+        share_percent(age.older_than_one_year.commits, age.total_commits)
+    );
+    csv_row(
+        &mut file,
+        &[
+            "threshold",
+            &report.environment,
+            &report.main,
+            &as_of,
+            "uniqueCommitsAcrossBranches",
+            "olderThanOneYear",
+            "",
+            "",
+            &age.older_than_one_year.before.to_string(),
+            "",
+            &older_commits,
+            &total,
+            &older_share,
+            "",
+            "",
+            "Will not ship without a decision",
+        ],
+    )?;
+    for branch in &age.oldest_branches {
+        let commits = branch.commits.to_string();
+        csv_row(
+            &mut file,
+            &[
+                "oldestBranch",
+                &report.environment,
+                &report.main,
+                &as_of,
+                "uniqueCommitsAcrossBranches",
+                "",
+                "",
+                "",
+                "",
+                &branch.branch,
+                &commits,
+                &total,
+                "",
+                &branch.oldest.to_string(),
+                &branch.newest.to_string(),
+                "",
             ],
         )?;
     }
@@ -1348,6 +1715,116 @@ mod tests {
             value["branches"][0]["jiraIssue"]["fields"]["fixVersions"][0]["name"],
             "1.2"
         );
+    }
+
+    #[test]
+    fn age_json_is_self_describing_and_uses_explicit_thresholds(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let report = PromotionReport {
+            environment: "qa".to_owned(),
+            main: "main".to_owned(),
+            branches: vec![PromotionBranch {
+                branch: "feature/legacy".to_owned(),
+                started: "2019-12-31".to_owned(),
+                last: "2026-08-01".to_owned(),
+                ahead: 2,
+                last_author: "Pat".to_owned(),
+                commits: vec![
+                    PromotionCommit {
+                        id: "111111111111".to_owned(),
+                        short_id: "1111111".to_owned(),
+                        subject: "Current".to_owned(),
+                        author: "Pat".to_owned(),
+                        date: "2026-08-01".to_owned(),
+                    },
+                    PromotionCommit {
+                        id: "222222222222".to_owned(),
+                        short_id: "2222222".to_owned(),
+                        subject: "Legacy".to_owned(),
+                        author: "Pat".to_owned(),
+                        date: "2019-12-31".to_owned(),
+                    },
+                ],
+                merged_environments: Vec::new(),
+                jira: JiraIssueState::NoTicket,
+            }],
+        };
+        let age = PromotionAgeReport::new(&report.branches, ReportDate::parse("2026-08-04")?)?;
+
+        let value = age_report_value(&report, &age);
+
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["report"], "age");
+        assert_eq!(value["counting"], "uniqueCommitsAcrossBranches");
+        assert_eq!(value["asOf"], "2026-08-04");
+        assert_eq!(value["totalCommits"], 2);
+        assert_eq!(value["buckets"][0]["period"]["kind"], "year");
+        assert_eq!(value["buckets"][0]["sharePercent"], 50.0);
+        assert_eq!(value["thresholds"]["last90Days"]["since"], "2026-05-07");
+        assert_eq!(
+            value["thresholds"]["olderThanOneYear"]["before"],
+            "2025-08-04"
+        );
+        assert_eq!(value["oldestBranches"][0]["branch"], "feature/legacy");
+        Ok(())
+    }
+
+    #[test]
+    fn age_table_calls_out_old_work_and_the_branches_that_carry_it(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let report = PromotionReport {
+            environment: "qa".to_owned(),
+            main: "main".to_owned(),
+            branches: vec![PromotionBranch {
+                branch: "feature/legacy".to_owned(),
+                started: "2019-12-31".to_owned(),
+                last: "2019-12-31".to_owned(),
+                ahead: 1,
+                last_author: "Pat".to_owned(),
+                commits: vec![PromotionCommit {
+                    id: "222222222222".to_owned(),
+                    short_id: "2222222".to_owned(),
+                    subject: "Legacy".to_owned(),
+                    author: "Pat".to_owned(),
+                    date: "2019-12-31".to_owned(),
+                }],
+                merged_environments: Vec::new(),
+                jira: JiraIssueState::NoTicket,
+            }],
+        };
+        let age = PromotionAgeReport::new(&report.branches, ReportDate::parse("2026-08-04")?)?;
+
+        let table = format_age_table(&report, &age);
+
+        assert!(table.contains("Age of unshipped work in qa but not main"));
+        assert!(table.contains("Before 2020"));
+        assert!(table.contains("Older than one year"));
+        assert!(table.contains("Will not ship without a decision"));
+        assert!(table.contains("Oldest branches before 2020"));
+        assert!(table.contains("feature/legacy"));
+        Ok(())
+    }
+
+    #[test]
+    fn age_csv_identifies_bucket_and_threshold_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let report = PromotionReport {
+            environment: "qa".to_owned(),
+            main: "main".to_owned(),
+            branches: Vec::new(),
+        };
+        let age = PromotionAgeReport::new(&report.branches, ReportDate::parse("2026-08-04")?)?;
+
+        let csv = format_age_csv(&report, &age)?;
+
+        assert!(csv.lines().next().is_some_and(|header| {
+            header.contains("\"rowType\"") && header.contains("\"assessment\"")
+        }));
+        assert!(csv.contains(
+            "\"bucket\",\"qa\",\"main\",\"2026-08-04\",\"uniqueCommitsAcrossBranches\",\"year\",\"2026\""
+        ));
+        assert!(csv.contains("\"threshold\",\"qa\",\"main\",\"2026-08-04\",\"uniqueCommitsAcrossBranches\",\"last90Days\""));
+        assert!(csv.contains("\"threshold\",\"qa\",\"main\",\"2026-08-04\",\"uniqueCommitsAcrossBranches\",\"olderThanOneYear\""));
+        Ok(())
     }
 
     #[test]

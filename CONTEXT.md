@@ -26,6 +26,10 @@
 - Promotion reports use Gitoxide for refs and commit traversal. Their fetch
   seam preserves Git credential-helper behavior and supports non-persistent
   PAT authentication.
+- `gd diff --report age` emits a non-interactive, schema-versioned projection
+  of unique unshipped commit age, including explicit UTC thresholds and the
+  branches carrying the oldest work. The TUI opens the same projection with
+  `a` after scanning completes.
 - Promotion reports flag feature branches that had an environment branch
   merged into them by matching the environment's own merge commits in the
   branch's ahead-of-main history; merges of main are never flagged. Flagged

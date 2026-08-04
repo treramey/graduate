@@ -36,7 +36,7 @@ actions.
 - `graduate_cli::error`: process-facing error categories and exit codes.
 - `graduate_cli::generate_skills`: deterministic repository-controlled Agent Skill generation.
 - `graduate::promotion`: promotion-report rows, Jira enrichment states, and
-  deterministic branch-to-ticket mapping.
+  deterministic branch-to-ticket mapping and commit-age projections.
 - `graduate::jira`: validated Jira sites, credentials, and identities shared by every delivery path.
 - `graduate::jira_auth`: deterministic Jira onboarding state and secret-retention
   transitions.
@@ -49,7 +49,7 @@ actions.
 - `graduate_cli::diff`: Git fetch, Gitoxide graph inspection, Jira enrichment,
   unattended output, and CSV export.
 - `graduate_cli::diff_tui`: streaming promotion list, selection, ticket details,
-  and open-ticket events.
+  commit history, age-report modal, and open-ticket events.
 
 ## Safety invariants
 
