@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Generated Skills"
+  short_description: "Audit generated skills against the CLI"
+  default_prompt: "Use $verify-skills to verify Graduate's generated skills against its CLI contract."

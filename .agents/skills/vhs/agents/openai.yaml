@@ -1,0 +1,4 @@
+interface:
+  display_name: "VHS Tape Files"
+  short_description: "Write and validate terminal demo tapes"
+  default_prompt: "Use $vhs to write or review a VHS .tape file for this repository."
