@@ -34,6 +34,13 @@ json|table|yaml|csv` and `--output <relative-path>` for other report surfaces.
 Configured Jira credentials enrich keys found in branch names. Provide headless
 Git authentication only through `GIT_PAT`; never print it.
 
+Branch-report JSON includes an authoritative `commitInventory`. Its
+`aheadOfMain` and `behindMain` objects each contain an explicit count and the
+complete ordered non-merge commit inventory. Use `behindMain.count` to decide
+whether the environment is out of sync with main; behind commits are diagnostic
+and do not receive age assessments. The completed interactive report calls out
+the same behind count.
+
 Scope a report to exact remote branches with `--params
 '{"branches":["feature/PROJ-123","feature/PROJ-456"]}'`. This always selects
 unattended output and works with either the default branch report or `--report
@@ -42,11 +49,13 @@ from main; invalid selections fail explicitly.
 
 Use `gd diff <environment> --report age` for the advanced commit-age report.
 Supplying `--report branches|age` always selects unattended output. Prefer JSON
-for agents: the age document has `schemaVersion`, UTC `asOf`, stable assessment
-kinds, explicit threshold dates, `oldestYear`, and `oldestBranches`. Its buckets
-contain only years found in commit authored dates. Aggregate totals count a
-commit once even when several branches contain it. In the interactive report,
-press `a` after scanning completes to open the same scrollable age projection.
+for agents: age schema v2 has `schemaVersion`, UTC `asOf`, stable assessment
+kinds, explicit threshold dates, `oldestYear`, `oldestBranches`, and the same
+authoritative commit inventory. Its buckets contain only years found in commit
+authored dates. Aggregate totals count every non-merge commit reachable from
+the environment and absent from main once, including commits without a branch
+or Jira attribution row. In the interactive report, press `a` after scanning
+completes to open the same scrollable age projection.
 
 ## Current command contract
 

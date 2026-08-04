@@ -90,6 +90,18 @@ pub struct PromotionCommit {
     pub date: String,
 }
 
+/// Authoritative non-merge commit sets for one environment compared with main.
+///
+/// Branch and Jira rows may attribute these commits, but they are not the
+/// source of truth for either side of the comparison.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EnvironmentInventory {
+    /// Commits reachable from the environment and absent from main.
+    pub ahead: Vec<PromotionCommit>,
+    /// Commits reachable from main and absent from the environment.
+    pub behind_main: Vec<PromotionCommit>,
+}
+
 /// A validated UTC calendar date used for deterministic report thresholds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReportDate {
@@ -200,18 +212,20 @@ pub struct PromotionAgeReport {
 }
 
 impl PromotionAgeReport {
-    /// Build an age report, counting a commit once even when several branches
-    /// contain it and retaining per-branch counts for the oldest-work detail.
-    pub fn new(branches: &[PromotionBranch], as_of: ReportDate) -> Result<Self, ReportDateError> {
+    /// Build an age report from the authoritative environment inventory while
+    /// retaining attribution rows only for the oldest-work detail.
+    pub fn new(
+        commits: &[PromotionCommit],
+        branches: &[PromotionBranch],
+        as_of: ReportDate,
+    ) -> Result<Self, ReportDateError> {
         let since = as_of.days_before(89)?;
         let anniversary = as_of.previous_year_anniversary()?;
         let mut unique_commits = HashMap::<String, ReportDate>::new();
 
-        for branch in branches {
-            for commit in &branch.commits {
-                let date = ReportDate::parse(&commit.date)?;
-                unique_commits.entry(commit.id.clone()).or_insert(date);
-            }
+        for commit in commits {
+            let date = ReportDate::parse(&commit.date)?;
+            unique_commits.entry(commit.id.clone()).or_insert(date);
         }
 
         let oldest_year = unique_commits.values().map(|date| date.year).min();
@@ -443,7 +457,12 @@ mod tests {
             ),
         ];
 
-        let report = PromotionAgeReport::new(&branches, ReportDate::parse("2026-08-04")?)?;
+        let inventory = branches
+            .iter()
+            .flat_map(|branch| branch.commits.iter().cloned())
+            .collect::<Vec<_>>();
+        let report =
+            PromotionAgeReport::new(&inventory, &branches, ReportDate::parse("2026-08-04")?)?;
 
         assert_eq!(report.total_commits, 4);
         assert_eq!(report.last_90_days.commits, 1);
@@ -466,10 +485,23 @@ mod tests {
     }
 
     #[test]
+    fn age_report_counts_inventory_commits_without_attribution_rows() -> Result<(), ReportDateError>
+    {
+        let inventory = vec![commit("111111111111", "2026-08-01")];
+
+        let report = PromotionAgeReport::new(&inventory, &[], ReportDate::parse("2026-08-04")?)?;
+
+        assert_eq!(report.total_commits, 1);
+        assert_eq!(report.last_90_days.commits, 1);
+        assert!(report.oldest_branches.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn report_dates_reject_impossible_days_and_handle_leap_anniversaries(
     ) -> Result<(), ReportDateError> {
         assert!(ReportDate::parse("2025-02-29").is_err());
-        let report = PromotionAgeReport::new(&[], ReportDate::parse("2024-02-29")?)?;
+        let report = PromotionAgeReport::new(&[], &[], ReportDate::parse("2024-02-29")?)?;
 
         assert_eq!(report.older_than_one_year.before.to_string(), "2023-02-28");
         assert_eq!(report.last_90_days.since.to_string(), "2023-12-02");

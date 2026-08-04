@@ -6,7 +6,8 @@ use std::time::Duration;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use graduate::promotion::{
-    systemic_not_found, JiraIssueState, PromotionAgeReport, PromotionBranch, ReportDate,
+    systemic_not_found, EnvironmentInventory, JiraIssueState, PromotionAgeReport, PromotionBranch,
+    ReportDate,
 };
 use ratatui::layout::{Constraint, HorizontalAlignment, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -86,6 +87,7 @@ fn compare_rows(sort: SortKey, a: &BranchRow, b: &BranchRow) -> Ordering {
 struct DiffModel {
     environment: String,
     main: String,
+    inventory: EnvironmentInventory,
     rows: Vec<BranchRow>,
     sort: SortKey,
     selected: usize,
@@ -136,6 +138,7 @@ impl DiffModel {
         Self {
             environment: String::new(),
             main: String::new(),
+            inventory: EnvironmentInventory::default(),
             rows: Vec::new(),
             sort: SortKey::Branch,
             selected: 0,
@@ -193,6 +196,7 @@ impl DiffModel {
         PromotionReport {
             environment: self.environment,
             main: self.main,
+            inventory: self.inventory,
             branches,
         }
     }
@@ -219,6 +223,7 @@ fn update(model: &mut DiffModel, message: Message) -> Result<Effect, CliError> {
                 model.table_state = TableState::default()
                     .with_selected((!model.rows.is_empty()).then_some(model.selected));
             }
+            DiffUpdate::Inventory(inventory) => model.inventory = inventory,
             DiffUpdate::Measured(report) => {
                 if let Some(row) = model
                     .rows
@@ -292,9 +297,9 @@ fn update(model: &mut DiffModel, message: Message) -> Result<Effect, CliError> {
                 .filter_map(|row| row.report.clone())
                 .collect::<Vec<_>>();
             model.age_report = Some(
-                PromotionAgeReport::new(&branches, model.as_of).map_err(|error| {
-                    CliError::Git(format!("could not build age report: {error}"))
-                })?,
+                PromotionAgeReport::new(&model.inventory.ahead, &branches, model.as_of).map_err(
+                    |error| CliError::Git(format!("could not build age report: {error}")),
+                )?,
             );
             model.age_selected = 0;
             model.age_list_state = TableState::default().with_selected(Some(0));
@@ -843,7 +848,15 @@ fn render_title(frame: &mut Frame<'_>, area: Rect, model: &DiffModel, center_sum
         })
         .count();
     let status = if model.finished {
-        format!("{} branches  ·  complete", model.rows.len())
+        let synchronization = if model.inventory.behind_main.is_empty() {
+            "in sync with main".to_owned()
+        } else {
+            format!("{} behind main", model.inventory.behind_main.len())
+        };
+        format!(
+            "{} branches  ·  {synchronization}  ·  complete",
+            model.rows.len()
+        )
     } else if measured == model.rows.len() && pending_jira > 0 {
         format!(
             "{} loading Jira for {pending_jira} tickets",
@@ -1384,6 +1397,25 @@ mod tests {
     }
 
     #[test]
+    fn completed_report_calls_out_commits_behind_main() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = test_model()?;
+        model.environment = "qa".to_owned();
+        model.main = "main".to_owned();
+        model.finished = true;
+        model
+            .inventory
+            .behind_main
+            .push(test_commit("Main-only work"));
+        let mut terminal = Terminal::new(TestBackend::new(110, 32))?;
+
+        terminal.draw(|frame| render(frame, &mut model))?;
+
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("1 behind main"), "{rendered}");
+        Ok(())
+    }
+
+    #[test]
     fn short_wide_report_places_selected_branch_inspector_beside_the_table(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut model = test_model()?;
@@ -1684,6 +1716,13 @@ mod tests {
     #[test]
     fn a_opens_and_closes_the_age_report_modal() -> Result<(), Box<dyn std::error::Error>> {
         let mut model = DiffModel::new(ReportDate::parse("2026-08-04")?);
+        let legacy_commit = PromotionCommit {
+            id: "222222222222".to_owned(),
+            short_id: "2222222".to_owned(),
+            subject: "Legacy".to_owned(),
+            author: "Pat".to_owned(),
+            date: "2019-12-31".to_owned(),
+        };
         update(
             &mut model,
             Message::Scan(Box::new(DiffUpdate::Skeleton {
@@ -1700,15 +1739,16 @@ mod tests {
                 last: "2019-12-31".to_owned(),
                 ahead: 1,
                 last_author: "Pat".to_owned(),
-                commits: vec![PromotionCommit {
-                    id: "222222222222".to_owned(),
-                    short_id: "2222222".to_owned(),
-                    subject: "Legacy".to_owned(),
-                    author: "Pat".to_owned(),
-                    date: "2019-12-31".to_owned(),
-                }],
+                commits: vec![legacy_commit.clone()],
                 merged_environments: Vec::new(),
                 jira: JiraIssueState::NoTicket,
+            }))),
+        )?;
+        update(
+            &mut model,
+            Message::Scan(Box::new(DiffUpdate::Inventory(EnvironmentInventory {
+                ahead: vec![legacy_commit],
+                behind_main: Vec::new(),
             }))),
         )?;
         update(&mut model, Message::Scan(Box::new(DiffUpdate::Finished)))?;
@@ -1759,6 +1799,17 @@ mod tests {
         model.finished = true;
         model.environment = "qa".to_owned();
         model.main = "main".to_owned();
+        let commits = (2000..=2026)
+            .rev()
+            .map(|year| PromotionCommit {
+                id: format!("commit-{year}"),
+                short_id: year.to_string(),
+                subject: format!("Work from {year}"),
+                author: "Pat".to_owned(),
+                date: format!("{year}-01-01"),
+            })
+            .collect::<Vec<_>>();
+        model.inventory.ahead = commits.clone();
         model.rows.push(BranchRow {
             branch: "feature/history".to_owned(),
             report: Some(PromotionBranch {
@@ -1767,16 +1818,7 @@ mod tests {
                 last: "2026-01-01".to_owned(),
                 ahead: 27,
                 last_author: "Pat".to_owned(),
-                commits: (2000..=2026)
-                    .rev()
-                    .map(|year| PromotionCommit {
-                        id: format!("commit-{year}"),
-                        short_id: year.to_string(),
-                        subject: format!("Work from {year}"),
-                        author: "Pat".to_owned(),
-                        date: format!("{year}-01-01"),
-                    })
-                    .collect(),
+                commits,
                 merged_environments: Vec::new(),
                 jira: JiraIssueState::NoTicket,
             }),

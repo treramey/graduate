@@ -32,6 +32,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Based promotion and age-report totals on the authoritative environment versus
+  main commit inventory, exposed ahead/behind inventories in structured output,
+  and called out environments that are behind main in the completed TUI.
 - Standardized the Git-history and age-report modals on the same wide content
   viewport, while preserving responsive narrowing on smaller terminals.
 - Clarified customer-facing text: rewrote the README introduction and

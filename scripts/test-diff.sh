@@ -23,6 +23,7 @@ CONFIG="$FIXTURE/config.json"
 
 git init --quiet --bare "$REMOTE"
 git init --quiet --initial-branch=main "$REPOSITORY"
+git -C "$REPOSITORY" config core.fsmonitor false
 git -C "$REPOSITORY" config user.name "Graduate Test"
 git -C "$REPOSITORY" config user.email "graduate-test@example.com"
 

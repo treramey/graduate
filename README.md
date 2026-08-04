@@ -106,6 +106,11 @@ Jira issue data in the same `fields.status.name`, `fields.assignee.displayName`,
 and `fields.fixVersions` shapes that Jira returns. Select another format with
 `--format json|table|yaml|csv`, and write it to a file with `-o, --output <path>`:
 
+Branch-report JSON includes an authoritative `commitInventory`; its
+`aheadOfMain` and `behindMain` objects each contain an explicit count and the
+complete non-merge commit list. After an interactive scan completes, the title
+also calls out when the environment is behind main.
+
 ```bash
 mkdir -p reports
 gd diff qa --format csv --output reports/qa.csv
@@ -134,13 +139,16 @@ gd diff qa --report age --format table
 
 Supplying `--report branches|age` or `--params` selects unattended output even
 in a terminal.
-The age report's JSON includes a schema version, UTC `asOf` date, explicit
-inclusive/exclusive threshold dates, percentages, stable assessment kinds, and
-the branches carrying the oldest work. Commits shared by several branches count
-once in aggregate totals. `buckets` contains only years observed in commit
-authored dates and `oldestYear` identifies the oldest observed year. CSV rows
-carry a `rowType` so agents can distinguish age buckets, decision thresholds,
-and oldest-branch details without parsing display text.
+The age report's JSON schema v2 includes the authoritative commit inventory, a
+UTC `asOf` date, explicit inclusive/exclusive threshold dates, percentages,
+stable assessment kinds, and the branches carrying the oldest work. Aggregate
+totals count each non-merge commit reachable from the environment but absent
+from main once, even when no surviving branch row attributes it. `buckets`
+contains only years observed in commit authored dates and `oldestYear`
+identifies the oldest observed year. Behind-main commits are included only as
+a count and inventory, without age buckets or assessments. CSV rows carry a
+`rowType` so agents can distinguish inventories, commits, age buckets, decision
+thresholds, and oldest-branch details without parsing display text.
 
 Output paths are relative to the current directory and cannot traverse parent
 directories or symbolic links outside it. Set `GIT_PAT` for headless fetch authentication;

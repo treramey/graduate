@@ -9,8 +9,8 @@ use std::sync::Arc;
 use gix::bstr::ByteSlice;
 use graduate::jira::JiraCredentials;
 use graduate::promotion::{
-    jira_key_from_branch, AgeBucket, JiraIssueState, PromotionAgeReport, PromotionBranch,
-    PromotionCommit, ReportDate,
+    jira_key_from_branch, AgeBucket, EnvironmentInventory, JiraIssueState, PromotionAgeReport,
+    PromotionBranch, PromotionCommit, ReportDate,
 };
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -34,6 +34,7 @@ pub(crate) enum DiffUpdate {
         main: String,
         branches: Vec<String>,
     },
+    Inventory(EnvironmentInventory),
     Measured(PromotionBranch),
     Jira {
         branch: String,
@@ -46,6 +47,7 @@ pub(crate) enum DiffUpdate {
 pub(crate) struct PromotionReport {
     pub(crate) environment: String,
     pub(crate) main: String,
+    pub(crate) inventory: EnvironmentInventory,
     pub(crate) branches: Vec<PromotionBranch>,
 }
 
@@ -298,7 +300,8 @@ fn scan_repository(
             branches,
         })
         .map_err(|_| CliError::ReportCancelled)?;
-
+    let branch_scoped = options.selected_branches.is_some();
+    let mut scoped_commit_ids = HashSet::new();
     for (branch, id) in candidates {
         let jira = match jira_key_from_branch(&branch) {
             Some(key) if options.jira_configured => JiraIssueState::Loading { key },
@@ -314,6 +317,9 @@ fn scan_repository(
             id,
             jira,
         )?;
+        if branch_scoped {
+            scoped_commit_ids.extend(row.commits.iter().map(|commit| commit.id.clone()));
+        }
         updates
             .send(DiffUpdate::Measured(row))
             .map_err(|_| CliError::ReportCancelled)?;
@@ -323,7 +329,87 @@ fn scan_repository(
             .send(DiffUpdate::Measured(row))
             .map_err(|_| CliError::ReportCancelled)?;
     }
+    let mut inventory = environment_inventory(
+        &repository,
+        environment_id,
+        &main_ancestors,
+        main_id,
+        &environment_ancestors,
+    )?;
+    if branch_scoped {
+        inventory
+            .ahead
+            .retain(|commit| scoped_commit_ids.contains(&commit.id));
+    }
+    updates
+        .send(DiffUpdate::Inventory(inventory))
+        .map_err(|_| CliError::ReportCancelled)?;
     Ok(())
+}
+
+fn environment_inventory(
+    repository: &gix::Repository,
+    environment_tip: gix::ObjectId,
+    main_ancestors: &HashSet<gix::ObjectId>,
+    main_tip: gix::ObjectId,
+    environment_ancestors: &HashSet<gix::ObjectId>,
+) -> Result<EnvironmentInventory, CliError> {
+    Ok(EnvironmentInventory {
+        ahead: non_merge_commits_excluding(repository, environment_tip, main_ancestors)?,
+        behind_main: non_merge_commits_excluding(repository, main_tip, environment_ancestors)?,
+    })
+}
+
+fn non_merge_commits_excluding(
+    repository: &gix::Repository,
+    tip: gix::ObjectId,
+    excluded_ancestors: &HashSet<gix::ObjectId>,
+) -> Result<Vec<PromotionCommit>, CliError> {
+    let mut visited = HashSet::new();
+    let mut pending = VecDeque::from([tip]);
+    let mut commits = Vec::new();
+    while let Some(id) = pending.pop_front() {
+        if excluded_ancestors.contains(&id) || !visited.insert(id) {
+            continue;
+        }
+        let commit = repository.find_commit(id).map_err(gitoxide_error)?;
+        let parents = commit
+            .parent_ids()
+            .map(|parent| parent.detach())
+            .collect::<Vec<_>>();
+        pending.extend(parents.iter().copied());
+        if parents.len() > 1 {
+            continue;
+        }
+        let author = commit.author().map_err(gitoxide_error)?;
+        let seconds = author.time().map_err(gitoxide_error)?.seconds;
+        let message = commit.message_raw().map_err(gitoxide_error)?;
+        let subject = message
+            .to_str_lossy()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let id = id.to_string();
+        commits.push((
+            seconds,
+            PromotionCommit {
+                short_id: id.chars().take(7).collect(),
+                id,
+                subject,
+                author: author.name.to_str_lossy().into_owned(),
+                date: unix_date(seconds),
+            },
+        ));
+    }
+    commits.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.id.cmp(&right.1.id))
+    });
+    Ok(commits.into_iter().map(|(_, commit)| commit).collect())
 }
 
 fn promotion_candidates(
@@ -902,6 +988,7 @@ async fn collect_plain(
     let mut rows = HashMap::new();
     let mut environment = String::new();
     let mut main = String::new();
+    let mut inventory = EnvironmentInventory::default();
     let mut finished = false;
     while let Some(update) = updates.recv().await {
         match update {
@@ -913,6 +1000,7 @@ async fn collect_plain(
                 environment = next_environment;
                 main = next_main;
             }
+            DiffUpdate::Inventory(next_inventory) => inventory = next_inventory,
             DiffUpdate::Measured(row) => {
                 rows.insert(row.branch.clone(), row);
             }
@@ -938,6 +1026,7 @@ async fn collect_plain(
     Ok(PromotionReport {
         environment,
         main,
+        inventory,
         branches: rows,
     })
 }
@@ -959,7 +1048,7 @@ fn write_report(
         },
         DiffReport::Age => {
             let as_of = current_report_date()?;
-            let age = PromotionAgeReport::new(&report.branches, as_of)
+            let age = PromotionAgeReport::new(&report.inventory.ahead, &report.branches, as_of)
                 .map_err(|error| CliError::Git(format!("could not build age report: {error}")))?;
             match format {
                 ReportFormat::Json => format!(
@@ -1060,9 +1149,33 @@ fn report_value(report: &PromotionReport) -> serde_json::Value {
         })
         .collect::<Vec<_>>();
     serde_json::json!({
+        "schemaVersion": 1,
         "environment": report.environment,
         "main": report.main,
+        "commitInventory": {
+            "aheadOfMain": commit_inventory_value(&report.inventory.ahead),
+            "behindMain": commit_inventory_value(&report.inventory.behind_main),
+        },
         "branches": branches,
+    })
+}
+
+fn commit_inventory_value(commits: &[PromotionCommit]) -> serde_json::Value {
+    let commits = commits
+        .iter()
+        .map(|commit| {
+            serde_json::json!({
+                "id": commit.id,
+                "shortId": commit.short_id,
+                "subject": commit.subject,
+                "author": commit.author,
+                "authoredDate": commit.date,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "count": commits.len(),
+        "commits": commits,
     })
 }
 
@@ -1119,12 +1232,16 @@ fn age_report_value(report: &PromotionReport, age: &PromotionAgeReport) -> serde
         })
         .collect::<Vec<_>>();
     serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "report": "age",
         "environment": report.environment,
         "main": report.main,
         "asOf": age.as_of.to_string(),
-        "counting": "uniqueCommitsAcrossBranches",
+        "counting": "uniqueEnvironmentCommits",
+        "commitInventory": {
+            "aheadOfMain": commit_inventory_value(&report.inventory.ahead),
+            "behindMain": commit_inventory_value(&report.inventory.behind_main),
+        },
         "totalCommits": age.total_commits,
         "oldestYear": age.oldest_year(),
         "buckets": buckets,
@@ -1186,9 +1303,12 @@ pub(crate) fn share_percent(commits: usize, total: usize) -> f64 {
 
 fn format_table(report: &PromotionReport) -> String {
     let mut output = format!(
-        "Branches in {} but not {}\n{:<36} {:<10} {:<10} {:>5}  {:<12} {:<14} LAST AUTHOR\n",
+        "Branches in {} but not {}\n{} ahead of main; {} behind main.\n\
+         {:<36} {:<10} {:<10} {:>5}  {:<12} {:<14} LAST AUTHOR\n",
         crate::terminal_text::escape(&report.environment),
         crate::terminal_text::escape(&report.main),
+        commit_count(report.inventory.ahead.len()),
+        commit_count(report.inventory.behind_main.len()),
         "BRANCH",
         "STARTED",
         "LAST",
@@ -1223,13 +1343,46 @@ fn format_table(report: &PromotionReport) -> String {
             crate::terminal_text::escape(&row.last_author)
         ));
     }
+    append_behind_commits_table(&mut output, report);
     output
+}
+
+fn commit_count(count: usize) -> String {
+    if count == 1 {
+        "1 commit".to_owned()
+    } else {
+        format!("{count} commits")
+    }
+}
+
+fn append_behind_commits_table(output: &mut String, report: &PromotionReport) {
+    if report.inventory.behind_main.is_empty() {
+        return;
+    }
+    output.push_str(&format!(
+        "\nCommits on {} missing from {}\n\
+         {:<9} {:<10} {:<24} SUBJECT\n",
+        crate::terminal_text::escape(&report.main),
+        crate::terminal_text::escape(&report.environment),
+        "SHA",
+        "DATE",
+        "AUTHOR"
+    ));
+    for commit in &report.inventory.behind_main {
+        output.push_str(&format!(
+            "{:<9} {:<10} {:<24} {}\n",
+            crate::terminal_text::escape(&commit.short_id),
+            commit.date,
+            crate::terminal_text::escape(&commit.author),
+            crate::terminal_text::escape(&commit.subject)
+        ));
+    }
 }
 
 fn format_age_table(report: &PromotionReport, age: &PromotionAgeReport) -> String {
     let mut output = format!(
         "Age of unshipped work in {} but not {} (as of {})\n\
-         All {} unique authored commits across {} branches.\n\
+         All {} unique environment commits; {} attribution rows.\n\
          {:<24} {:>10} {:>8}  READING\n",
         crate::terminal_text::escape(&report.environment),
         crate::terminal_text::escape(&report.main),
@@ -1280,6 +1433,13 @@ fn format_age_table(report: &PromotionReport, age: &PromotionAgeReport) -> Strin
             ));
         }
     }
+    if !report.inventory.behind_main.is_empty() {
+        output.push_str(&format!(
+            "\n{} behind main.\n",
+            commit_count(report.inventory.behind_main.len())
+        ));
+    }
+    append_behind_commits_table(&mut output, report);
     output
 }
 
@@ -1288,6 +1448,16 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
     csv_row(
         &mut file,
         &[
+            "rowType",
+            "environment",
+            "main",
+            "direction",
+            "commitCount",
+            "commitId",
+            "shortId",
+            "subject",
+            "author",
+            "authoredDate",
             "branch",
             "started",
             "last",
@@ -1304,6 +1474,72 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
             "jiraError",
         ],
     )?;
+    for (direction, commits) in [
+        ("aheadOfMain", report.inventory.ahead.as_slice()),
+        ("behindMain", report.inventory.behind_main.as_slice()),
+    ] {
+        let count = commits.len().to_string();
+        csv_row(
+            &mut file,
+            &[
+                "inventory",
+                &report.environment,
+                &report.main,
+                direction,
+                &count,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+        for commit in commits {
+            csv_row(
+                &mut file,
+                &[
+                    "commit",
+                    &report.environment,
+                    &report.main,
+                    direction,
+                    "",
+                    &commit.id,
+                    &commit.short_id,
+                    &commit.subject,
+                    &commit.author,
+                    &commit.date,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ],
+            )?;
+        }
+    }
     for row in &report.branches {
         let ahead = row.ahead.to_string();
         let merged_environments = row.merged_environments.join(", ");
@@ -1373,6 +1609,16 @@ fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
         csv_row(
             &mut file,
             &[
+                "branch",
+                &report.environment,
+                &report.main,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
                 &row.branch,
                 &row.started,
                 &row.last,
@@ -1415,6 +1661,13 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
             "oldestCommit",
             "newestCommit",
             "assessment",
+            "direction",
+            "inventoryCount",
+            "commitId",
+            "shortId",
+            "commitSubject",
+            "commitAuthor",
+            "authoredDate",
         ],
     )?;
     let total = age.total_commits.to_string();
@@ -1430,7 +1683,7 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
                 &report.environment,
                 &report.main,
                 &as_of,
-                "uniqueCommitsAcrossBranches",
+                "uniqueEnvironmentCommits",
                 "year",
                 &year,
                 "",
@@ -1442,6 +1695,13 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
                 "",
                 "",
                 &age_bucket_reading(age, bucket),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
             ],
         )?;
     }
@@ -1457,7 +1717,7 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
             &report.environment,
             &report.main,
             &as_of,
-            "uniqueCommitsAcrossBranches",
+            "uniqueEnvironmentCommits",
             "last90Days",
             "",
             &age.last_90_days.since.to_string(),
@@ -1469,6 +1729,13 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
             "",
             "",
             "Genuinely in flight",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
         ],
     )?;
     let older_commits = age.older_than_one_year.commits.to_string();
@@ -1483,7 +1750,7 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
             &report.environment,
             &report.main,
             &as_of,
-            "uniqueCommitsAcrossBranches",
+            "uniqueEnvironmentCommits",
             "olderThanOneYear",
             "",
             "",
@@ -1495,8 +1762,79 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
             "",
             "",
             "Will not ship without a decision",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
         ],
     )?;
+    for (direction, commits) in [
+        ("aheadOfMain", report.inventory.ahead.as_slice()),
+        ("behindMain", report.inventory.behind_main.as_slice()),
+    ] {
+        let count = commits.len().to_string();
+        csv_row(
+            &mut file,
+            &[
+                "inventory",
+                &report.environment,
+                &report.main,
+                &as_of,
+                "uniqueEnvironmentCommits",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &count,
+                &total,
+                "",
+                "",
+                "",
+                "",
+                direction,
+                &count,
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+        for commit in commits {
+            csv_row(
+                &mut file,
+                &[
+                    "commit",
+                    &report.environment,
+                    &report.main,
+                    &as_of,
+                    "uniqueEnvironmentCommits",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    &total,
+                    "",
+                    "",
+                    "",
+                    "",
+                    direction,
+                    "",
+                    &commit.id,
+                    &commit.short_id,
+                    &commit.subject,
+                    &commit.author,
+                    &commit.date,
+                ],
+            )?;
+        }
+    }
     for branch in &age.oldest_branches {
         let commits = branch.commits.to_string();
         csv_row(
@@ -1506,7 +1844,7 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
                 &report.environment,
                 &report.main,
                 &as_of,
-                "uniqueCommitsAcrossBranches",
+                "uniqueEnvironmentCommits",
                 "",
                 "",
                 "",
@@ -1517,6 +1855,13 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
                 "",
                 &branch.oldest.to_string(),
                 &branch.newest.to_string(),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
                 "",
             ],
         )?;
@@ -1654,6 +1999,16 @@ mod tests {
         let report = PromotionReport {
             environment: "qa".to_owned(),
             main: "main".to_owned(),
+            inventory: EnvironmentInventory {
+                ahead: Vec::new(),
+                behind_main: vec![PromotionCommit {
+                    id: "abcdef123456".to_owned(),
+                    short_id: "abcdef1".to_owned(),
+                    subject: "Main-only work".to_owned(),
+                    author: "Alex".to_owned(),
+                    date: "2026-08-03".to_owned(),
+                }],
+            },
             branches: vec![PromotionBranch {
                 branch: "feature/PROJ-123-login".to_owned(),
                 started: "2024-01-01".to_owned(),
@@ -1675,8 +2030,10 @@ mod tests {
             .lines()
             .next()
             .is_some_and(|line| line.ends_with("\"jiraError\"")));
-        assert!(csv.lines().nth(1).is_some_and(|line| {
-            line.contains("\"qa\",\"PROJ-123\",\"\",\"\"")
+        assert!(csv.contains("\"inventory\",\"qa\",\"main\",\"behindMain\",\"1\""));
+        assert!(csv.contains("\"commit\",\"qa\",\"main\",\"behindMain\",\"\",\"abcdef123456\""));
+        assert!(csv.lines().any(|line| {
+            line.starts_with("\"branch\",\"qa\",\"main\"")
                 && line.ends_with("\"request timed out\"")
         }));
         Ok(())
@@ -1753,6 +2110,16 @@ mod tests {
         let report = PromotionReport {
             environment: "qa".to_owned(),
             main: "main".to_owned(),
+            inventory: EnvironmentInventory {
+                ahead: Vec::new(),
+                behind_main: vec![PromotionCommit {
+                    id: "abcdef123456".to_owned(),
+                    short_id: "abcdef1".to_owned(),
+                    subject: "Main work absent from QA".to_owned(),
+                    author: "Alex".to_owned(),
+                    date: "2026-08-03".to_owned(),
+                }],
+            },
             branches: vec![PromotionBranch {
                 branch: "feature/PROJ-123-login".to_owned(),
                 started: "2024-01-01".to_owned(),
@@ -1776,6 +2143,15 @@ mod tests {
         let value = report_value(&report);
 
         assert_eq!(value["branches"][0]["lastAuthor"], "Pat");
+        assert_eq!(value["commitInventory"]["behindMain"]["count"], 1);
+        assert_eq!(
+            value["commitInventory"]["behindMain"]["commits"][0]["subject"],
+            "Main work absent from QA"
+        );
+        assert_eq!(
+            value["commitInventory"]["behindMain"]["commits"][0]["authoredDate"],
+            "2026-08-03"
+        );
         assert_eq!(value["branches"][0]["mergedEnvironments"][0], "qa");
         assert_eq!(
             value["branches"][0]["jiraIssue"]["fields"]["assignee"]["displayName"],
@@ -1785,14 +2161,18 @@ mod tests {
             value["branches"][0]["jiraIssue"]["fields"]["fixVersions"][0]["name"],
             "1.2"
         );
+        let table = format_table(&report);
+        assert!(table.contains("1 commit behind main"));
+        assert!(table.contains("Main work absent from QA"));
     }
 
     #[test]
     fn age_json_is_self_describing_and_uses_explicit_thresholds(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let report = PromotionReport {
+        let mut report = PromotionReport {
             environment: "qa".to_owned(),
             main: "main".to_owned(),
+            inventory: EnvironmentInventory::default(),
             branches: vec![PromotionBranch {
                 branch: "feature/legacy".to_owned(),
                 started: "2019-12-31".to_owned(),
@@ -1819,13 +2199,30 @@ mod tests {
                 jira: JiraIssueState::NoTicket,
             }],
         };
-        let age = PromotionAgeReport::new(&report.branches, ReportDate::parse("2026-08-04")?)?;
+        report.inventory.ahead = report.branches[0].commits.clone();
+        report.inventory.behind_main = vec![PromotionCommit {
+            id: "333333333333".to_owned(),
+            short_id: "3333333".to_owned(),
+            subject: "Main-only work".to_owned(),
+            author: "Alex".to_owned(),
+            date: "2026-08-02".to_owned(),
+        }];
+        let age = PromotionAgeReport::new(
+            &report.inventory.ahead,
+            &report.branches,
+            ReportDate::parse("2026-08-04")?,
+        )?;
 
         let value = age_report_value(&report, &age);
 
-        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["schemaVersion"], 2);
         assert_eq!(value["report"], "age");
-        assert_eq!(value["counting"], "uniqueCommitsAcrossBranches");
+        assert_eq!(value["counting"], "uniqueEnvironmentCommits");
+        assert_eq!(value["commitInventory"]["behindMain"]["count"], 1);
+        assert_eq!(
+            value["commitInventory"]["behindMain"]["commits"][0]["subject"],
+            "Main-only work"
+        );
         assert_eq!(value["asOf"], "2026-08-04");
         assert_eq!(value["totalCommits"], 2);
         assert_eq!(value["oldestYear"], 2019);
@@ -1849,6 +2246,16 @@ mod tests {
         let report = PromotionReport {
             environment: "qa".to_owned(),
             main: "main".to_owned(),
+            inventory: EnvironmentInventory {
+                ahead: Vec::new(),
+                behind_main: vec![PromotionCommit {
+                    id: "333333333333".to_owned(),
+                    short_id: "3333333".to_owned(),
+                    subject: "Main-only work".to_owned(),
+                    author: "Alex".to_owned(),
+                    date: "2026-08-02".to_owned(),
+                }],
+            },
             branches: vec![PromotionBranch {
                 branch: "feature/legacy".to_owned(),
                 started: "2019-12-31".to_owned(),
@@ -1866,7 +2273,11 @@ mod tests {
                 jira: JiraIssueState::NoTicket,
             }],
         };
-        let age = PromotionAgeReport::new(&report.branches, ReportDate::parse("2026-08-04")?)?;
+        let age = PromotionAgeReport::new(
+            &report.branches[0].commits,
+            &report.branches,
+            ReportDate::parse("2026-08-04")?,
+        )?;
 
         let table = format_age_table(&report, &age);
 
@@ -1877,6 +2288,8 @@ mod tests {
         assert!(table.contains("Will not ship without a decision"));
         assert!(table.contains("Branches carrying commits from 2019"));
         assert!(table.contains("feature/legacy"));
+        assert!(table.contains("1 commit behind main"));
+        assert!(table.contains("Main-only work"));
         Ok(())
     }
 
@@ -1885,6 +2298,16 @@ mod tests {
         let report = PromotionReport {
             environment: "qa".to_owned(),
             main: "main".to_owned(),
+            inventory: EnvironmentInventory {
+                ahead: Vec::new(),
+                behind_main: vec![PromotionCommit {
+                    id: "333333333333".to_owned(),
+                    short_id: "3333333".to_owned(),
+                    subject: "Main-only work".to_owned(),
+                    author: "Alex".to_owned(),
+                    date: "2026-08-02".to_owned(),
+                }],
+            },
             branches: vec![PromotionBranch {
                 branch: "feature/current".to_owned(),
                 started: "2026-08-01".to_owned(),
@@ -1902,7 +2325,11 @@ mod tests {
                 jira: JiraIssueState::NoTicket,
             }],
         };
-        let age = PromotionAgeReport::new(&report.branches, ReportDate::parse("2026-08-04")?)?;
+        let age = PromotionAgeReport::new(
+            &report.branches[0].commits,
+            &report.branches,
+            ReportDate::parse("2026-08-04")?,
+        )?;
 
         let csv = format_age_csv(&report, &age)?;
 
@@ -1910,10 +2337,20 @@ mod tests {
             header.contains("\"rowType\"") && header.contains("\"assessment\"")
         }));
         assert!(csv.contains(
-            "\"bucket\",\"qa\",\"main\",\"2026-08-04\",\"uniqueCommitsAcrossBranches\",\"year\",\"2026\""
+            "\"bucket\",\"qa\",\"main\",\"2026-08-04\",\"uniqueEnvironmentCommits\",\"year\",\"2026\""
         ));
-        assert!(csv.contains("\"threshold\",\"qa\",\"main\",\"2026-08-04\",\"uniqueCommitsAcrossBranches\",\"last90Days\""));
-        assert!(csv.contains("\"threshold\",\"qa\",\"main\",\"2026-08-04\",\"uniqueCommitsAcrossBranches\",\"olderThanOneYear\""));
+        assert!(csv.contains("\"threshold\",\"qa\",\"main\",\"2026-08-04\",\"uniqueEnvironmentCommits\",\"last90Days\""));
+        assert!(csv.contains("\"threshold\",\"qa\",\"main\",\"2026-08-04\",\"uniqueEnvironmentCommits\",\"olderThanOneYear\""));
+        assert!(csv.lines().any(|line| {
+            line.starts_with("\"inventory\",\"qa\",\"main\"")
+                && line.contains("\"behindMain\",\"1\"")
+        }));
+        assert!(csv.lines().any(|line| {
+            line.starts_with("\"commit\",\"qa\",\"main\"")
+                && line.contains("\"behindMain\"")
+                && line.contains("\"333333333333\"")
+                && line.contains("\"Main-only work\"")
+        }));
         Ok(())
     }
 
@@ -2083,6 +2520,97 @@ mod tests {
     }
 
     #[test]
+    fn scan_reports_non_merge_commits_that_the_environment_is_behind_main(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        run_git(directory.path(), &["init", "-q", "-b", "main"])?;
+        run_git(directory.path(), &["config", "user.name", "Test Author"])?;
+        run_git(
+            directory.path(),
+            &["config", "user.email", "test@example.com"],
+        )?;
+        std::fs::write(directory.path().join("base"), "base\n")?;
+        run_git(directory.path(), &["add", "base"])?;
+        commit(directory.path(), "base", "2024-01-01T00:00:00Z")?;
+        run_git(directory.path(), &["branch", "qa", "main"])?;
+
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "shared-helper", "main"],
+        )?;
+        std::fs::write(directory.path().join("shared"), "shared\n")?;
+        run_git(directory.path(), &["add", "shared"])?;
+        commit(directory.path(), "shared work", "2024-01-15T00:00:00Z")?;
+        for branch in ["qa", "main"] {
+            run_git(directory.path(), &["checkout", "-q", branch])?;
+            run_git(
+                directory.path(),
+                &[
+                    "merge",
+                    "-q",
+                    "--no-ff",
+                    "shared-helper",
+                    "-m",
+                    &format!("merge shared work into {branch}"),
+                ],
+            )?;
+        }
+
+        std::fs::write(directory.path().join("main-work"), "main work\n")?;
+        run_git(directory.path(), &["add", "main-work"])?;
+        commit(
+            directory.path(),
+            "main work absent from QA",
+            "2024-02-01T00:00:00Z",
+        )?;
+
+        for branch in ["main", "qa"] {
+            run_git(
+                directory.path(),
+                &[
+                    "update-ref",
+                    &format!("refs/remotes/origin/{branch}"),
+                    &format!("refs/heads/{branch}"),
+                ],
+            )?;
+        }
+        run_git(
+            directory.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )?;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        scan_repository(
+            &ScanOptions {
+                repository: directory.path().to_path_buf(),
+                environment: "qa".to_owned(),
+                main: None,
+                remote: "origin".to_owned(),
+                jira_configured: false,
+                fetch_before_scan: false,
+                selected_branches: None,
+            },
+            &sender,
+        )?;
+        drop(sender);
+        let updates = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+
+        assert!(matches!(
+            updates.iter().find(|update| matches!(update, DiffUpdate::Inventory(_))),
+            Some(DiffUpdate::Inventory(inventory))
+                if inventory.ahead.is_empty()
+                    && inventory.behind_main.len() == 1
+                    && inventory.behind_main[0].subject == "main work absent from QA"
+                    && inventory.behind_main[0].date == "2024-02-01"
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn scan_can_scope_a_report_to_multiple_json_selected_branches(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
@@ -2163,6 +2691,10 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        let inventory = updates.iter().find_map(|update| match update {
+            DiffUpdate::Inventory(inventory) => Some(inventory),
+            _ => None,
+        });
 
         assert!(matches!(
             updates.first(),
@@ -2170,6 +2702,16 @@ mod tests {
                 if branches == &["feature/PROJ-1-first", "feature/PROJ-3-third"]
         ));
         assert_eq!(measured, ["feature/PROJ-1-first", "feature/PROJ-3-third"]);
+        assert_eq!(
+            inventory.map(|inventory| {
+                inventory
+                    .ahead
+                    .iter()
+                    .map(|commit| commit.subject.as_str())
+                    .collect::<Vec<_>>()
+            }),
+            Some(vec!["third", "first"])
+        );
 
         let (missing_sender, _missing_receiver) = mpsc::unbounded_channel();
         let missing = scan_repository(
@@ -3192,7 +3734,7 @@ mod tests {
             updates.first(),
             Some(DiffUpdate::Skeleton { branches, .. }) if branches.is_empty()
         ));
-        assert_eq!(updates.len(), 1);
+        assert_eq!(updates.len(), 2);
         Ok(())
     }
 
@@ -3272,12 +3814,13 @@ mod tests {
             Some(DiffUpdate::Skeleton { branches, .. })
                 if branches == &["feature/PROJ-123-login"]
         ));
-        assert_eq!(updates.len(), 2);
+        assert_eq!(updates.len(), 3);
         Ok(())
     }
 
     fn run_git(path: &Path, arguments: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
         let status = Command::new("git")
+            .args(["-c", "core.fsmonitor=false"])
             .args(arguments)
             .current_dir(path)
             .status()?;
@@ -3290,6 +3833,7 @@ mod tests {
 
     fn commit(path: &Path, message: &str, date: &str) -> Result<(), Box<dyn std::error::Error>> {
         let status = Command::new("git")
+            .args(["-c", "core.fsmonitor=false"])
             .args(["commit", "-q", "-m", message])
             .env("GIT_AUTHOR_DATE", date)
             .env("GIT_COMMITTER_DATE", date)
