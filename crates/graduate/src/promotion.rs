@@ -158,17 +158,10 @@ pub enum ReportDateError {
     OutsideSupportedRange,
 }
 
-/// Calendar period represented by one age-report row.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AgePeriod {
-    Year(i32),
-    Before(i32),
-}
-
 /// Count of unique unshipped commits in one calendar period.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AgeBucket {
-    pub period: AgePeriod,
+    pub year: i32,
     pub commits: usize,
 }
 
@@ -186,7 +179,7 @@ pub struct OlderCommitSummary {
     pub commits: usize,
 }
 
-/// One branch carrying commits older than the aggregate calendar window.
+/// One branch carrying commits from the oldest authored year in the report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OldestPromotionBranch {
     pub branch: String,
@@ -210,49 +203,46 @@ impl PromotionAgeReport {
     /// Build an age report, counting a commit once even when several branches
     /// contain it and retaining per-branch counts for the oldest-work detail.
     pub fn new(branches: &[PromotionBranch], as_of: ReportDate) -> Result<Self, ReportDateError> {
-        let cutoff_year = as_of
-            .year
-            .checked_sub(6)
-            .ok_or(ReportDateError::OutsideSupportedRange)?;
         let since = as_of.days_before(89)?;
         let anniversary = as_of.previous_year_anniversary()?;
         let mut unique_commits = HashMap::<String, ReportDate>::new();
-        let mut oldest_branches = Vec::new();
 
         for branch in branches {
-            let mut unique_on_branch = HashSet::new();
-            let mut oldest_dates = Vec::new();
             for commit in &branch.commits {
                 let date = ReportDate::parse(&commit.date)?;
                 unique_commits.entry(commit.id.clone()).or_insert(date);
-                if date.year < cutoff_year && unique_on_branch.insert(commit.id.as_str()) {
-                    oldest_dates.push(date);
-                }
             }
-            oldest_dates.sort_unstable();
-            if let (Some(oldest), Some(newest)) = (oldest_dates.first(), oldest_dates.last()) {
-                oldest_branches.push(OldestPromotionBranch {
-                    branch: branch.branch.clone(),
-                    commits: oldest_dates.len(),
-                    oldest: *oldest,
-                    newest: *newest,
-                });
+        }
+
+        let oldest_year = unique_commits.values().map(|date| date.year).min();
+        let mut oldest_branches = Vec::new();
+        if let Some(oldest_year) = oldest_year {
+            for branch in branches {
+                let mut unique_on_branch = HashSet::new();
+                let mut oldest_dates = Vec::new();
+                for commit in &branch.commits {
+                    let date = ReportDate::parse(&commit.date)?;
+                    if date.year == oldest_year && unique_on_branch.insert(commit.id.as_str()) {
+                        oldest_dates.push(date);
+                    }
+                }
+                oldest_dates.sort_unstable();
+                if let (Some(oldest), Some(newest)) = (oldest_dates.first(), oldest_dates.last()) {
+                    oldest_branches.push(OldestPromotionBranch {
+                        branch: branch.branch.clone(),
+                        commits: oldest_dates.len(),
+                        oldest: *oldest,
+                        newest: *newest,
+                    });
+                }
             }
         }
 
         let mut years = BTreeMap::new();
-        for year in cutoff_year..=as_of.year {
-            years.insert(year, 0usize);
-        }
-        let mut before = 0usize;
         let mut recent = 0usize;
         let mut older = 0usize;
         for date in unique_commits.values() {
-            if date.year < cutoff_year {
-                before += 1;
-            } else {
-                *years.entry(date.year).or_default() += 1;
-            }
+            *years.entry(date.year).or_default() += 1;
             if *date >= since && *date <= as_of {
                 recent += 1;
             }
@@ -260,18 +250,11 @@ impl PromotionAgeReport {
                 older += 1;
             }
         }
-        let mut buckets = years
+        let buckets = years
             .into_iter()
             .rev()
-            .map(|(year, commits)| AgeBucket {
-                period: AgePeriod::Year(year),
-                commits,
-            })
+            .map(|(year, commits)| AgeBucket { year, commits })
             .collect::<Vec<_>>();
-        buckets.push(AgeBucket {
-            period: AgePeriod::Before(cutoff_year),
-            commits: before,
-        });
         oldest_branches.sort_by(|left, right| {
             right
                 .commits
@@ -293,6 +276,12 @@ impl PromotionAgeReport {
             },
             oldest_branches,
         })
+    }
+
+    /// The oldest authored year represented by the report.
+    #[must_use]
+    pub fn oldest_year(&self) -> Option<i32> {
+        self.buckets.iter().map(|bucket| bucket.year).min()
     }
 }
 
@@ -465,20 +454,12 @@ mod tests {
             report
                 .buckets
                 .iter()
-                .map(|bucket| (bucket.period, bucket.commits))
+                .map(|bucket| (bucket.year, bucket.commits))
                 .collect::<Vec<_>>(),
-            vec![
-                (AgePeriod::Year(2026), 1),
-                (AgePeriod::Year(2025), 2),
-                (AgePeriod::Year(2024), 0),
-                (AgePeriod::Year(2023), 0),
-                (AgePeriod::Year(2022), 0),
-                (AgePeriod::Year(2021), 0),
-                (AgePeriod::Year(2020), 0),
-                (AgePeriod::Before(2020), 1),
-            ]
+            vec![(2026, 1), (2025, 2), (2019, 1)]
         );
         assert_eq!(report.oldest_branches.len(), 1);
+        assert_eq!(report.oldest_year(), Some(2019));
         assert_eq!(report.oldest_branches[0].branch, "feature/legacy");
         assert_eq!(report.oldest_branches[0].commits, 1);
         Ok(())

@@ -6,10 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Added an advanced `gd diff --report age` report with year buckets, explicit
-  90-day and one-year decision thresholds, oldest-branch details, structured
-  JSON/YAML/CSV output, and an `a` hotkey that opens the same report in a TUI
-  modal.
+- Added an advanced `gd diff --report age` report with authored-date-derived
+  year buckets, explicit 90-day and one-year decision thresholds,
+  oldest-branch details, structured JSON/YAML/CSV output, and an `a` hotkey
+  that opens the same scrollable report in a TUI modal.
 - Recovered promoted work whose feature branch was deleted after its pull
   request completed. The promotion report now also groups the non-merge
   commits unique to the environment by the Jira key in their subject and

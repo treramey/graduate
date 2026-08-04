@@ -27,8 +27,9 @@
   seam preserves Git credential-helper behavior and supports non-persistent
   PAT authentication.
 - `gd diff --report age` emits a non-interactive, schema-versioned projection
-  of unique unshipped commit age, including explicit UTC thresholds and the
-  branches carrying the oldest work. The TUI opens the same projection with
+  of unique unshipped commit age. Year buckets come only from commit authored
+  dates, with explicit UTC thresholds and the branches carrying commits from
+  the oldest observed year. The TUI opens the same scrollable projection with
   `a` after scanning completes.
 - Promotion reports flag feature branches that had an environment branch
   merged into them by matching the environment's own merge commits in the

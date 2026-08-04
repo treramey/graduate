@@ -98,6 +98,8 @@ struct DiffModel {
     history_list_state: TableState,
     as_of: ReportDate,
     age_report: Option<PromotionAgeReport>,
+    age_selected: usize,
+    age_list_state: TableState,
 }
 
 enum Message {
@@ -113,6 +115,8 @@ enum Message {
     CloseHistory,
     OpenAgeReport,
     CloseAgeReport,
+    ScrollAgeUp,
+    ScrollAgeDown,
     ScrollHistoryUp,
     ScrollHistoryDown,
     Tick,
@@ -144,6 +148,8 @@ impl DiffModel {
             history_list_state: TableState::default(),
             as_of,
             age_report: None,
+            age_selected: 0,
+            age_list_state: TableState::default(),
         }
     }
 
@@ -156,6 +162,8 @@ impl DiffModel {
             self.history_selected = 0;
             self.history_list_state = TableState::default();
             self.age_report = None;
+            self.age_selected = 0;
+            self.age_list_state = TableState::default();
         }
     }
 
@@ -288,9 +296,27 @@ fn update(model: &mut DiffModel, message: Message) -> Result<Effect, CliError> {
                     CliError::Git(format!("could not build age report: {error}"))
                 })?,
             );
+            model.age_selected = 0;
+            model.age_list_state = TableState::default().with_selected(Some(0));
             model.warning = None;
         }
-        Message::CloseAgeReport => model.age_report = None,
+        Message::CloseAgeReport => {
+            model.age_report = None;
+            model.age_selected = 0;
+            model.age_list_state = TableState::default();
+        }
+        Message::ScrollAgeUp => {
+            model.age_selected = model.age_selected.saturating_sub(1);
+            model.age_list_state.select(Some(model.age_selected));
+        }
+        Message::ScrollAgeDown => {
+            let maximum = model
+                .age_report
+                .as_ref()
+                .map_or(0, |report| report.buckets.len().saturating_add(1));
+            model.age_selected = model.age_selected.saturating_add(1).min(maximum);
+            model.age_list_state.select(Some(model.age_selected));
+        }
         Message::ScrollHistoryUp => {
             model.history_selected = model.history_selected.saturating_sub(1);
             model
@@ -323,6 +349,12 @@ fn message_for_key(model: &DiffModel, code: KeyCode, modifiers: KeyModifiers) ->
     match code {
         KeyCode::Char('q') | KeyCode::Char('a') | KeyCode::Esc if model.age_report.is_some() => {
             Some(Message::CloseAgeReport)
+        }
+        KeyCode::Up | KeyCode::Char('k') if model.age_report.is_some() => {
+            Some(Message::ScrollAgeUp)
+        }
+        KeyCode::Down | KeyCode::Char('j') if model.age_report.is_some() => {
+            Some(Message::ScrollAgeDown)
         }
         _ if model.age_report.is_some() => None,
         KeyCode::Char('q') | KeyCode::Char('h') | KeyCode::Esc if model.history_open => {
@@ -470,7 +502,7 @@ fn render(frame: &mut Frame<'_>, model: &mut DiffModel) {
     }
 }
 
-fn render_age_report(frame: &mut Frame<'_>, model: &DiffModel) {
+fn render_age_report(frame: &mut Frame<'_>, model: &mut DiffModel) {
     let Some(age) = model.age_report.as_ref() else {
         return;
     };
@@ -507,7 +539,7 @@ fn render_age_report(frame: &mut Frame<'_>, model: &DiffModel) {
         .iter()
         .map(|bucket| {
             Row::new([
-                age_bucket_label(bucket.period),
+                age_bucket_label(bucket.year),
                 bucket.commits.to_string(),
                 format!("{:.1}%", share_percent(bucket.commits, age.total_commits)),
                 age_bucket_reading(age, bucket),
@@ -548,7 +580,9 @@ fn render_age_report(frame: &mut Frame<'_>, model: &DiffModel) {
         ],
     )
     .header(Row::new(["WRITTEN IN", "COMMITS", "SHARE", "READING"]).style(Palette::muted().bold()))
-    .column_spacing(1);
+    .column_spacing(1)
+    .row_highlight_style(Palette::action_focus())
+    .highlight_symbol("› ");
     if content.height < 22 {
         let [compact_title, compact_ages] =
             Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(content);
@@ -562,7 +596,7 @@ fn render_age_report(frame: &mut Frame<'_>, model: &DiffModel) {
             .alignment(HorizontalAlignment::Center),
             compact_title,
         );
-        frame.render_widget(age_table, compact_ages);
+        frame.render_stateful_widget(age_table, compact_ages, &mut model.age_list_state);
         return;
     }
     let oldest_rows = age.oldest_branches.iter().take(6).map(|branch| {
@@ -584,13 +618,9 @@ fn render_age_report(frame: &mut Frame<'_>, model: &DiffModel) {
     )
     .header(Row::new(["BRANCH", "COMMITS", "OLDEST", "NEWEST"]).style(Palette::muted().bold()))
     .column_spacing(1);
-    let cutoff = age
-        .buckets
-        .last()
-        .map_or_else(String::new, |bucket| match bucket.period {
-            graduate::promotion::AgePeriod::Before(year) => format!("before {year}"),
-            period => age_bucket_label(period),
-        });
+    let oldest_year = age
+        .oldest_year()
+        .map_or_else(String::new, |year| year.to_string());
 
     frame.render_widget(Clear, area);
     frame.render_widget(card, area);
@@ -618,14 +648,14 @@ fn render_age_report(frame: &mut Frame<'_>, model: &DiffModel) {
         .alignment(HorizontalAlignment::Center),
         context,
     );
-    frame.render_widget(age_table, ages);
+    frame.render_stateful_widget(age_table, ages, &mut model.age_list_state);
     let oldest_heading = if age.oldest_branches.len() > 6 {
         format!(
-            "Top 6 of {} oldest branches {cutoff}",
+            "Top 6 of {} branches carrying {oldest_year} commits",
             age.oldest_branches.len()
         )
     } else {
-        format!("Oldest branches {cutoff}")
+        format!("Branches carrying {oldest_year} commits")
     };
     frame.render_widget(
         Paragraph::new(Line::styled(oldest_heading, Palette::primary().bold())),
@@ -634,6 +664,8 @@ fn render_age_report(frame: &mut Frame<'_>, model: &DiffModel) {
     frame.render_widget(oldest_table, oldest);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
+            Span::styled("↑/↓", Palette::primary()),
+            Span::raw(" scroll   "),
             Span::styled("Esc/a", Palette::primary()),
             Span::raw(" close age report"),
         ]))
@@ -1703,7 +1735,8 @@ mod tests {
         let rendered = terminal.backend().to_string();
 
         assert!(rendered.contains("The age of unshipped work"));
-        assert!(rendered.contains("Before 2020"));
+        assert!(rendered.contains("2019"));
+        assert!(!rendered.contains("Before 2020"));
         assert!(rendered.contains("Will not ship without a decision"));
         assert!(rendered.contains("feature/legacy"));
 
@@ -1731,6 +1764,52 @@ mod tests {
             model.warning.as_deref(),
             Some("The age report is available when the scan completes.")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn age_report_scrolls_through_every_authored_year() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = test_model()?;
+        model.finished = true;
+        model.environment = "qa".to_owned();
+        model.main = "main".to_owned();
+        model.rows.push(BranchRow {
+            branch: "feature/history".to_owned(),
+            report: Some(PromotionBranch {
+                branch: "feature/history".to_owned(),
+                started: "2000-01-01".to_owned(),
+                last: "2026-01-01".to_owned(),
+                ahead: 27,
+                last_author: "Pat".to_owned(),
+                commits: (2000..=2026)
+                    .rev()
+                    .map(|year| PromotionCommit {
+                        id: format!("commit-{year}"),
+                        short_id: year.to_string(),
+                        subject: format!("Work from {year}"),
+                        author: "Pat".to_owned(),
+                        date: format!("{year}-01-01"),
+                    })
+                    .collect(),
+                merged_environments: Vec::new(),
+                jira: JiraIssueState::NoTicket,
+            }),
+        });
+        update(&mut model, Message::OpenAgeReport)?;
+
+        let scroll = message_for_key(&model, KeyCode::Down, KeyModifiers::NONE)
+            .ok_or("down did not map to age-report scrolling")?;
+        update(&mut model, scroll)?;
+        for _ in 1..28 {
+            update(&mut model, Message::ScrollAgeDown)?;
+        }
+        let mut terminal = Terminal::new(TestBackend::new(110, 32))?;
+        terminal.draw(|frame| render(frame, &mut model))?;
+        let rendered = terminal.backend().to_string();
+
+        assert_eq!(model.age_selected, 28);
+        assert!(rendered.contains("Older than one year"));
+        assert!(rendered.contains("2000"));
         Ok(())
     }
 

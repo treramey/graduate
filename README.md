@@ -79,9 +79,11 @@ of main, newest first. Each row shows the commit's short SHA, subject, author,
 and date. Press `h` or Escape to close the sheet.
 
 Press `a` after the scan completes to open the age report. It buckets unique
-unshipped commits by authored year, calls out work written in the last 90 days
-and work older than one year, and identifies the branches carrying the oldest
-commits. Press `a` or Escape to close the report.
+unshipped commits into exactly the authored years present in Git history—there
+are no filler years or synthetic cutoff bucket. It calls out work written in
+the last 90 days and work older than one year, and identifies the branches
+carrying commits from the oldest observed year. Use the arrow keys or `j`/`k`
+to scroll long reports. Press `a` or Escape to close the report.
 
 Graduate renders a feature branch in red with a `⚠` marker beside its name
 when an environment branch was merged into it, and shows a footer warning when
@@ -118,9 +120,10 @@ Supplying `--report branches|age` selects unattended output even in a terminal.
 The age report's JSON includes a schema version, UTC `asOf` date, explicit
 inclusive/exclusive threshold dates, percentages, stable assessment kinds, and
 the branches carrying the oldest work. Commits shared by several branches count
-once in aggregate totals. CSV rows carry a `rowType` so agents can distinguish
-age buckets, decision thresholds, and oldest-branch details without parsing
-display text.
+once in aggregate totals. `buckets` contains only years observed in commit
+authored dates and `oldestYear` identifies the oldest observed year. CSV rows
+carry a `rowType` so agents can distinguish age buckets, decision thresholds,
+and oldest-branch details without parsing display text.
 
 Output paths are relative to the current directory and cannot traverse parent
 directories or symbolic links outside it. Set `GIT_PAT` for headless fetch authentication;

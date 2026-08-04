@@ -9,8 +9,8 @@ use std::sync::Arc;
 use gix::bstr::ByteSlice;
 use graduate::jira::JiraCredentials;
 use graduate::promotion::{
-    jira_key_from_branch, AgeBucket, AgePeriod, JiraIssueState, PromotionAgeReport,
-    PromotionBranch, PromotionCommit, ReportDate,
+    jira_key_from_branch, AgeBucket, JiraIssueState, PromotionAgeReport, PromotionBranch,
+    PromotionCommit, ReportDate,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -981,29 +981,24 @@ fn age_report_value(report: &PromotionReport, age: &PromotionAgeReport) -> serde
         .buckets
         .iter()
         .map(|bucket| {
-            let period = match bucket.period {
-                AgePeriod::Year(year) => serde_json::json!({ "kind": "year", "year": year }),
-                AgePeriod::Before(year) => {
-                    serde_json::json!({ "kind": "beforeYear", "year": year })
-                }
-            };
+            let period = serde_json::json!({ "kind": "year", "year": bucket.year });
             let assessment = if bucket.commits == 0 {
                 serde_json::json!({ "kind": "noCommits", "summary": "No commits" })
             } else {
-                match bucket.period {
-                    AgePeriod::Year(year) if year > age.as_of.year() => serde_json::json!({
+                match bucket.year {
+                    year if year > age.as_of.year() => serde_json::json!({
                         "kind": "futureDated",
                         "summary": "Future-dated commits"
                     }),
-                    AgePeriod::Year(year) if year == age.as_of.year() => serde_json::json!({
+                    year if year == age.as_of.year() => serde_json::json!({
                         "kind": "currentYear",
                         "summary": "Plausibly in flight"
                     }),
-                    AgePeriod::Year(year) if year == age.as_of.year() - 1 => serde_json::json!({
+                    year if year == age.as_of.year() - 1 => serde_json::json!({
                         "kind": "mostlyOverOneYearOld",
                         "summary": "Mostly over a year old"
                     }),
-                    AgePeriod::Year(year) => {
+                    year => {
                         let years = age.as_of.year().saturating_sub(year);
                         serde_json::json!({
                             "kind": "yearsOld",
@@ -1011,11 +1006,6 @@ fn age_report_value(report: &PromotionReport, age: &PromotionAgeReport) -> serde
                             "summary": age_bucket_reading(age, bucket)
                         })
                     }
-                    AgePeriod::Before(_) => serde_json::json!({
-                        "kind": "concentratedInBranches",
-                        "branches": age.oldest_branches.len(),
-                        "summary": age_bucket_reading(age, bucket)
-                    }),
                 }
             };
             serde_json::json!({
@@ -1046,6 +1036,7 @@ fn age_report_value(report: &PromotionReport, age: &PromotionAgeReport) -> serde
         "asOf": age.as_of.to_string(),
         "counting": "uniqueCommitsAcrossBranches",
         "totalCommits": age.total_commits,
+        "oldestYear": age.oldest_year(),
         "buckets": buckets,
         "thresholds": {
             "last90Days": {
@@ -1076,30 +1067,22 @@ fn age_report_value(report: &PromotionReport, age: &PromotionAgeReport) -> serde
     })
 }
 
-pub(crate) fn age_bucket_label(period: AgePeriod) -> String {
-    match period {
-        AgePeriod::Year(year) => year.to_string(),
-        AgePeriod::Before(year) => format!("Before {year}"),
-    }
+pub(crate) fn age_bucket_label(year: i32) -> String {
+    year.to_string()
 }
 
 pub(crate) fn age_bucket_reading(age: &PromotionAgeReport, bucket: &AgeBucket) -> String {
     if bucket.commits == 0 {
         return "No commits".to_owned();
     }
-    match bucket.period {
-        AgePeriod::Year(year) if year > age.as_of.year() => "Future-dated commits".to_owned(),
-        AgePeriod::Year(year) if year == age.as_of.year() => {
-            "Current year — plausibly in flight".to_owned()
-        }
-        AgePeriod::Year(year) if year == age.as_of.year() - 1 => {
-            "Mostly over a year old".to_owned()
-        }
-        AgePeriod::Year(year) => {
+    match bucket.year {
+        year if year > age.as_of.year() => "Future-dated commits".to_owned(),
+        year if year == age.as_of.year() => "Current year — plausibly in flight".to_owned(),
+        year if year == age.as_of.year() - 1 => "Mostly over a year old".to_owned(),
+        year => {
             let years = age.as_of.year().saturating_sub(year);
             format!("{years} years old")
         }
-        AgePeriod::Before(_) => format!("Concentrated in {} branches", age.oldest_branches.len()),
     }
 }
 
@@ -1170,7 +1153,7 @@ fn format_age_table(report: &PromotionReport, age: &PromotionAgeReport) -> Strin
     for bucket in &age.buckets {
         output.push_str(&format!(
             "{:<24} {:>10} {:>7.1}%  {}\n",
-            age_bucket_label(bucket.period),
+            age_bucket_label(bucket.year),
             bucket.commits,
             share_percent(bucket.commits, age.total_commits),
             age_bucket_reading(age, bucket)
@@ -1189,9 +1172,9 @@ fn format_age_table(report: &PromotionReport, age: &PromotionAgeReport) -> Strin
         share_percent(age.older_than_one_year.commits, age.total_commits)
     ));
 
-    if let Some(AgePeriod::Before(cutoff)) = age.buckets.last().map(|bucket| bucket.period) {
+    if let Some(oldest_year) = age.oldest_year() {
         output.push_str(&format!(
-            "\nOldest branches before {cutoff}\n{:<36} {:>8}  {:<10}  NEWEST\n",
+            "\nBranches carrying commits from {oldest_year}\n{:<36} {:>8}  {:<10}  NEWEST\n",
             "BRANCH", "COMMITS", "OLDEST"
         ));
         if age.oldest_branches.is_empty() {
@@ -1347,10 +1330,7 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
     let total = age.total_commits.to_string();
     let as_of = age.as_of.to_string();
     for bucket in &age.buckets {
-        let (period, year) = match bucket.period {
-            AgePeriod::Year(year) => ("year", year.to_string()),
-            AgePeriod::Before(year) => ("beforeYear", year.to_string()),
-        };
+        let year = bucket.year.to_string();
         let commits = bucket.commits.to_string();
         let share = format!("{:.1}", share_percent(bucket.commits, age.total_commits));
         csv_row(
@@ -1361,7 +1341,7 @@ fn format_age_csv(report: &PromotionReport, age: &PromotionAgeReport) -> Result<
                 &report.main,
                 &as_of,
                 "uniqueCommitsAcrossBranches",
-                period,
+                "year",
                 &year,
                 "",
                 "",
@@ -1758,7 +1738,11 @@ mod tests {
         assert_eq!(value["counting"], "uniqueCommitsAcrossBranches");
         assert_eq!(value["asOf"], "2026-08-04");
         assert_eq!(value["totalCommits"], 2);
+        assert_eq!(value["oldestYear"], 2019);
+        assert_eq!(value["buckets"].as_array().map(Vec::len), Some(2));
         assert_eq!(value["buckets"][0]["period"]["kind"], "year");
+        assert_eq!(value["buckets"][0]["period"]["year"], 2026);
+        assert_eq!(value["buckets"][1]["period"]["year"], 2019);
         assert_eq!(value["buckets"][0]["sharePercent"], 50.0);
         assert_eq!(value["thresholds"]["last90Days"]["since"], "2026-05-07");
         assert_eq!(
@@ -1797,10 +1781,11 @@ mod tests {
         let table = format_age_table(&report, &age);
 
         assert!(table.contains("Age of unshipped work in qa but not main"));
-        assert!(table.contains("Before 2020"));
+        assert!(table.contains("2019"));
+        assert!(!table.contains("Before 2020"));
         assert!(table.contains("Older than one year"));
         assert!(table.contains("Will not ship without a decision"));
-        assert!(table.contains("Oldest branches before 2020"));
+        assert!(table.contains("Branches carrying commits from 2019"));
         assert!(table.contains("feature/legacy"));
         Ok(())
     }
@@ -1810,7 +1795,22 @@ mod tests {
         let report = PromotionReport {
             environment: "qa".to_owned(),
             main: "main".to_owned(),
-            branches: Vec::new(),
+            branches: vec![PromotionBranch {
+                branch: "feature/current".to_owned(),
+                started: "2026-08-01".to_owned(),
+                last: "2026-08-01".to_owned(),
+                ahead: 1,
+                last_author: "Pat".to_owned(),
+                commits: vec![PromotionCommit {
+                    id: "111111111111".to_owned(),
+                    short_id: "1111111".to_owned(),
+                    subject: "Current".to_owned(),
+                    author: "Pat".to_owned(),
+                    date: "2026-08-01".to_owned(),
+                }],
+                merged_environments: Vec::new(),
+                jira: JiraIssueState::NoTicket,
+            }],
         };
         let age = PromotionAgeReport::new(&report.branches, ReportDate::parse("2026-08-04")?)?;
 
