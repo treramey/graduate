@@ -35,8 +35,9 @@ actions.
 - `graduate_cli::theme`: shared ANSI-palette visual language.
 - `graduate_cli::error`: process-facing error categories and exit codes.
 - `graduate_cli::generate_skills`: deterministic repository-controlled Agent Skill generation.
-- `graduate::promotion`: promotion-report rows, Jira enrichment states, and
-  deterministic branch-to-ticket mapping and commit-age projections.
+- `graduate::promotion`: authoritative environment commit inventories,
+  promotion-report attribution rows, Jira enrichment states, deterministic
+  branch-to-ticket mapping, and commit-age projections.
 - `graduate::jira`: validated Jira sites, credentials, and identities shared by every delivery path.
 - `graduate::jira_auth`: deterministic Jira onboarding state and secret-retention
   transitions.
@@ -82,6 +83,9 @@ actions.
 - Promotion candidates are remote branch tips reachable from the environment
   branch but not from main. PATs are passed to a one-shot credential helper and
   never persisted in Git configuration.
+- Aggregate promotion and age totals come from the environment-versus-main
+  non-merge commit inventory. Branch and Jira rows only attribute that work;
+  they cannot remove commits from aggregate totals.
 - JSON-scoped promotion reports validate every requested remote branch against
   the same environment-to-main candidate rule and fail instead of silently
   omitting an invalid selection.
