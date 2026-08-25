@@ -1,6 +1,6 @@
 [package]
 name = "graduate"
-description = "I/O-independent Jira domain logic for Graduate"
+description = "I/O-independent domain logic for Graduate"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

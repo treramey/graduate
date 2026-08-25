@@ -20,12 +20,14 @@ use crate::browser::SystemBrowserLauncher;
 use crate::cli::{DiffArgs, DiffReport, ReportFormat};
 use crate::config::Config;
 use crate::diff_tui;
+#[cfg(test)]
+use crate::environment_git::{excluded_branch, resolve_main_branch};
+use crate::environment_git::{
+    gitoxide_error, inspect_environment, promotion_candidates, promotion_inventory, reference_id,
+    unix_date, KNOWN_ENVIRONMENTS,
+};
 use crate::error::CliError;
 use crate::jira::JiraClient;
-
-/// Long-lived environment aggregation branches that are never promoted to
-/// main and must not appear as feature rows.
-const KNOWN_ENVIRONMENTS: [&str; 3] = ["qa", "staging", "cycle"];
 
 #[derive(Clone, Debug)]
 pub(crate) enum DiffUpdate {
@@ -248,27 +250,24 @@ fn scan_repository(
     updates: &mpsc::UnboundedSender<DiffUpdate>,
 ) -> Result<(), CliError> {
     let repository = gix::discover(&options.repository).map_err(gitoxide_error)?;
-    let prefix = format!("refs/remotes/{}/", options.remote);
-    let environment_ref = format!("{prefix}{}", options.environment);
-    let environment_id = reference_id(&repository, &environment_ref)
-        .map_err(|_| CliError::Git(format!("{environment_ref} does not exist after fetching")))?;
-    let main = resolve_main_branch(&repository, &prefix, options.main.as_deref())?;
-    let main_ref = format!("{prefix}{main}");
-    let main_id = reference_id(&repository, &main_ref)?;
-    let environment_ancestors = ancestors(&repository, environment_id)?;
-    let main_ancestors = ancestors(&repository, main_id)?;
-    let names = environment_names(&options.environment, &main);
-    let environment_markers =
-        environment_merge_markers(&repository, &prefix, &names, &main_ancestors)?;
+    let inspection = inspect_environment(
+        &repository,
+        &options.remote,
+        &options.environment,
+        options.main.as_deref(),
+    )?;
+    let names = environment_names(&options.environment, &inspection.main);
+    let environment_markers = environment_merge_markers(
+        &repository,
+        &inspection.prefix,
+        &names,
+        &inspection.main_ancestors,
+    )?;
     let environment_subjects = environment_subjects(&names, &options.remote);
 
     let mut candidates = promotion_candidates(
         &repository,
-        &prefix,
-        &options.environment,
-        &main,
-        &environment_ancestors,
-        &main_ancestors,
+        &inspection,
         options.selected_branches.as_deref(),
     )?;
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
@@ -279,8 +278,8 @@ fn scan_repository(
     let recovered = if options.selected_branches.is_none() {
         recover_deleted_branch_tickets(
             &repository,
-            environment_id,
-            &main_ancestors,
+            inspection.environment_id,
+            &inspection.main_ancestors,
             &covered_keys,
             options.jira_configured,
         )?
@@ -296,7 +295,7 @@ fn scan_repository(
     updates
         .send(DiffUpdate::Skeleton {
             environment: options.environment.clone(),
-            main: main.clone(),
+            main: inspection.main.clone(),
             branches,
         })
         .map_err(|_| CliError::ReportCancelled)?;
@@ -310,7 +309,7 @@ fn scan_repository(
         };
         let row = measure_branch(
             &repository,
-            &main_ancestors,
+            &inspection.main_ancestors,
             &environment_markers,
             &environment_subjects,
             branch,
@@ -329,13 +328,7 @@ fn scan_repository(
             .send(DiffUpdate::Measured(row))
             .map_err(|_| CliError::ReportCancelled)?;
     }
-    let mut inventory = environment_inventory(
-        &repository,
-        environment_id,
-        &main_ancestors,
-        main_id,
-        &environment_ancestors,
-    )?;
+    let mut inventory = promotion_inventory(&repository, &inspection)?;
     if branch_scoped {
         inventory
             .ahead
@@ -345,183 +338,6 @@ fn scan_repository(
         .send(DiffUpdate::Inventory(inventory))
         .map_err(|_| CliError::ReportCancelled)?;
     Ok(())
-}
-
-fn environment_inventory(
-    repository: &gix::Repository,
-    environment_tip: gix::ObjectId,
-    main_ancestors: &HashSet<gix::ObjectId>,
-    main_tip: gix::ObjectId,
-    environment_ancestors: &HashSet<gix::ObjectId>,
-) -> Result<EnvironmentInventory, CliError> {
-    Ok(EnvironmentInventory {
-        ahead: non_merge_commits_excluding(repository, environment_tip, main_ancestors)?,
-        behind_main: non_merge_commits_excluding(repository, main_tip, environment_ancestors)?,
-    })
-}
-
-fn non_merge_commits_excluding(
-    repository: &gix::Repository,
-    tip: gix::ObjectId,
-    excluded_ancestors: &HashSet<gix::ObjectId>,
-) -> Result<Vec<PromotionCommit>, CliError> {
-    let mut visited = HashSet::new();
-    let mut pending = VecDeque::from([tip]);
-    let mut commits = Vec::new();
-    while let Some(id) = pending.pop_front() {
-        if excluded_ancestors.contains(&id) || !visited.insert(id) {
-            continue;
-        }
-        let commit = repository.find_commit(id).map_err(gitoxide_error)?;
-        let parents = commit
-            .parent_ids()
-            .map(|parent| parent.detach())
-            .collect::<Vec<_>>();
-        pending.extend(parents.iter().copied());
-        if parents.len() > 1 {
-            continue;
-        }
-        let author = commit.author().map_err(gitoxide_error)?;
-        let seconds = author.time().map_err(gitoxide_error)?.seconds;
-        let message = commit.message_raw().map_err(gitoxide_error)?;
-        let subject = message
-            .to_str_lossy()
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
-        let id = id.to_string();
-        commits.push((
-            seconds,
-            PromotionCommit {
-                short_id: id.chars().take(7).collect(),
-                id,
-                subject,
-                author: author.name.to_str_lossy().into_owned(),
-                date: unix_date(seconds),
-            },
-        ));
-    }
-    commits.sort_by(|left, right| {
-        right
-            .0
-            .cmp(&left.0)
-            .then_with(|| left.1.id.cmp(&right.1.id))
-    });
-    Ok(commits.into_iter().map(|(_, commit)| commit).collect())
-}
-
-fn promotion_candidates(
-    repository: &gix::Repository,
-    prefix: &str,
-    environment: &str,
-    main: &str,
-    environment_ancestors: &HashSet<gix::ObjectId>,
-    main_ancestors: &HashSet<gix::ObjectId>,
-    selected_branches: Option<&[String]>,
-) -> Result<Vec<(String, gix::ObjectId)>, CliError> {
-    if let Some(selected_branches) = selected_branches {
-        let mut candidates = Vec::with_capacity(selected_branches.len());
-        for branch in selected_branches {
-            if excluded_branch(branch, environment, main) {
-                return Err(CliError::InvalidInput(format!(
-                    "--params branch `{branch}` is not a selectable feature branch"
-                )));
-            }
-            let reference = format!("{prefix}{branch}");
-            let id = reference_id(repository, &reference).map_err(|_| {
-                CliError::InvalidInput(format!(
-                    "--params branch `{branch}` does not exist on the selected remote"
-                ))
-            })?;
-            if main_ancestors.contains(&id) {
-                return Err(CliError::InvalidInput(format!(
-                    "--params branch `{branch}` has already reached `{main}`"
-                )));
-            }
-            if !environment_ancestors.contains(&id) {
-                return Err(CliError::InvalidInput(format!(
-                    "--params branch `{branch}` has not reached `{environment}`"
-                )));
-            }
-            candidates.push((branch.clone(), id));
-        }
-        return Ok(candidates);
-    }
-
-    let mut candidates = Vec::new();
-    let references = repository.references().map_err(gitoxide_error)?;
-    let references = references.prefixed(prefix).map_err(gitoxide_error)?;
-    for reference in references {
-        let mut reference = reference.map_err(gitoxide_error)?;
-        let full_name = reference.name().as_bstr().to_str_lossy();
-        let Some(branch) = full_name.strip_prefix(prefix).map(str::to_owned) else {
-            continue;
-        };
-        if excluded_branch(&branch, environment, main) {
-            continue;
-        }
-        let id = reference.peel_to_id().map_err(gitoxide_error)?.detach();
-        if environment_ancestors.contains(&id) && !main_ancestors.contains(&id) {
-            candidates.push((branch, id));
-        }
-    }
-    Ok(candidates)
-}
-
-fn resolve_main_branch(
-    repository: &gix::Repository,
-    prefix: &str,
-    explicit: Option<&str>,
-) -> Result<String, CliError> {
-    if let Some(explicit) = explicit {
-        reference_id(repository, &format!("{prefix}{explicit}"))?;
-        return Ok(explicit.to_owned());
-    }
-    if let Ok(reference) = repository.find_reference(&format!("{prefix}HEAD")) {
-        if let Some(target) = reference.target().try_name() {
-            let target = target.as_bstr().to_str_lossy();
-            if let Some(branch) = target.strip_prefix(prefix) {
-                if reference_id(repository, &target).is_ok() {
-                    return Ok(branch.to_owned());
-                }
-            }
-        }
-    }
-    for candidate in ["main", "master", "trunk", "develop"] {
-        if reference_id(repository, &format!("{prefix}{candidate}")).is_ok() {
-            return Ok(candidate.to_owned());
-        }
-    }
-    Err(CliError::Git(
-        "could not determine the main branch from the remote default or common names; pass --main <BRANCH>"
-            .to_owned(),
-    ))
-}
-
-fn reference_id(repository: &gix::Repository, name: &str) -> Result<gix::ObjectId, CliError> {
-    let mut reference = repository.find_reference(name).map_err(gitoxide_error)?;
-    reference
-        .peel_to_id()
-        .map(|id| id.detach())
-        .map_err(gitoxide_error)
-}
-
-fn ancestors(
-    repository: &gix::Repository,
-    start: gix::ObjectId,
-) -> Result<HashSet<gix::ObjectId>, CliError> {
-    let mut found = HashSet::new();
-    let mut pending = VecDeque::from([start]);
-    while let Some(id) = pending.pop_front() {
-        if !found.insert(id) {
-            continue;
-        }
-        let commit = repository.find_commit(id).map_err(gitoxide_error)?;
-        pending.extend(commit.parent_ids().map(|parent| parent.detach()));
-    }
-    Ok(found)
 }
 
 /// Environment branch names to detect merges for: the requested environment
@@ -815,30 +631,6 @@ fn recover_deleted_branch_tickets(
     Ok(rows)
 }
 
-fn excluded_branch(branch: &str, environment: &str, main: &str) -> bool {
-    branch == "HEAD"
-        || branch == environment
-        || branch == main
-        || KNOWN_ENVIRONMENTS.contains(&branch)
-        || branch.starts_with("backup/")
-}
-
-fn unix_date(seconds: i64) -> String {
-    let days = seconds.div_euclid(86_400);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02}")
-}
-
 fn fetch_remote(args: &DiffArgs, interactive: bool) -> Result<(), CliError> {
     fetch_remote_name(&args.remote, interactive)
 }
@@ -976,10 +768,6 @@ fn validate_ref_component(label: &str, value: &str) -> Result<(), CliError> {
         )));
     }
     Ok(())
-}
-
-fn gitoxide_error(error: impl std::fmt::Display) -> CliError {
-    CliError::Git(error.to_string())
 }
 
 async fn collect_plain(
@@ -1958,8 +1746,6 @@ fn csv_row(writer: &mut impl Write, fields: &[&str]) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-
     use super::*;
 
     #[test]
@@ -3819,7 +3605,7 @@ mod tests {
     }
 
     fn run_git(path: &Path, arguments: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-        let status = Command::new("git")
+        let status = crate::environment_git::isolated_git_command()
             .args(["-c", "core.fsmonitor=false"])
             .args(arguments)
             .current_dir(path)
@@ -3832,7 +3618,7 @@ mod tests {
     }
 
     fn commit(path: &Path, message: &str, date: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let status = Command::new("git")
+        let status = crate::environment_git::isolated_git_command()
             .args(["-c", "core.fsmonitor=false"])
             .args(["commit", "-q", "-m", message])
             .env("GIT_AUTHOR_DATE", date)

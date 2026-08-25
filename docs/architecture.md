@@ -38,6 +38,9 @@ actions.
 - `graduate::promotion`: authoritative environment commit inventories,
   promotion-report attribution rows, Jira enrichment states, deterministic
   branch-to-ticket mapping, and commit-age projections.
+- `graduate::restack`: deterministic restack graph snapshots, explicit feature
+  ordering, commit attribution, marker recognition, and unsupported-history
+  evidence.
 - `graduate::jira`: validated Jira sites, credentials, and identities shared by every delivery path.
 - `graduate::jira_auth`: deterministic Jira onboarding state and secret-retention
   transitions.
@@ -49,6 +52,8 @@ actions.
 - `graduate_cli::jira`: read-only Jira identity and issue-query boundary.
 - `graduate_cli::diff`: Git fetch, Gitoxide graph inspection, Jira enrichment,
   unattended output, and CSV export.
+- `graduate_cli::environment_git`: shared Gitoxide ref, reachability, promotion
+  inventory, and restack snapshot inspection.
 - `graduate_cli::diff_tui`: streaming promotion list, selection, ticket details,
   commit history, age-report modal, and open-ticket events.
 
@@ -92,6 +97,9 @@ actions.
 - Non-interactive promotion reports default to structured JSON. Alternative
   formats use the bounded `--format` surface, and `--output` rejects absolute
   paths, parent traversal, and symbolic-link destinations.
+- Restack inventory accepts only uniquely mapped two-parent explicit feature
+  merges and exact empty phase markers; direct work, fast-forwards, octopus
+  merges, deleted feature refs, and ambiguous mappings fail with evidence.
 
 ## Distribution
 

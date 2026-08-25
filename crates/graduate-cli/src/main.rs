@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod diff;
 mod diff_tui;
+mod environment_git;
 mod error;
 mod generate_skills;
 mod jira;
