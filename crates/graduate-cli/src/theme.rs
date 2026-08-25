@@ -97,7 +97,3 @@ pub(crate) fn constrain_content_width(area: Rect) -> Rect {
         area.height,
     )
 }
-
-pub(crate) fn footer_divider(width: u16) -> Line<'static> {
-    Line::styled("─".repeat(usize::from(width)), Palette::muted())
-}

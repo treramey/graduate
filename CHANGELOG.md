@@ -32,6 +32,12 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Simplified the interactive Jira setup around compact inline prompts, a plain
+  review table, Quickshell-style control tiles, and contextual controls inspired
+  by Omarchy Quattro, while
+  reducing its minimum terminal size to 60 columns by 24 rows and supporting
+  arrow-key navigation. Added
+  `pnpm test:setup` for safely exercising the flow with a local verifier.
 - Based promotion and age-report totals on the authoritative environment versus
   main commit inventory, exposed ahead/behind inventories in structured output,
   and called out environments that are behind main in the completed TUI.
