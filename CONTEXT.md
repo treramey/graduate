@@ -45,3 +45,34 @@
   Jira-native issue field shapes. Use `--format` for table, YAML, or CSV and
   `--output` only with a safe relative path. PATs come from `GIT_PAT`, never a
   command-line flag.
+
+## Restack language
+
+**Environment**:
+An ephemeral remote integration branch composed from a mainline and explicit
+feature merges. Graduate can rebuild and replace an environment without
+rewriting its feature branches.
+_Avoid_: Deployment target, feature branch
+
+**Explicit feature merge**:
+A two-parent merge on an environment's first-parent history that uniquely
+identifies a remote feature branch. Reachability through another feature does
+not make a feature merge explicit.
+_Avoid_: Included branch, reachable feature
+
+**Restack plan**:
+An immutable, reviewed description of an environment rebuild. It binds the
+captured refs, ordered retained features, deliberate removals, and expected
+result so that a changed input requires a new plan.
+_Avoid_: Draft, latest plan
+
+**Graduated feature**:
+A feature whose captured remote tip is reachable from the captured mainline.
+A restack does not merge a graduated feature into the rebuilt environment.
+_Avoid_: Closed feature, deleted feature
+
+**Resumable session**:
+An isolated restack that Graduate preserves after an unresolved conflict. It
+binds the conflict resolution to the reviewed plan until the session is
+applied, aborted, or expires.
+_Avoid_: Saved plan, personal worktree
