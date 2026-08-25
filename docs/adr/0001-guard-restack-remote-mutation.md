@@ -46,11 +46,12 @@ features, partial merge position, and work-area state. Resume must reject an
 expired, locked, or changed session and must verify the expected repository,
 environment, HEAD, merge parent, and staged resolution before continuing. A
 resumed apply publishes that exact reviewed session so a newly recorded
-resolution is not lost. Apply tokens are single-use. Apply and abort delete the
-session immediately; inactive sessions expire after 24 hours. After preview
-completes, Graduate seals the session. Apply must hold the session lock through
-publication and revalidate the final commit, tree, parents, metadata, and plan
-digest before it pushes.
+resolution is not lost. Successful apply and explicit abort delete the session
+immediately and make its token unusable; a failed publication leaves the sealed
+session and token available for another validated attempt. Inactive sessions
+expire after 24 hours. After preview completes, Graduate seals the session.
+Apply must hold the session lock through publication and revalidate the final
+commit, tree, parents, metadata, and plan digest before it pushes.
 
 The public `gd restack` command must remain hidden or absent from releases
 until every safety slice in issue #12 is complete. Implementation branches may

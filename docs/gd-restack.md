@@ -129,8 +129,10 @@ agent can deliberately remove selected features from the reconstructed branch.
   second time: it uses the reviewed session so a newly learned resolution is
   not lost. Graduate seals a completed session, then holds its lock through
   apply while revalidating its final commit, tree, parents, metadata, and plan
-  digest. Apply tokens are single-use; abandoned sessions expire and are purged
-  without changing repository refs.
+  digest. A token becomes unusable after successful apply or explicit abort; a
+  failed publication preserves the sealed session and token for another
+  validated attempt. Abandoned sessions expire and are purged without changing
+  repository refs.
 - Resumable sessions live in Graduate's mode-restricted platform cache with a
   24-hour inactivity TTL. Resume refreshes activity; every restack invocation
   purges expired sessions; successful apply or explicit abort deletes the
