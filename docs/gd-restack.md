@@ -29,9 +29,11 @@ agent can deliberately remove selected features from the reconstructed branch.
   using `Merge branch '<feature>' into <environment>`. Restack never fast-
   forwards, squashes, or rebases feature commits.
 - New merge commits use the normal `user.name` and `user.email` resolved from
-  the source repository's Git configuration. Identity is included in the plan;
-  missing identity is a preflight error. Graduate does not invent a bot or
-  preserve stale original authorship.
+  the source repository's Git configuration. Graduate clears ambient author,
+  committer, and date overrides, then injects that configured identity as both
+  author and committer while letting Git generate fresh timestamps. The shared
+  identity is included in the plan; missing identity is a preflight error.
+  Graduate does not invent a bot or preserve stale original authorship.
 - Version 1 creates explicitly unsigned merge commits and declares this in the
   reviewed effects. It never inherits ambient signing/pinentry behavior. A
   remote that requires signed commits rejects the push safely; signing support
@@ -107,6 +109,16 @@ agent can deliberately remove selected features from the reconstructed branch.
   preview. Interactive confirmation binds to the same in-memory plan. Display
   JSON, map iteration order, and generated merge commit OIDs are not digest
   inputs.
+- Digest fields use their validated UTF-8 bytes without additional string
+  normalization. Each field is encoded as its tag followed by its value, with
+  both byte strings prefixed by an unsigned 64-bit big-endian byte length.
+  Tags appear in this order: `schema`, `remote`, `environment`,
+  `environment_ref`, `environment_tip`, `main`, `main_ref`, `main_tip`,
+  `author_name`, `author_email`, repeated `feature_name`/`feature_tip`, repeated
+  `removed_name`/`removed_tip`, then `final_tree`. Feature pairs follow
+  discovered merge order; removed pairs follow that same inventory order
+  regardless of request order. The digest is the lowercase hexadecimal
+  SHA-256 of that byte stream.
 - Preview performs the full disposable reconstruction, including rerere replay
   and validation, but never pushes. It reports each clean or rerere-resolved
   merge and the final tree OID. Apply fetches and reconstructs again, requires
@@ -293,6 +305,11 @@ agent can deliberately remove selected features from the reconstructed branch.
    shell interpolation. Every training and reconstruction command that can run
    Git hooks must override `core.hooksPath`; repository and global hooks must
    not run.
+   Replace global and system Git configuration with empty isolated files and
+   clear injected configuration before reconstruction. Apply only Graduate's
+   allowlisted settings, so repository attributes cannot obtain executable
+   merge-driver or clean/smudge-filter definitions from source, global,
+   system, or ambient configuration.
 5. Keep `rerere.autoupdate` disabled. Explicitly verify rerere remaining paths,
    the unmerged index, conflict markers, `git diff --check`, expected parents,
    order, messages, and final tree before considering preview complete.

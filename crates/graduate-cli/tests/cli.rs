@@ -251,6 +251,16 @@ fn restack_preview_is_isolated_and_emits_canonical_machine_json() -> Result<(), 
             "true",
         ],
     )?;
+    for (key, value) in [
+        ("filter.hostile.clean", "false"),
+        ("filter.hostile.smudge", "false"),
+        ("filter.hostile.required", "true"),
+    ] {
+        fixture.git(
+            &fixture.source,
+            &["config", "--file", path_text(&fixture.global)?, key, value],
+        )?;
+    }
 
     let output = fixture.preview(&[])?;
 
@@ -541,7 +551,8 @@ impl RestackFixture {
             &["remote", "add", "origin", path_text(&remote)?],
         )?;
         std::fs::write(source.join("base"), "base\n")?;
-        run_git(&source, &global, &["add", "base"])?;
+        std::fs::write(source.join(".gitattributes"), "base filter=hostile\n")?;
+        run_git(&source, &global, &["add", "base", ".gitattributes"])?;
         run_git(&source, &global, &["commit", "-q", "-m", "base"])?;
         run_git(&source, &global, &["push", "-q", "-u", "origin", "main"])?;
         run_git(

@@ -789,6 +789,10 @@ mod tests {
         )?;
 
         assert_eq!(first.digest, second.digest);
+        assert_eq!(
+            first.digest,
+            "3713b701bfe317d21954833623e8b6a22d1a4dbf518bce88df79b409ac35854f"
+        );
         assert_ne!(first.digest, changed_author.digest);
         assert_ne!(first.digest, changed_tree.digest);
         assert_eq!(first.digest.len(), 64);
