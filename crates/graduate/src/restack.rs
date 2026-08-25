@@ -2,7 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+pub const RESTACK_SCHEMA_VERSION: u8 = 1;
 
 /// One commit needed to classify an environment history.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +57,13 @@ pub struct ExplicitFeature {
     pub historical_merges: Vec<HistoricalMerge>,
 }
 
+/// A captured remote branch name and tip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchIdentity {
+    pub name: String,
+    pub tip: String,
+}
+
 /// An exact obsolete phase marker that a v1 restack deliberately drops.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DroppedMarker {
@@ -80,8 +90,72 @@ pub struct RestackSnapshot {
     pub main_ref: String,
     pub main_tip: String,
     pub features: Vec<ExplicitFeature>,
+    pub graduated_features: Vec<BranchIdentity>,
+    pub indirect_features: Vec<BranchIdentity>,
     pub dropped_markers: Vec<DroppedMarker>,
     pub attributed_commits: Vec<AttributedCommit>,
+}
+
+/// The configured identity used for every reconstructed merge commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestackAuthor {
+    pub name: String,
+    pub email: String,
+}
+
+/// A validated partition of the explicit feature inventory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestackSelection {
+    pub retained: Vec<BranchIdentity>,
+    pub removed: Vec<BranchIdentity>,
+}
+
+/// One validated merge produced by isolated reconstruction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergeOutcome {
+    pub branch: String,
+    pub tip: String,
+    pub commit: String,
+    pub tree: String,
+}
+
+/// An immutable clean-preview plan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestackPlan {
+    pub snapshot: RestackSnapshot,
+    pub author: RestackAuthor,
+    pub selection: RestackSelection,
+    pub merges: Vec<MergeOutcome>,
+    pub final_tree: String,
+    pub preview_commit: String,
+    pub digest: String,
+}
+
+/// Evidence that a requested feature removal is not safe or meaningful.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum SelectionError {
+    #[error("feature `{branch}` was requested for removal more than once")]
+    Duplicate { branch: String },
+    #[error("feature `{branch}` has already graduated to main")]
+    Graduated { branch: String },
+    #[error("feature `{branch}` is only indirectly reachable from the environment")]
+    IndirectOnly { branch: String },
+    #[error("feature `{branch}` is not in the explicit environment inventory")]
+    Unknown { branch: String },
+    #[error("feature `{branch}` cannot be removed because its commits remain reachable through {dependents:?}")]
+    RetainedDependency {
+        branch: String,
+        dependents: Vec<String>,
+    },
+}
+
+/// Evidence that reconstruction output does not match the selected plan.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum PlanError {
+    #[error("reconstruction produced {actual} merge outcomes for {expected} retained features")]
+    MergeCount { expected: usize, actual: usize },
+    #[error("reconstruction outcome {index} does not match retained feature `{expected}`")]
+    MergeIdentity { index: usize, expected: String },
 }
 
 /// Evidence that an environment history cannot be reconstructed safely.
@@ -138,10 +212,7 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
     let surviving = graph
         .feature_refs
         .iter()
-        .filter(|feature| {
-            graph.environment_ancestors.contains(&feature.tip)
-                && !graph.main_ancestors.contains(&feature.tip)
-        })
+        .filter(|feature| !graph.main_ancestors.contains(&feature.tip))
         .collect::<Vec<_>>();
     let mut features: Vec<ExplicitFeature> = Vec::new();
     let mut dropped_markers = Vec::new();
@@ -268,6 +339,30 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
         });
     }
 
+    let explicit_names = features
+        .iter()
+        .map(|feature| feature.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let graduated_features = graph
+        .feature_refs
+        .iter()
+        .filter(|feature| graph.main_ancestors.contains(&feature.tip))
+        .map(branch_identity)
+        .collect();
+    let indirect_features = graph
+        .feature_refs
+        .iter()
+        .filter(|feature| {
+            !graph.main_ancestors.contains(&feature.tip)
+                && !explicit_names.contains(feature.name.as_str())
+                && feature.ancestors.iter().any(|commit| {
+                    graph.environment_ancestors.contains(commit)
+                        && !graph.main_ancestors.contains(commit)
+                })
+        })
+        .map(branch_identity)
+        .collect();
+
     Ok(RestackSnapshot {
         remote: graph.remote.clone(),
         environment: graph.environment.clone(),
@@ -277,9 +372,166 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
         main_ref: graph.main_ref.clone(),
         main_tip: graph.main_tip.clone(),
         features,
+        graduated_features,
+        indirect_features,
         dropped_markers,
         attributed_commits,
     })
+}
+
+/// Validate requested removals without silently changing their meaning.
+pub fn select_features(
+    snapshot: &RestackSnapshot,
+    remove_branches: &[String],
+) -> Result<RestackSelection, SelectionError> {
+    let mut requested = BTreeSet::new();
+    for branch in remove_branches {
+        if !requested.insert(branch.as_str()) {
+            return Err(SelectionError::Duplicate {
+                branch: branch.clone(),
+            });
+        }
+        if snapshot
+            .features
+            .iter()
+            .any(|feature| feature.name == *branch)
+        {
+            continue;
+        }
+        if snapshot
+            .graduated_features
+            .iter()
+            .any(|feature| feature.name == *branch)
+        {
+            return Err(SelectionError::Graduated {
+                branch: branch.clone(),
+            });
+        }
+        if snapshot
+            .indirect_features
+            .iter()
+            .any(|feature| feature.name == *branch)
+        {
+            return Err(SelectionError::IndirectOnly {
+                branch: branch.clone(),
+            });
+        }
+        return Err(SelectionError::Unknown {
+            branch: branch.clone(),
+        });
+    }
+
+    for branch in remove_branches {
+        let dependents = snapshot
+            .attributed_commits
+            .iter()
+            .filter(|commit| commit.branches.iter().any(|owner| owner == branch))
+            .flat_map(|commit| commit.branches.iter())
+            .filter(|owner| owner.as_str() != branch && !requested.contains(owner.as_str()))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if !dependents.is_empty() {
+            return Err(SelectionError::RetainedDependency {
+                branch: branch.clone(),
+                dependents,
+            });
+        }
+    }
+
+    let (removed, retained) = snapshot
+        .features
+        .iter()
+        .map(|feature| BranchIdentity {
+            name: feature.name.clone(),
+            tip: feature.tip.clone(),
+        })
+        .partition(|feature| requested.contains(feature.name.as_str()));
+    Ok(RestackSelection { retained, removed })
+}
+
+/// Bind validated reconstruction output to the captured inputs.
+pub fn build_plan(
+    snapshot: RestackSnapshot,
+    author: RestackAuthor,
+    selection: RestackSelection,
+    merges: Vec<MergeOutcome>,
+    final_tree: String,
+    preview_commit: String,
+) -> Result<RestackPlan, PlanError> {
+    if merges.len() != selection.retained.len() {
+        return Err(PlanError::MergeCount {
+            expected: selection.retained.len(),
+            actual: merges.len(),
+        });
+    }
+    for (index, (outcome, expected)) in merges.iter().zip(&selection.retained).enumerate() {
+        if outcome.branch != expected.name || outcome.tip != expected.tip {
+            return Err(PlanError::MergeIdentity {
+                index,
+                expected: expected.name.clone(),
+            });
+        }
+    }
+    let digest = plan_digest(&snapshot, &author, &selection, &final_tree);
+    Ok(RestackPlan {
+        snapshot,
+        author,
+        selection,
+        merges,
+        final_tree,
+        preview_commit,
+        digest,
+    })
+}
+
+/// The canonical message for an explicit reconstructed merge.
+pub fn canonical_merge_message(feature: &str, environment: &str) -> String {
+    format!("Merge branch '{feature}' into {environment}")
+}
+
+fn plan_digest(
+    snapshot: &RestackSnapshot,
+    author: &RestackAuthor,
+    selection: &RestackSelection,
+    final_tree: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    digest_field(&mut digest, "schema", &RESTACK_SCHEMA_VERSION.to_string());
+    digest_field(&mut digest, "remote", &snapshot.remote);
+    digest_field(&mut digest, "environment", &snapshot.environment);
+    digest_field(&mut digest, "environment_ref", &snapshot.environment_ref);
+    digest_field(&mut digest, "environment_tip", &snapshot.environment_tip);
+    digest_field(&mut digest, "main", &snapshot.main);
+    digest_field(&mut digest, "main_ref", &snapshot.main_ref);
+    digest_field(&mut digest, "main_tip", &snapshot.main_tip);
+    digest_field(&mut digest, "author_name", &author.name);
+    digest_field(&mut digest, "author_email", &author.email);
+    for feature in &snapshot.features {
+        digest_field(&mut digest, "feature_name", &feature.name);
+        digest_field(&mut digest, "feature_tip", &feature.tip);
+    }
+    for feature in &selection.removed {
+        digest_field(&mut digest, "removed_name", &feature.name);
+        digest_field(&mut digest, "removed_tip", &feature.tip);
+    }
+    digest_field(&mut digest, "final_tree", final_tree);
+    format!("{:x}", digest.finalize())
+}
+
+fn digest_field(digest: &mut Sha256, label: &str, value: &str) {
+    digest.update((label.len() as u64).to_be_bytes());
+    digest.update(label.as_bytes());
+    digest.update((value.len() as u64).to_be_bytes());
+    digest.update(value.as_bytes());
+}
+
+fn branch_identity(feature: &FeatureRef) -> BranchIdentity {
+    BranchIdentity {
+        name: feature.name.clone(),
+        tip: feature.tip.clone(),
+    }
 }
 
 fn matching_features<'a>(features: &[&'a FeatureRef], commit: &str) -> Vec<&'a FeatureRef> {
@@ -387,6 +639,14 @@ mod tests {
             ["feature/zeta", "feature/alpha"]
         );
         assert_eq!(snapshot.features[0].historical_merges.len(), 2);
+        assert_eq!(
+            snapshot
+                .graduated_features
+                .iter()
+                .map(|feature| feature.name.as_str())
+                .collect::<Vec<_>>(),
+            ["feature/graduated"]
+        );
         assert_eq!(snapshot.dropped_markers.len(), 1);
         assert_eq!(snapshot.dropped_markers[0].commit, "marker");
         assert_eq!(
@@ -397,6 +657,141 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["alpha", "zeta-1", "zeta-2"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_captures_the_current_tip_of_an_advanced_explicit_feature(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut graph = graph_with_merge(vec![feature(
+            "feature/advanced",
+            "advanced",
+            &["advanced", "feature", "base"],
+        )]);
+        add_commit(&mut graph, "advanced", "ta", &["feature"], "advanced");
+
+        let snapshot = build_snapshot(&graph)?;
+
+        assert_eq!(snapshot.features.len(), 1);
+        assert_eq!(snapshot.features[0].name, "feature/advanced");
+        assert_eq!(snapshot.features[0].tip, "advanced");
+        Ok(())
+    }
+
+    #[test]
+    fn removal_selection_rejects_duplicate_unknown_graduated_and_indirect_names() {
+        let snapshot = planning_snapshot();
+
+        assert_eq!(
+            select_features(&snapshot, &["feature/a".to_owned(), "feature/a".to_owned()]),
+            Err(SelectionError::Duplicate {
+                branch: "feature/a".to_owned()
+            })
+        );
+        assert_eq!(
+            select_features(&snapshot, &["feature/graduated".to_owned()]),
+            Err(SelectionError::Graduated {
+                branch: "feature/graduated".to_owned()
+            })
+        );
+        assert_eq!(
+            select_features(&snapshot, &["feature/indirect".to_owned()]),
+            Err(SelectionError::IndirectOnly {
+                branch: "feature/indirect".to_owned()
+            })
+        );
+        assert_eq!(
+            select_features(&snapshot, &["feature/missing".to_owned()]),
+            Err(SelectionError::Unknown {
+                branch: "feature/missing".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn removal_selection_reports_retained_branches_that_keep_feature_work() {
+        let snapshot = planning_snapshot();
+
+        assert_eq!(
+            select_features(&snapshot, &["feature/a".to_owned()]),
+            Err(SelectionError::RetainedDependency {
+                branch: "feature/a".to_owned(),
+                dependents: vec!["feature/b".to_owned()]
+            })
+        );
+        let selection =
+            select_features(&snapshot, &["feature/b".to_owned(), "feature/a".to_owned()]);
+        assert!(
+            matches!(selection, Ok(selection) if selection.retained.is_empty()
+            && selection.removed.iter().map(|feature| feature.name.as_str()).collect::<Vec<_>>()
+                == ["feature/a", "feature/b"])
+        );
+    }
+
+    #[test]
+    fn plan_digest_binds_inputs_identity_selection_and_tree_but_not_preview_commit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut snapshot = planning_snapshot();
+        snapshot.attributed_commits.clear();
+        let selection = select_features(&snapshot, &["feature/b".to_owned()])?;
+        let author = RestackAuthor {
+            name: "Test Author".to_owned(),
+            email: "test@example.com".to_owned(),
+        };
+        let outcomes = vec![MergeOutcome {
+            branch: "feature/a".to_owned(),
+            tip: "a".to_owned(),
+            commit: "preview-one".to_owned(),
+            tree: "tree-a".to_owned(),
+        }];
+
+        let first = build_plan(
+            snapshot.clone(),
+            author.clone(),
+            selection.clone(),
+            outcomes.clone(),
+            "final-tree".to_owned(),
+            "preview-one".to_owned(),
+        )?;
+        let mut regenerated = outcomes;
+        regenerated[0].commit = "preview-two".to_owned();
+        let second = build_plan(
+            snapshot.clone(),
+            author.clone(),
+            selection.clone(),
+            regenerated.clone(),
+            "final-tree".to_owned(),
+            "preview-two".to_owned(),
+        )?;
+        let changed_author = build_plan(
+            snapshot.clone(),
+            RestackAuthor {
+                name: "Other Author".to_owned(),
+                email: author.email.clone(),
+            },
+            selection.clone(),
+            regenerated,
+            "final-tree".to_owned(),
+            "preview-two".to_owned(),
+        )?;
+        let changed_tree = build_plan(
+            snapshot,
+            author,
+            selection,
+            vec![MergeOutcome {
+                branch: "feature/a".to_owned(),
+                tip: "a".to_owned(),
+                commit: "preview-three".to_owned(),
+                tree: "tree-a".to_owned(),
+            }],
+            "other-tree".to_owned(),
+            "preview-three".to_owned(),
+        )?;
+
+        assert_eq!(first.digest, second.digest);
+        assert_ne!(first.digest, changed_author.digest);
+        assert_ne!(first.digest, changed_tree.digest);
+        assert_eq!(first.digest.len(), 64);
         Ok(())
     }
 
@@ -564,6 +959,43 @@ mod tests {
         graph.environment_ancestors = ids(&["base", "feature", "merge"]);
         graph.feature_refs = feature_refs;
         graph
+    }
+
+    fn planning_snapshot() -> RestackSnapshot {
+        RestackSnapshot {
+            remote: "origin".to_owned(),
+            environment: "qa".to_owned(),
+            environment_ref: "refs/remotes/origin/qa".to_owned(),
+            environment_tip: "environment".to_owned(),
+            main: "main".to_owned(),
+            main_ref: "refs/remotes/origin/main".to_owned(),
+            main_tip: "main-tip".to_owned(),
+            features: vec![
+                ExplicitFeature {
+                    name: "feature/a".to_owned(),
+                    tip: "a".to_owned(),
+                    historical_merges: Vec::new(),
+                },
+                ExplicitFeature {
+                    name: "feature/b".to_owned(),
+                    tip: "b".to_owned(),
+                    historical_merges: Vec::new(),
+                },
+            ],
+            graduated_features: vec![BranchIdentity {
+                name: "feature/graduated".to_owned(),
+                tip: "graduated".to_owned(),
+            }],
+            indirect_features: vec![BranchIdentity {
+                name: "feature/indirect".to_owned(),
+                tip: "indirect".to_owned(),
+            }],
+            dropped_markers: Vec::new(),
+            attributed_commits: vec![AttributedCommit {
+                commit: "shared".to_owned(),
+                branches: vec!["feature/a".to_owned(), "feature/b".to_owned()],
+            }],
+        }
     }
 
     fn add_commit(graph: &mut RestackGraph, id: &str, tree: &str, parents: &[&str], message: &str) {
