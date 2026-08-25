@@ -54,6 +54,9 @@ actions.
   unattended output, and CSV export.
 - `graduate_cli::environment_git`: shared Gitoxide ref, reachability, promotion
   inventory, and restack snapshot inspection.
+- `graduate_cli::git_process`: shared Git fetch and credential subprocess boundary.
+- `graduate_cli::restack`: release-gated machine preview orchestration, isolated
+  Git reconstruction, schema-v1 rendering, and redacted error translation.
 - `graduate_cli::diff_tui`: streaming promotion list, selection, ticket details,
   commit history, age-report modal, and open-ticket events.
 
@@ -100,6 +103,11 @@ actions.
 - Restack inventory accepts only uniquely mapped two-parent explicit feature
   merges and exact empty phase markers; direct work, fast-forwards, octopus
   merges, deleted feature refs, and ambiguous mappings fail with evidence.
+- Restack preview always fetches, validates removals and dependencies, and
+  reconstructs unsigned canonical merges in a temporary repository that only
+  borrows source objects. It never pushes or changes the source checkout,
+  local branches, or personal rerere cache. The machine command remains hidden
+  until the complete publication safety slices are implemented.
 
 ## Distribution
 

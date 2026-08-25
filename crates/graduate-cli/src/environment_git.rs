@@ -358,6 +358,19 @@ pub(crate) fn excluded_branch(branch: &str, environment: &str, main: &str) -> bo
         || branch.starts_with("backup/")
 }
 
+pub(crate) fn validate_ref_component(label: &str, value: &str) -> Result<(), CliError> {
+    if value.trim().is_empty()
+        || value.starts_with('-')
+        || value.chars().any(char::is_control)
+        || gix::validate::reference::name_partial(value.as_bytes().as_bstr()).is_err()
+    {
+        return Err(CliError::InvalidInput(format!(
+            "{label} must be a non-empty Git branch or remote name"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn unix_date(seconds: i64) -> String {
     let days = seconds.div_euclid(86_400);
     let z = days + 719_468;

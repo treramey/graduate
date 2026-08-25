@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use gix::bstr::ByteSlice;
@@ -24,9 +23,12 @@ use crate::diff_tui;
 use crate::environment_git::{excluded_branch, resolve_main_branch};
 use crate::environment_git::{
     gitoxide_error, inspect_environment, promotion_candidates, promotion_inventory, reference_id,
-    unix_date, KNOWN_ENVIRONMENTS,
+    unix_date, validate_ref_component, KNOWN_ENVIRONMENTS,
 };
 use crate::error::CliError;
+use crate::git_process::fetch_remote as fetch_remote_name;
+#[cfg(test)]
+use crate::git_process::fetch_status_message;
 use crate::jira::JiraClient;
 
 #[derive(Clone, Debug)]
@@ -635,105 +637,6 @@ fn fetch_remote(args: &DiffArgs, interactive: bool) -> Result<(), CliError> {
     fetch_remote_name(&args.remote, interactive)
 }
 
-fn fetch_remote_name(remote: &str, interactive: bool) -> Result<(), CliError> {
-    let pat = std::env::var("GIT_PAT")
-        .ok()
-        .filter(|value| !value.is_empty());
-    if let Some(message) = fetch_status_message(remote, pat.is_some(), interactive) {
-        eprintln!("{message}");
-    }
-
-    if let Some(pat) = pat {
-        let mut authenticated = Command::new("git");
-        authenticated
-            .args([
-                "-c",
-                "credential.helper=",
-                "-c",
-                "credential.helper=!f() { echo username=x-access-token; echo \"password=$GIT_PAT\"; }; f",
-                "fetch",
-                "--prune",
-                remote,
-            ])
-            .env("GIT_PAT", pat)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        return check_fetch(authenticated.output(), true, !interactive);
-    }
-    if !interactive {
-        let mut unattended = Command::new("git");
-        unattended
-            .args([
-                "-c",
-                "credential.interactive=false",
-                "fetch",
-                "--prune",
-                remote,
-            ])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        return check_fetch(unattended.output(), false, true);
-    }
-    let mut command = Command::new("git");
-    command
-        .args(["fetch", "--prune", remote])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    check_fetch(command.output(), false, false)
-}
-
-fn fetch_status_message(remote: &str, has_pat: bool, interactive: bool) -> Option<String> {
-    if interactive {
-        None
-    } else if has_pat {
-        Some(format!(
-            "Contacting {remote} with the supplied PAT (non-interactive)…"
-        ))
-    } else {
-        Some(format!(
-            "Contacting {remote} (unattended; cached credentials only)…"
-        ))
-    }
-}
-
-fn check_fetch(
-    result: io::Result<std::process::Output>,
-    used_pat: bool,
-    unattended: bool,
-) -> Result<(), CliError> {
-    match result {
-        Ok(output) if output.status.success() => Ok(()),
-        Ok(output) if used_pat => Err(CliError::Git(with_git_stderr(
-            "could not fetch the remote; the PAT was rejected, expired, or lacks repository read access",
-            &output,
-        ))),
-        Ok(output) if unattended => Err(CliError::Git(with_git_stderr(
-            "could not fetch the remote with cached credentials; set GIT_PAT for a headless run",
-            &output,
-        ))),
-        Ok(output) => Err(CliError::Git(with_git_stderr(
-            "could not fetch the remote; complete authentication and run the command again",
-            &output,
-        ))),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(CliError::Git(
-            "could not run git fetch because the git executable was not found".to_owned(),
-        )),
-        Err(error) => Err(CliError::Io(error)),
-    }
-}
-
-fn with_git_stderr(message: &str, output: &std::process::Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stderr = stderr.trim();
-    if stderr.is_empty() {
-        message.to_owned()
-    } else {
-        format!("{message}\n{stderr}")
-    }
-}
-
 fn parse_selected_branches(params: Option<&str>) -> Result<Option<Vec<String>>, CliError> {
     let Some(params) = params else {
         return Ok(None);
@@ -755,19 +658,6 @@ fn parse_selected_branches(params: Option<&str>) -> Result<Option<Vec<String>>, 
     branches.sort();
     branches.dedup();
     Ok(Some(branches))
-}
-
-fn validate_ref_component(label: &str, value: &str) -> Result<(), CliError> {
-    if value.trim().is_empty()
-        || value.starts_with('-')
-        || value.chars().any(char::is_control)
-        || gix::validate::reference::name_partial(value.as_bytes().as_bstr()).is_err()
-    {
-        return Err(CliError::InvalidInput(format!(
-            "{label} must be a non-empty Git branch or remote name"
-        )));
-    }
-    Ok(())
 }
 
 async fn collect_plain(

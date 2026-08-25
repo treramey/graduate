@@ -28,6 +28,38 @@ pub(crate) enum Command {
     Diff(DiffArgs),
     /// Generate portable AI agent skills from Graduate's command contract.
     GenerateSkills(GenerateSkillsArgs),
+    /// Preview an isolated environment reconstruction through machine JSON.
+    #[command(hide = true)]
+    Restack(RestackArgs),
+}
+
+/// Release-gated machine options for previewing an environment restack.
+#[derive(Args)]
+pub(crate) struct RestackArgs {
+    /// Environment branch to reconstruct.
+    #[arg(value_name = "ENVIRONMENT")]
+    pub(crate) environment: String,
+    /// Main branch name. Defaults to origin/HEAD, then common branch names.
+    #[arg(long, value_name = "BRANCH")]
+    pub(crate) main: Option<String>,
+    /// Remote that owns the environment and feature branches.
+    #[arg(long, value_name = "REMOTE", default_value = "origin")]
+    pub(crate) remote: String,
+    /// JSON preview parameters containing removeBranches.
+    #[arg(long, value_name = "JSON")]
+    pub(crate) params: Option<String>,
+}
+
+impl std::fmt::Debug for RestackArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RestackArgs")
+            .field("environment", &self.environment)
+            .field("main", &self.main)
+            .field("remote", &self.remote)
+            .field("params", &self.params.as_ref().map(|_| "<json>"))
+            .finish()
+    }
 }
 
 /// Options for comparing an environment branch with the main branch.

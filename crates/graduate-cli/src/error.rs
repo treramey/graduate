@@ -1,10 +1,75 @@
 use std::io;
 use std::path::PathBuf;
 
+use serde::Serialize;
 use thiserror::Error;
 
 pub(crate) const EXIT_FAILURE: u8 = 1;
 pub(crate) const EXIT_USAGE: u8 = 2;
+
+/// Stable schema-v1 failure emitted by hidden restack machine workflows.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MachineError {
+    kind: &'static str,
+    schema_version: u8,
+    pub(crate) code: &'static str,
+    message: &'static str,
+    details: serde_json::Value,
+    #[serde(skip)]
+    exit_code: u8,
+}
+
+impl MachineError {
+    pub(crate) fn usage(
+        code: &'static str,
+        message: &'static str,
+        details: serde_json::Value,
+    ) -> Self {
+        Self::new(code, message, details, EXIT_USAGE)
+    }
+
+    pub(crate) fn failure(
+        code: &'static str,
+        message: &'static str,
+        details: serde_json::Value,
+    ) -> Self {
+        Self::new(code, message, details, EXIT_FAILURE)
+    }
+
+    fn new(
+        code: &'static str,
+        message: &'static str,
+        details: serde_json::Value,
+        exit_code: u8,
+    ) -> Self {
+        Self {
+            kind: "restackError",
+            schema_version: 1,
+            code,
+            message,
+            details,
+            exit_code,
+        }
+    }
+
+    pub(crate) const fn exit_code(&self) -> u8 {
+        self.exit_code
+    }
+}
+
+impl std::fmt::Display for MachineError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match serde_json::to_string(self) {
+            Ok(json) => formatter.write_str(&json),
+            Err(_) => formatter.write_str(
+                r#"{"kind":"restackError","schemaVersion":1,"code":"serialization_failed","message":"could not serialize the structured error","details":{}}"#,
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MachineError {}
 
 /// Process-facing Graduate failures.
 #[derive(Debug, Error)]
@@ -33,6 +98,8 @@ pub(crate) enum CliError {
     Io(#[from] io::Error),
     #[error("{0}")]
     Git(String),
+    #[error(transparent)]
+    Machine(#[from] MachineError),
     #[error("promotion report was cancelled")]
     ReportCancelled,
     #[error("interactive setup was cancelled; configuration was not changed")]
@@ -61,10 +128,15 @@ impl CliError {
             | Self::Yaml(_)
             | Self::Io(_)
             | Self::Git(_) => EXIT_FAILURE,
+            Self::Machine(error) => error.exit_code(),
         }
     }
 
     pub(crate) const fn is_authentication(&self) -> bool {
         matches!(self, Self::Authentication)
+    }
+
+    pub(crate) const fn is_machine(&self) -> bool {
+        matches!(self, Self::Machine(_))
     }
 }
