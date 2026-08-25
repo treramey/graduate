@@ -31,6 +31,19 @@ impl ConnectionVerifier for RemoteConnectionVerifier {
     }
 }
 
+#[cfg(feature = "setup-ui-fixture")]
+struct SetupUiFixtureVerifier;
+
+#[cfg(feature = "setup-ui-fixture")]
+impl ConnectionVerifier for SetupUiFixtureVerifier {
+    fn verify<'a>(&'a self, _connection: &'a JiraCredentials) -> VerificationFuture<'a> {
+        Box::pin(async {
+            JiraIdentity::new("graduate-setup-fixture", "Graduate Test User")
+                .map_err(|error| CliError::JiraResponse(error.to_string()))
+        })
+    }
+}
+
 pub(crate) enum ConnectionOutcome {
     Connected,
     Rejected,
@@ -134,6 +147,13 @@ impl From<OnboardingError> for CliError {
 }
 
 pub(crate) async fn run(args: JiraSetupArgs, path: &Path) -> Result<(), CliError> {
+    #[cfg(feature = "setup-ui-fixture")]
+    if std::env::var("GRADUATE_SETUP_UI_FIXTURE").as_deref() == Ok("1") {
+        let verifier = SetupUiFixtureVerifier;
+        let browser = SystemBrowserLauncher;
+        return run_with(args, path, &verifier, &browser).await;
+    }
+
     let verifier = RemoteConnectionVerifier;
     let browser = SystemBrowserLauncher;
     run_with(args, path, &verifier, &browser).await

@@ -18,6 +18,7 @@
   "scripts": {
     "test": "cargo test --workspace --locked",
     "test:diff": "bash scripts/test-diff.sh",
+    "test:setup": "bash scripts/test-setup.sh",
     "prepare": "lefthook install",
     "changeset": "changeset",
     "version-sync": "bash scripts/version-sync.sh",

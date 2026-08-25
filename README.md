@@ -169,11 +169,12 @@ read-only Jira `/rest/api/3/myself` endpoint, and saves it only after you
 confirm the review screen. You can keep an existing token without displaying
 it.
 
-The wizard uses boxed, focusable inputs with explicit Continue, Connect, and
-Save actions; move between them with Tab and Shift-Tab. Text fields support
+The wizard uses compact inline prompts with explicit Continue, Connect, and
+Save actions; move between them with the Up and Down arrow keys, Tab, or
+Shift-Tab. Text fields support
 cursor movement and Unicode-aware editing. Set `GRADUATE_REDUCED_MOTION=1` to
-replace moving setup effects with short fades. Setup requires a terminal at
-least 76 columns by 48 rows.
+disable the remaining setup motion. Setup requires a terminal at least 60
+columns by 24 rows.
 
 For unattended setup:
 
@@ -225,6 +226,18 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+Exercise the Jira setup UI with an isolated local verifier and temporary
+configuration:
+
+```bash
+pnpm test:setup
+```
+
+The launcher prints safe fixture values before opening the TUI. It does not
+open a browser or contact Jira, and it deletes the saved configuration after
+the test exits. Set `GRADUATE_SETUP_FIXTURE_KEEP=1` to inspect the temporary
+configuration afterward.
 
 Create a disposable Git repository and exercise the promotion report without
 touching a real remote or Jira configuration:

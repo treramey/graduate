@@ -9,11 +9,10 @@ use graduate::jira::JiraField;
 use graduate::jira_auth::{CompletedLogin, OnboardingError, OnboardingScreen, SecretInput};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Text};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Paragraph, Widget, Wrap};
 use ratatui::Frame;
-use tachyonfx::{fx, CellFilter, Effect, Interpolation, SimpleRng};
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::{Input, InputRequest};
 
@@ -23,25 +22,15 @@ use crate::jira_auth::{ConnectionOutcome, OnboardingWorkflow};
 use crate::terminal::StderrTerminal;
 use crate::terminal_text;
 use crate::theme::{
-    constrain_content_width, footer_divider, render_brand_header, Palette, GRADUATE_ART_HEIGHT,
-    MAX_CONTENT_WIDTH, MUTED_COLOR, PRIMARY_COLOR, SUCCESS_COLOR,
+    constrain_content_width, render_brand_header, Palette, GRADUATE_ART_HEIGHT, MUTED_COLOR,
 };
 
-// The longest fixed login control row needs 73 cells; retain a small margin.
-const MIN_TERMINAL_WIDTH: u16 = 76;
-const MIN_TERMINAL_HEIGHT: u16 = 48;
-const MAX_FORM_WIDTH: u16 = 80;
-const SPACE_SM: u16 = 1;
-const SPACE_MD: u16 = 2;
-const REVIEW_LABEL_WIDTH: usize = 11;
+const MIN_TERMINAL_WIDTH: u16 = 60;
+const MIN_TERMINAL_HEIGHT: u16 = 24;
+const REVIEW_LABEL_WIDTH: usize = 10;
 const ANIMATION_TICK_RATE: Duration = Duration::from_millis(40);
 const PLAYFUL_FRAME_RATE: Duration = Duration::from_millis(80);
 const CURSOR_BLINK_HALF_PERIOD: Duration = Duration::from_millis(500);
-const ENTRANCE_DURATION_MS: u32 = 240;
-const REDUCED_MOTION_DURATION_MS: u32 = 140;
-const ANIMATION_RNG_SEED: u32 = 0x4752_4144;
-const FOCUS_BORDER_CELLS_PER_SECOND: f32 = 30.0;
-const STAGE_SEPARATOR: &str = " ─── ";
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 pub(crate) const REDUCED_MOTION_ENV: &str = "GRADUATE_REDUCED_MOTION";
 
@@ -52,83 +41,8 @@ enum ConnectionStatus {
     Connected,
 }
 
-struct BufferAnimation {
-    effect: Option<Effect>,
-    elapsed: Duration,
-}
-
-impl BufferAnimation {
-    fn entrance(reduced_motion: bool) -> Self {
-        let effect = if reduced_motion {
-            fx::fade_from_fg(
-                MUTED_COLOR,
-                (REDUCED_MOTION_DURATION_MS, Interpolation::CubicOut),
-            )
-            .with_filter(CellFilter::AnyOf(vec![
-                CellFilter::FgColor(PRIMARY_COLOR),
-                CellFilter::FgColor(MUTED_COLOR),
-            ]))
-        } else {
-            fx::coalesce((ENTRANCE_DURATION_MS, Interpolation::CubicOut))
-                .with_rng(SimpleRng::new(ANIMATION_RNG_SEED))
-                .with_filter(CellFilter::Text)
-        };
-        Self {
-            effect: Some(effect),
-            elapsed: Duration::ZERO,
-        }
-    }
-
-    fn connection(reduced_motion: bool) -> Self {
-        let effect = if reduced_motion {
-            fx::fade_from_fg(
-                MUTED_COLOR,
-                (REDUCED_MOTION_DURATION_MS, Interpolation::CubicOut),
-            )
-            .with_filter(CellFilter::FgColor(SUCCESS_COLOR))
-        } else {
-            fx::coalesce((ENTRANCE_DURATION_MS, Interpolation::CubicOut))
-                .with_rng(SimpleRng::new(ANIMATION_RNG_SEED))
-                .with_filter(CellFilter::Text)
-        };
-        Self {
-            effect: Some(effect),
-            elapsed: Duration::ZERO,
-        }
-    }
-
-    const fn is_active(&self) -> bool {
-        self.effect.is_some()
-    }
-
-    fn advance(&mut self, elapsed: Duration) {
-        if self.effect.is_some() {
-            self.elapsed += elapsed;
-        }
-    }
-
-    fn complete(&mut self) {
-        self.effect = None;
-        self.elapsed = Duration::ZERO;
-    }
-
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let Some(effect) = self.effect.as_mut() else {
-            return;
-        };
-        effect.process(self.elapsed, frame.buffer_mut(), area);
-        self.elapsed = Duration::ZERO;
-        if effect.done() {
-            self.effect = None;
-        }
-    }
-}
-
 struct OnboardingModel {
-    entrance_animation: BufferAnimation,
-    connection_animation: Option<BufferAnimation>,
     pending_animation_elapsed: Duration,
-    focus_border_elapsed: Duration,
     cursor_blink_elapsed: Duration,
     reduced_motion: bool,
     stage: OnboardingScreen,
@@ -150,10 +64,7 @@ struct OnboardingModel {
 impl OnboardingModel {
     fn new(workflow: &OnboardingWorkflow<'_>, reduced_motion: bool) -> Self {
         Self {
-            entrance_animation: BufferAnimation::entrance(reduced_motion),
-            connection_animation: None,
             pending_animation_elapsed: Duration::ZERO,
-            focus_border_elapsed: Duration::ZERO,
             cursor_blink_elapsed: Duration::ZERO,
             reduced_motion,
             stage: workflow.screen(),
@@ -174,12 +85,6 @@ impl OnboardingModel {
     }
 
     fn handle_event(&mut self, event: Event) -> Action {
-        if matches!(event, Event::Key(_)) {
-            self.entrance_animation.complete();
-            if let Some(animation) = self.connection_animation.as_mut() {
-                animation.complete();
-            }
-        }
         match event {
             Event::Key(key) => self.handle_key(key),
             Event::Paste(value) => {
@@ -213,6 +118,14 @@ impl OnboardingModel {
             }
             KeyCode::BackTab => {
                 self.focus_previous();
+                Action::None
+            }
+            KeyCode::Up => {
+                self.focus_previous();
+                Action::None
+            }
+            KeyCode::Down => {
+                self.focus_next();
                 Action::None
             }
             KeyCode::Char('j' | 'J')
@@ -317,25 +230,15 @@ impl OnboardingModel {
     }
 
     fn animations_active(&self) -> bool {
-        self.entrance_animation.is_active()
-            || self
-                .connection_animation
-                .as_ref()
-                .is_some_and(BufferAnimation::is_active)
-            || (!self.reduced_motion && self.jira_status == ConnectionStatus::Pending)
+        (!self.reduced_motion && self.jira_status == ConnectionStatus::Pending)
             || (!self.reduced_motion && self.text_input_focused())
     }
 
     fn advance_animations(&mut self, elapsed: Duration) {
-        self.entrance_animation.advance(elapsed);
-        if let Some(animation) = self.connection_animation.as_mut() {
-            animation.advance(elapsed);
-        }
         if self.jira_status == ConnectionStatus::Pending {
             self.pending_animation_elapsed += elapsed;
         }
         if !self.reduced_motion && self.text_input_focused() {
-            self.focus_border_elapsed += elapsed;
             self.cursor_blink_elapsed += elapsed;
         }
     }
@@ -573,7 +476,6 @@ async fn verify_jira(
         Some(ConnectionOutcome::Connected) => {
             apply_verified_login(model, workflow)?;
             model.jira_status = ConnectionStatus::Connected;
-            model.connection_animation = Some(BufferAnimation::connection(model.reduced_motion));
             model.set_stage(OnboardingScreen::Save);
         }
         Some(ConnectionOutcome::Rejected) => {
@@ -683,101 +585,36 @@ const fn size_is_undersized(width: u16, height: u16) -> bool {
 }
 
 fn draw(terminal: &mut StderrTerminal, model: &mut OnboardingModel) -> Result<(), CliError> {
-    terminal
-        .terminal_mut()
-        .draw(|frame| render_animated(frame, model))?;
+    terminal.terminal_mut().draw(|frame| {
+        render(frame, model);
+    })?;
     Ok(())
 }
 
-struct AnimatedAreas {
-    brand: Rect,
-    jira_status: Rect,
-    focused_input: Option<Rect>,
-}
-
-fn render_animated(frame: &mut Frame<'_>, model: &mut OnboardingModel) {
-    let Some(areas) = render(frame, model) else {
-        return;
-    };
-    model.entrance_animation.render(frame, areas.brand);
-    if let Some(animation) = model.connection_animation.as_mut() {
-        animation.render(frame, areas.jira_status);
-    }
-    if let Some(focused_input) = areas.focused_input {
-        render_focus_border(
-            frame.buffer_mut(),
-            focused_input,
-            model.focus_border_elapsed,
-        );
-    }
-}
-
-fn render(frame: &mut Frame<'_>, model: &OnboardingModel) -> Option<AnimatedAreas> {
+fn render(frame: &mut Frame<'_>, model: &OnboardingModel) {
     if size_is_undersized(frame.area().width, frame.area().height) {
         render_resize_message(frame, frame.area());
-        return None;
+        return;
     }
-    let [_top_padding, header, body, footer] = Layout::vertical([
+    let [_top_padding, header, _gap, body, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(GRADUATE_ART_HEIGHT),
         Constraint::Length(2),
-        Constraint::Length(GRADUATE_ART_HEIGHT + 2),
         Constraint::Fill(1),
-        Constraint::Length(2),
+        Constraint::Length(1),
     ])
     .areas(frame.area());
     let header = constrain_content_width(header);
-    let body_width = if model.stage == OnboardingScreen::Save {
-        MAX_CONTENT_WIDTH
-    } else {
-        MAX_FORM_WIDTH
-    };
-    let body = constrain_width_left(constrain_content_width(body), body_width);
+    let body = constrain_content_width(body);
     let footer = constrain_content_width(footer);
 
-    let jira_status = render_header(frame, header, model);
-    let focused_input = match model.stage {
+    render_brand_header(frame, header);
+    match model.stage {
         OnboardingScreen::JiraDetails => render_jira_details(frame, body, model),
         OnboardingScreen::JiraToken => render_jira_token(frame, body, model),
-        OnboardingScreen::Save => {
-            render_save(frame, body, model);
-            None
-        }
-    };
-    render_footer(frame, footer, model);
-    Some(AnimatedAreas {
-        brand: Rect::new(header.x, header.y, header.width, GRADUATE_ART_HEIGHT),
-        jira_status,
-        focused_input: (!model.reduced_motion && model.text_input_focused())
-            .then_some(focused_input)
-            .flatten(),
-    })
-}
-
-fn constrain_width_left(area: Rect, maximum: u16) -> Rect {
-    Rect::new(area.x, area.y, area.width.min(maximum), area.height)
-}
-
-struct FormSpacing {
-    related: u16,
-    section: u16,
-}
-
-const fn form_spacing(area: Rect, spacious_height: u16) -> FormSpacing {
-    if area.height >= spacious_height {
-        FormSpacing {
-            related: SPACE_SM,
-            section: SPACE_MD,
-        }
-    } else if area.height >= 16 {
-        FormSpacing {
-            related: SPACE_SM,
-            section: SPACE_SM,
-        }
-    } else {
-        FormSpacing {
-            related: 0,
-            section: 0,
-        }
+        OnboardingScreen::Save => render_save(frame, body, model),
     }
+    render_footer(frame, footer, model);
 }
 
 fn render_resize_message(frame: &mut Frame<'_>, area: Rect) {
@@ -795,83 +632,21 @@ fn render_resize_message(frame: &mut Frame<'_>, area: Rect) {
         Line::from("Ctrl-C cancels without saving.").dim(),
     ]);
     frame.render_widget(
-        Paragraph::new(message)
-            .centered()
-            .wrap(Wrap { trim: true })
-            .block(Block::bordered().title(" Graduate · Jira setup ")),
+        Paragraph::new(message).centered().wrap(Wrap { trim: true }),
         area,
     );
 }
 
-fn render_header(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) -> Rect {
-    render_brand_header(frame, area);
-    let pending_symbol = model.pending_symbol();
-    let jira_status = if model.stage == OnboardingScreen::Save {
-        ConnectionStatus::Connected
-    } else {
-        model.jira_status
-    };
-    let stages = Line::from(vec![
-        stage_span(
-            "Jira account",
-            model.stage != OnboardingScreen::Save,
-            jira_status,
-            pending_symbol,
-        ),
-        ratatui::text::Span::styled(STAGE_SEPARATOR, Palette::muted()),
-        stage_span(
-            "Review & save",
-            model.stage == OnboardingScreen::Save,
-            ConnectionStatus::NotConnected,
-            pending_symbol,
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(stages),
-        Rect::new(
-            area.x,
-            area.y.saturating_add(GRADUATE_ART_HEIGHT + 1),
-            area.width,
-            1,
-        ),
-    );
-    let jira_width = u16::try_from("Jira account".len() + 2).unwrap_or(area.width);
-    Rect::new(area.x, area.y + GRADUATE_ART_HEIGHT + 1, jira_width, 1)
-}
-
-fn stage_span(
-    label: &'static str,
-    active: bool,
-    status: ConnectionStatus,
-    pending_symbol: &str,
-) -> ratatui::text::Span<'static> {
-    let text = match status {
-        ConnectionStatus::Connected => format!("✓ {label}"),
-        ConnectionStatus::Pending => format!("{pending_symbol} {label}"),
-        ConnectionStatus::NotConnected if active => format!("● {label}"),
-        ConnectionStatus::NotConnected => format!("○ {label}"),
-    };
-    let style = match status {
-        ConnectionStatus::Connected => Palette::success().bold(),
-        ConnectionStatus::Pending => Palette::pending().bold(),
-        ConnectionStatus::NotConnected if active => Palette::primary().bold(),
-        ConnectionStatus::NotConnected => Palette::muted(),
-    };
-    ratatui::text::Span::styled(text, style)
-}
-
-fn render_jira_details(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) -> Option<Rect> {
-    let spacing = form_spacing(area, 20);
-    let [intro, _, hostname, host_help, _, email, _, action, feedback, _] = Layout::vertical([
+fn render_jira_details(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) {
+    let [intro, _, hostname, _, email, _, action, _, feedback] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(spacing.section),
-        Constraint::Length(3),
+        Constraint::Length(2),
         Constraint::Length(1),
-        Constraint::Length(spacing.related),
-        Constraint::Length(3),
-        Constraint::Length(spacing.section),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(2),
+        Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Fill(1),
     ])
     .areas(area);
@@ -887,6 +662,7 @@ fn render_jira_details(frame: &mut Frame<'_>, area: Rect, model: &OnboardingMode
         hostname,
         "Jira site",
         &terminal_text::escape(model.hostname.value()),
+        "company.atlassian.net",
         FieldPresentation {
             cursor: model.hostname.cursor(),
             focused: model.focus == 0,
@@ -898,15 +674,12 @@ fn render_jira_details(frame: &mut Frame<'_>, area: Rect, model: &OnboardingMode
             ..FieldPresentation::default()
         },
     );
-    frame.render_widget(
-        Paragraph::new("Your Atlassian workspace address, for example company.atlassian.net").dim(),
-        host_help,
-    );
     render_field(
         frame,
         email,
         "Atlassian email",
         &terminal_text::escape(model.email.value()),
+        "you@example.com",
         FieldPresentation {
             cursor: model.email.cursor(),
             focused: model.focus == 1,
@@ -918,46 +691,49 @@ fn render_jira_details(frame: &mut Frame<'_>, area: Rect, model: &OnboardingMode
             ..FieldPresentation::default()
         },
     );
-    render_action(
-        frame,
+    frame.render_widget(
+        SetupButton::new(
+            "Continue to API token",
+            model.focus == 2,
+            ConnectionStatus::NotConnected,
+            model.pending_symbol(),
+        ),
         action,
-        "Continue to API token",
-        model.focus == 2,
-        ConnectionStatus::NotConnected,
-        model.pending_symbol(),
     );
     render_feedback(frame, feedback, model);
-    match model.focus {
-        0 => Some(hostname),
-        1 => Some(email),
-        _ => None,
-    }
 }
 
-fn render_jira_token(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) -> Option<Rect> {
+fn render_jira_token(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) {
     let fallback_height = if !model.jira_page_can_open || model.warning.is_some() {
         3
     } else {
         0
     };
-    let [intro, _, token, _, raw_url, _, status, feedback, _] = Layout::vertical([
+    let [intro, _, token, _, raw_url, _, status, _, feedback] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
         Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Length(fallback_height),
         Constraint::Length(1),
+        Constraint::Length(3),
         Constraint::Length(1),
-        Constraint::Length(2),
         Constraint::Fill(1),
     ])
     .areas(area);
-    frame.render_widget(Paragraph::new("Connect Jira").bold(), intro);
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from("Connect Jira").bold(),
+            Line::from("Paste an Atlassian API token.").dim(),
+        ])),
+        intro,
+    );
     render_field(
         frame,
         token,
         "Atlassian API token",
         model.jira_token.value(),
+        "paste token",
         FieldPresentation {
             cursor: model.jira_token.cursor(),
             focused: model.focus == 0,
@@ -978,16 +754,16 @@ fn render_jira_token(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel)
         model.jira_page_can_open,
         model.warning.is_some(),
     );
-    render_action(
-        frame,
+    frame.render_widget(
+        SetupButton::new(
+            "Connect Jira",
+            model.focus == 1,
+            model.jira_status,
+            model.pending_symbol(),
+        ),
         status,
-        "Connect Jira",
-        model.focus == 1,
-        model.jira_status,
-        model.pending_symbol(),
     );
     render_feedback(frame, feedback, model);
-    (model.focus == 0).then_some(token)
 }
 
 fn render_token_url_fallback(
@@ -1011,11 +787,14 @@ fn render_token_url_fallback(
 }
 
 fn render_save(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) {
-    let [intro, _, manifest, _, action, feedback, _] = Layout::vertical([
+    let [intro, _, manifest, _, question, _, action, edit, _, feedback] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(1),
-        Constraint::Length(6),
+        Constraint::Length(5),
         Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
@@ -1023,64 +802,51 @@ fn render_save(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) {
     .areas(area);
     frame.render_widget(
         Paragraph::new(Text::from(vec![
-            Line::from("Ready to save").bold(),
-            Line::from("Confirm the Jira account Graduate will connect.").dim(),
+            Line::from("Review Jira setup").bold(),
+            Line::from("Graduate will save this connection.").dim(),
         ])),
         intro,
     );
-    render_connection_endpoint(
-        frame,
-        constrain_width_left(manifest, MAX_FORM_WIDTH),
-        "JIRA",
-        vec![
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                ratatui::text::Span::styled(
+                    format!("{:<REVIEW_LABEL_WIDTH$}", "Field"),
+                    Palette::text().bold(),
+                ),
+                ratatui::text::Span::styled("Value", Palette::text().bold()),
+            ]),
+            Line::styled("─".repeat(usize::from(manifest.width)), Palette::muted()),
             detail_line("Site", &terminal_text::escape(model.hostname.value())),
             detail_line("Account", &terminal_text::escape(model.email.value())),
             detail_line("Identity", &terminal_text::escape(&model.display_name)),
-            edit_line("J", "Edit Jira account"),
-        ],
+        ])),
+        manifest,
     );
-    render_action(
-        frame,
-        constrain_width_left(action, 26),
-        "Save configuration",
-        true,
-        ConnectionStatus::Connected,
-        model.pending_symbol(),
+    frame.render_widget(Paragraph::new("Does this look right?").bold(), question);
+    frame.render_widget(
+        SetupButton::new(
+            "Save configuration",
+            true,
+            ConnectionStatus::NotConnected,
+            model.pending_symbol(),
+        ),
+        action,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            ratatui::text::Span::styled("J ", Palette::primary().bold()),
+            ratatui::text::Span::styled("Change Jira account", Palette::muted()),
+        ])),
+        edit,
     );
     render_feedback(frame, feedback, model);
-}
-
-fn render_connection_endpoint(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &'static str,
-    details: Vec<Line<'_>>,
-) {
-    let title = Line::from(vec![
-        ratatui::text::Span::styled(format!(" {label}  "), Palette::primary().bold()),
-        ratatui::text::Span::styled("✓ connected ", Palette::success()),
-    ]);
-    frame.render_widget(
-        Paragraph::new(Text::from(details)).block(
-            Block::bordered()
-                .title(title)
-                .border_style(Palette::muted()),
-        ),
-        area,
-    );
 }
 
 fn detail_line<'a>(label: &'static str, value: &'a str) -> Line<'a> {
     Line::from(vec![
         ratatui::text::Span::styled(format!("{label:<REVIEW_LABEL_WIDTH$}"), Palette::muted()),
         ratatui::text::Span::styled(value, Palette::text()),
-    ])
-}
-
-fn edit_line(shortcut: &'static str, label: &'static str) -> Line<'static> {
-    Line::from(vec![
-        ratatui::text::Span::styled(format!("{shortcut}  "), Palette::primary().bold()),
-        ratatui::text::Span::styled(label, Palette::muted()),
     ])
 }
 
@@ -1099,6 +865,7 @@ fn render_field(
     area: Rect,
     label: &str,
     value: &str,
+    placeholder: &str,
     presentation: FieldPresentation,
 ) {
     let FieldPresentation {
@@ -1117,142 +884,114 @@ fn render_field(
     } else {
         value.to_owned()
     };
-    let border_style = if invalid {
+    let prompt_style = if invalid {
         Palette::error()
     } else if focused {
         Palette::focus()
     } else {
         Palette::muted()
     };
-    let title = if invalid {
-        format!(" ✕ {label} (invalid) ")
-    } else if focused && retained {
-        format!(" › {label} (stored) ")
-    } else if focused {
-        format!(" › {label} ")
-    } else if retained {
-        format!(" {label} (stored) ")
+    let prompt = if retained {
+        format!("{label} (stored)> ")
     } else {
-        format!(" {label} ")
+        format!("{label}> ")
+    };
+    let shown_value = if display.is_empty() {
+        placeholder
+    } else {
+        &display
+    };
+    let value_style = if display.is_empty() {
+        Palette::muted()
+    } else {
+        Palette::text()
     };
     frame.render_widget(
-        Paragraph::new(display.as_str())
-            .block(Block::bordered().title(title).border_style(border_style)),
+        Paragraph::new(Line::from(vec![
+            ratatui::text::Span::styled(prompt.clone(), prompt_style.bold()),
+            ratatui::text::Span::styled(shown_value.to_owned(), value_style),
+        ])),
         area,
     );
 
-    if focused && cursor_visible && area.width > 2 && !retained {
-        let cursor_offset = cursor.min(usize::from(area.width.saturating_sub(3))) as u16;
+    if focused && cursor_visible && !retained {
+        let prompt_width = u16::try_from(prompt.chars().count()).unwrap_or(area.width);
+        let available = area.width.saturating_sub(prompt_width).saturating_sub(1);
+        let cursor_offset = u16::try_from(cursor.min(usize::from(available))).unwrap_or(available);
         if let Some(cell) = frame
             .buffer_mut()
-            .cell_mut(Position::new(area.x + 1 + cursor_offset, area.y + 1))
+            .cell_mut(Position::new(area.x + prompt_width + cursor_offset, area.y))
         {
             cell.set_style(Style::new().reversed());
         }
     }
 }
 
-fn render_focus_border(buffer: &mut Buffer, area: Rect, elapsed: Duration) {
-    if area.width < 2 || area.height < 2 {
-        return;
-    }
-    let phase = (elapsed.as_secs_f32() * FOCUS_BORDER_CELLS_PER_SECOND) as usize;
-    let mut border_index = 0;
-    for x in area.x..area.right() {
-        tint_focus_border_cell(buffer, Position::new(x, area.y), phase + border_index);
-        border_index += 1;
-    }
-    for y in area.y + 1..area.bottom() - 1 {
-        tint_focus_border_cell(
-            buffer,
-            Position::new(area.right() - 1, y),
-            phase + border_index,
-        );
-        border_index += 1;
-    }
-    for x in (area.x..area.right()).rev() {
-        tint_focus_border_cell(
-            buffer,
-            Position::new(x, area.bottom() - 1),
-            phase + border_index,
-        );
-        border_index += 1;
-    }
-    for y in (area.y + 1..area.bottom() - 1).rev() {
-        tint_focus_border_cell(buffer, Position::new(area.x, y), phase + border_index);
-        border_index += 1;
-    }
-}
-
-fn tint_focus_border_cell(buffer: &mut Buffer, position: Position, color_index: usize) {
-    let Some(cell) = buffer.cell_mut(position) else {
-        return;
-    };
-    if matches!(
-        cell.symbol(),
-        "─" | "│" | "┌" | "┐" | "└" | "┘" | "━" | "┃" | "┏" | "┓" | "┗" | "┛"
-    ) {
-        cell.set_fg(focus_border_color(color_index));
-    }
-}
-
-fn focus_border_color(index: usize) -> Color {
-    let stops = [
-        (4, PRIMARY_COLOR),
-        (2, Color::LightCyan),
-        (4, PRIMARY_COLOR),
-        (7, Color::Blue),
-        (7, Color::Green),
-        (7, Color::LightCyan),
-    ];
-    let cycle_length = stops.iter().map(|(length, _)| length).sum::<usize>();
-    let mut offset = index % cycle_length;
-    for (length, color) in stops {
-        if offset < length {
-            return color;
-        }
-        offset -= length;
-    }
-    PRIMARY_COLOR
-}
-
-fn render_action(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    label: &str,
+struct SetupButton<'a> {
+    label: &'a str,
     focused: bool,
     status: ConnectionStatus,
-    pending_symbol: &str,
-) {
-    let focused_action = focused
-        && status != ConnectionStatus::Pending
-        && (status == ConnectionStatus::NotConnected || label == "Save configuration");
-    let text = match status {
-        ConnectionStatus::Pending => format!("{pending_symbol} Verifying {label}…"),
-        ConnectionStatus::Connected if label != "Save configuration" => {
-            format!("✓ {label} connected")
+    pending_symbol: &'a str,
+}
+
+impl<'a> SetupButton<'a> {
+    const fn new(
+        label: &'a str,
+        focused: bool,
+        status: ConnectionStatus,
+        pending_symbol: &'a str,
+    ) -> Self {
+        Self {
+            label,
+            focused,
+            status,
+            pending_symbol,
         }
-        _ => format!("{label}  →"),
-    };
-    let style = if status == ConnectionStatus::Pending {
-        Palette::pending().bold()
-    } else if focused_action {
-        Palette::action_focus().bold()
-    } else if status == ConnectionStatus::Connected {
-        Palette::success().bold()
-    } else {
-        Palette::muted()
-    };
-    let line = if focused_action {
-        Line::from(vec![
-            ratatui::text::Span::styled("▌", Palette::primary().bold()),
-            ratatui::text::Span::styled(format!(" {text} "), style),
-            ratatui::text::Span::styled("▐", Palette::primary().bold()),
-        ])
-    } else {
-        Line::styled(format!("  {text}"), style)
-    };
-    frame.render_widget(Paragraph::new(line), area);
+    }
+}
+
+impl Widget for SetupButton<'_> {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        let focused = self.focused && self.status != ConnectionStatus::Pending;
+        let text = match self.status {
+            ConnectionStatus::Pending => format!("{} Verifying Jira…", self.pending_symbol),
+            ConnectionStatus::Connected if self.label != "Save configuration" => {
+                format!("✓ {} connected", self.label)
+            }
+            _ => self.label.to_owned(),
+        };
+        let content_style = match self.status {
+            ConnectionStatus::Pending => Palette::pending().bg(MUTED_COLOR),
+            ConnectionStatus::Connected => Palette::success().bg(MUTED_COLOR),
+            ConnectionStatus::NotConnected if focused => Palette::action_focus(),
+            ConnectionStatus::NotConnected => Palette::muted(),
+        };
+        let border_style = match self.status {
+            ConnectionStatus::Pending => Palette::pending(),
+            ConnectionStatus::Connected => Palette::success(),
+            ConnectionStatus::NotConnected if focused => Palette::primary(),
+            ConnectionStatus::NotConnected => Palette::muted(),
+        };
+        let width = u16::try_from(text.chars().count())
+            .unwrap_or(area.width)
+            .saturating_add(6)
+            .min(area.width);
+        let button = Rect::new(area.x, area.y, width, area.height);
+        Block::bordered()
+            .border_type(BorderType::Plain)
+            .border_style(border_style)
+            .render(button, buffer);
+        let interior = Rect::new(
+            button.x.saturating_add(1),
+            button.y.saturating_add(1),
+            button.width.saturating_sub(2),
+            button.height.saturating_sub(2),
+        );
+        Paragraph::new(Line::styled(text, content_style))
+            .centered()
+            .style(content_style)
+            .render(interior, buffer);
+    }
 }
 
 fn render_feedback(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) {
@@ -1273,51 +1012,12 @@ fn render_feedback(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) {
 }
 
 fn render_footer(frame: &mut Frame<'_>, area: Rect, model: &OnboardingModel) {
-    if model.stage == OnboardingScreen::Save {
-        let footer = Text::from(vec![
-            footer_divider(area.width),
-            Line::from(vec![
-                ratatui::text::Span::styled(" J ", Palette::primary().bold()),
-                ratatui::text::Span::styled("edit Jira  ", Palette::muted()),
-                ratatui::text::Span::styled(" Enter ", Palette::primary().bold()),
-                ratatui::text::Span::styled("save  ", Palette::muted()),
-                ratatui::text::Span::styled(" Esc ", Palette::muted().bold()),
-                ratatui::text::Span::styled("edit token", Palette::muted()),
-            ]),
-        ]);
-        frame.render_widget(Paragraph::new(footer), area);
-        return;
-    }
-
-    let action = match model.stage {
-        OnboardingScreen::JiraDetails if model.focus < 2 => "next",
-        OnboardingScreen::JiraDetails => "continue to API token",
-        OnboardingScreen::JiraToken if model.focus == 0 => "next",
-        OnboardingScreen::JiraToken => "connect Jira",
-        OnboardingScreen::Save => "save",
+    let controls = match model.stage {
+        OnboardingScreen::JiraDetails => "↑↓/tab navigate • enter select • esc cancel",
+        OnboardingScreen::JiraToken => "↑↓/tab navigate • enter select • esc back",
+        OnboardingScreen::Save => "enter save • j change account • esc change token",
     };
-    let escape_action = if model.stage == OnboardingScreen::JiraDetails {
-        "cancel"
-    } else {
-        "back"
-    };
-    let controls = vec![
-        ratatui::text::Span::styled(" Tab ", Palette::muted().bold()),
-        ratatui::text::Span::styled("next  ", Palette::muted()),
-        ratatui::text::Span::styled(" Shift-Tab ", Palette::muted().bold()),
-        ratatui::text::Span::styled("previous  ", Palette::muted()),
-        ratatui::text::Span::styled(" Enter ", Palette::primary().bold()),
-        ratatui::text::Span::styled(format!("{action}  "), Palette::muted()),
-        ratatui::text::Span::styled(" Esc ", Palette::muted().bold()),
-        ratatui::text::Span::styled(escape_action, Palette::muted()),
-    ];
-    frame.render_widget(
-        Paragraph::new(Text::from(vec![
-            footer_divider(area.width),
-            Line::from(controls),
-        ])),
-        area,
-    );
+    frame.render_widget(Paragraph::new(controls).style(Palette::muted()), area);
 }
 
 #[cfg(test)]
@@ -1327,26 +1027,16 @@ mod tests {
     use ratatui::style::Modifier;
     use ratatui::Terminal;
 
-    use crate::theme::GRADUATE_ART;
+    use crate::theme::{GRADUATE_ART, MUTED_COLOR, PRIMARY_COLOR};
 
     use super::*;
 
     const TEST_WIDTH: u16 = 100;
     const TEST_HEIGHT: u16 = 50;
 
-    const fn inactive_animation() -> BufferAnimation {
-        BufferAnimation {
-            effect: None,
-            elapsed: Duration::ZERO,
-        }
-    }
-
     fn model(stage: OnboardingScreen) -> OnboardingModel {
         OnboardingModel {
-            entrance_animation: inactive_animation(),
-            connection_animation: None,
             pending_animation_elapsed: Duration::ZERO,
-            focus_border_elapsed: Duration::ZERO,
             cursor_blink_elapsed: Duration::ZERO,
             reduced_motion: true,
             stage,
@@ -1373,7 +1063,7 @@ mod tests {
     ) -> Result<String, Box<dyn std::error::Error>> {
         let mut terminal = Terminal::new(TestBackend::new(width, height))?;
         terminal.draw(|frame| {
-            let _ = render(frame, model);
+            render(frame, model);
         })?;
         let buffer = terminal.backend().buffer();
         let mut rendered = String::new();
@@ -1387,8 +1077,7 @@ mod tests {
     }
 
     #[test]
-    fn jira_details_match_drags_field_button_and_layout_pattern(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn jira_details_use_compact_inline_prompts() -> Result<(), Box<dyn std::error::Error>> {
         let rendered = render_text(
             TEST_WIDTH,
             TEST_HEIGHT,
@@ -1396,16 +1085,19 @@ mod tests {
         )?;
 
         assert!(rendered.contains(GRADUATE_ART[0]));
-        assert!(rendered.contains("● Jira account ─── ○ Review & save"));
-        assert!(rendered.contains("› Jira site"));
-        assert!(rendered.contains("Atlassian email"));
-        assert!(rendered.contains("Continue to API token  →"));
+        assert!(rendered.contains("Jira site> company.atlassian.net"));
+        assert!(rendered.contains("Atlassian email> person@example.com"));
+        assert!(rendered.contains("Continue to API token"));
+        assert!(!rendered.contains("Your Atlassian workspace address"));
+        assert!(rendered.contains("┌"));
+        assert!(rendered.contains("┘"));
+        assert!(!rendered.contains("Review & save"));
         let heading = rendered
             .lines()
             .find(|line| line.contains("Connect your Jira account"))
             .ok_or("Jira heading was not rendered")?;
         assert!(heading.starts_with("Connect your Jira account"));
-        assert!(rendered.contains("Atlassian account Graduate should use"));
+        assert!(rendered.contains("Enter the Atlassian account Graduate should use"));
         Ok(())
     }
 
@@ -1427,6 +1119,20 @@ mod tests {
             model.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Action::Continue
         ));
+    }
+
+    #[test]
+    fn arrow_keys_move_focus_in_both_directions() {
+        let mut model = model(OnboardingScreen::JiraDetails);
+
+        let _ = model.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(model.focus, 1);
+
+        let _ = model.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(model.focus, 0);
+
+        let _ = model.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(model.focus, 2);
     }
 
     #[test]
@@ -1452,7 +1158,8 @@ mod tests {
         assert!(rendered.contains("Atlassian API token"));
         assert!(rendered.contains("••••"));
         assert!(!rendered.contains("never-render-this-secret"));
-        assert!(rendered.contains("Connect Jira  →"));
+        assert!(rendered.contains("Connect Jira"));
+        assert!(rendered.contains("┌"));
         Ok(())
     }
 
@@ -1470,40 +1177,69 @@ mod tests {
     }
 
     #[test]
-    fn review_keeps_drags_manifest_and_save_action_without_tempo(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn review_uses_a_compact_field_table_and_confirmation() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut model = model(OnboardingScreen::Save);
         model.jira_status = ConnectionStatus::Connected;
 
         let rendered = render_text(TEST_WIDTH, TEST_HEIGHT, &model)?;
 
-        assert!(rendered.contains("✓ Jira account ─── ● Review & save"));
-        assert!(rendered.contains("JIRA"));
-        assert!(rendered.contains("✓ connected"));
-        assert!(rendered.contains("Save configuration  →"));
+        assert!(rendered.contains("Review Jira setup"));
+        assert!(rendered.contains("Field     Value"));
+        assert!(rendered.contains("Site      company.atlassian.net"));
+        assert!(rendered.contains("Does this look right?"));
+        assert!(rendered.contains("Save configuration"));
+        assert!(rendered.contains("┌"));
+        assert!(rendered.contains("J Change Jira account"));
         assert!(!rendered.contains("Tempo"));
         Ok(())
     }
 
     #[test]
-    fn focused_button_highlight_wraps_only_the_action_label(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = model(OnboardingScreen::JiraDetails);
-        model.focus = 2;
-        let mut terminal = Terminal::new(TestBackend::new(TEST_WIDTH, TEST_HEIGHT))?;
-        terminal.draw(|frame| {
-            let _ = render(frame, &model);
-        })?;
+    fn action_uses_the_main_tui_focus_style() -> Result<(), Box<dyn std::error::Error>> {
+        for focus in [0, 2] {
+            let mut model = model(OnboardingScreen::JiraDetails);
+            model.focus = focus;
+            let mut terminal = Terminal::new(TestBackend::new(TEST_WIDTH, TEST_HEIGHT))?;
+            terminal.draw(|frame| render(frame, &model))?;
 
-        let highlighted = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .filter(|cell| cell.fg == PRIMARY_COLOR && cell.modifier.contains(Modifier::REVERSED))
-            .count();
-        assert!(highlighted > 0);
-        assert!(highlighted < usize::from(MAX_CONTENT_WIDTH / 2));
+            let corners = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .filter(|cell| matches!(cell.symbol(), "┌" | "┐" | "└" | "┘"))
+                .collect::<Vec<_>>();
+            assert_eq!(corners.len(), 4);
+            if focus == 2 {
+                assert!(corners.iter().all(|cell| cell.fg == PRIMARY_COLOR));
+                assert!(corners.iter().all(|cell| cell.bg != MUTED_COLOR));
+            } else {
+                assert!(corners.iter().all(|cell| cell.fg == MUTED_COLOR));
+                assert!(corners.iter().all(|cell| cell.bg != MUTED_COLOR));
+            }
+            let focused_cells = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .filter(|cell| cell.modifier.contains(Modifier::REVERSED))
+                .count();
+            if focus == 2 {
+                assert!(focused_cells >= "Continue to API token".len());
+            } else {
+                assert_eq!(focused_cells, 1);
+            }
+
+            let left_edge = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .position(|cell| cell.symbol() == "┌")
+                .ok_or("button left edge was not rendered")?;
+            assert_eq!(left_edge % usize::from(TEST_WIDTH), 0);
+        }
         Ok(())
     }
 
@@ -1523,14 +1259,29 @@ mod tests {
     }
 
     #[test]
-    fn split_pane_with_78_columns_renders_the_login_form() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let rendered = render_text(78, 48, &model(OnboardingScreen::JiraDetails))?;
+    fn every_screen_fits_a_60_by_24_split_pane() -> Result<(), Box<dyn std::error::Error>> {
+        for (stage, heading, action) in [
+            (
+                OnboardingScreen::JiraDetails,
+                "Connect your Jira account",
+                "Continue to API token",
+            ),
+            (OnboardingScreen::JiraToken, "Connect Jira", "Connect Jira"),
+            (
+                OnboardingScreen::Save,
+                "Review Jira setup",
+                "Save configuration",
+            ),
+        ] {
+            let rendered = render_text(60, 24, &model(stage))?;
 
-        assert!(!rendered.contains("Terminal too small"));
-        assert!(rendered.contains(GRADUATE_ART[0]));
-        assert!(rendered.contains("Connect your Jira account"));
-        assert!(rendered.contains("Atlassian email"));
+            assert!(!rendered.contains("Terminal too small"));
+            assert!(rendered.contains(GRADUATE_ART[0]));
+            assert!(rendered.contains(heading));
+            assert!(rendered.contains(action));
+            assert!(rendered.contains("┌"));
+            assert!(rendered.contains("┘"));
+        }
         Ok(())
     }
 
