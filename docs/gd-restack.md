@@ -62,21 +62,27 @@ agent can deliberately remove selected features from the reconstructed branch.
   order, branch, short tip SHA, locally parsed Jira key when present, and rerere
   training availability. It performs no Jira requests. A separate review
   screen shows captured base/environment OIDs, retained order, removals, and
-  the exact leased remote rewrite before confirmation.
+  the target ref, exact lease, canonical merge intent, and final tree before
+  confirmation.
 - An unattended JSON parameter surface supports an agent-requested rebuild,
   including explicit branch removal, following the conventions already used by
   `gd diff --params`.
-- Machine parameters use only `removeBranches`; callers do not submit a full
-  retained set. Every removal must be a unique member of the captured explicit
-  environment inventory. Unknown, graduated, indirect-only, or duplicate names
-  fail validation rather than being ignored.
-- Planning rejects a removal when that feature tip remains reachable through a
-  retained feature and reports the dependent branches. It never cascades
-  removals or claims code was removed when the graph keeps it.
+- Machine preview parameters contain only `removeBranches`; callers do not
+  submit a full retained set. Machine apply parameters contain the same
+  `removeBranches` selection plus the preview's `planDigest`. Every removal
+  must be a unique member of the captured explicit environment inventory.
+  Unknown, graduated, indirect-only, or duplicate names fail validation rather
+  than being ignored.
+- Planning rejects a removal when any commit attributable to that explicit
+  feature remains reachable through a retained feature and reports the
+  dependent branches. Checking only the feature's current tip is insufficient
+  because a retained branch can contain an earlier part of the feature. Restack
+  never cascades removals or claims code was removed when the graph keeps it.
 - Unattended v1 is JSON-only. `--params` selects machine mode; stdout emits one
   schema-versioned plan or apply result, while progress and errors stay on
-  stderr. A non-TTY invocation without `--params` is a usage error. Table,
-  YAML, CSV, and output-file modes are out of scope.
+  stderr. A new non-TTY restack without `--params` is a usage error. Resume is
+  a separate machine invocation selected by `--resume <token>` and does not
+  require `--params`. Table, YAML, CSV, and output-file modes are out of scope.
 - Machine mode also emits schema-versioned, redacted JSON errors on stderr with
   stable `code`, `message`, and `details` fields plus conflict continuation
   fields when relevant. Invalid usage/params exit 2; fetch, Git, conflict,
@@ -93,16 +99,22 @@ agent can deliberately remove selected features from the reconstructed branch.
   explicit confirmation after branch selection; unattended execution requires
   `--apply` in addition to `--params`. JSON parameters select branch removals
   but do not themselves authorize a push.
-- Machine preview returns a `planDigest` over the captured environment and base
-  OIDs, the ordered feature names and tip OIDs, and the removal selection.
-  Machine `--apply` must echo that digest in `--params`; a fresh fetch that
-  changes any input fails and requires a new preview. Interactive confirmation
-  binds to the same in-memory plan.
+- Machine preview returns a canonical SHA-256 `planDigest` over the schema
+  version, remote and ref names, every captured environment, base, and feature
+  OID, configured author identity, ordered feature names and tip OIDs, removal
+  selection, and expected final tree. Machine `--apply` must echo that digest
+  in `--params`; a fresh fetch that changes any input fails and requires a new
+  preview. Interactive confirmation binds to the same in-memory plan. Display
+  JSON, map iteration order, and generated merge commit OIDs are not digest
+  inputs.
 - Preview performs the full disposable reconstruction, including rerere replay
   and validation, but never pushes. It reports each clean or rerere-resolved
   merge and the final tree OID. Apply fetches and reconstructs again, requires
   the same plan digest, verifies that the final tree matches preview, then
-  performs the leased push.
+  performs the leased push. New committer timestamps can produce different
+  merge commit OIDs during ordinary apply. Review instead binds the configured
+  identity, canonical parent topology, merge order and messages, and final
+  tree.
 - Reconstruction validation is Git-only: resolved index, no conflict markers
   or diff-check failures, canonical merge parents/order/messages, reviewed
   final tree, and unchanged remote inputs. Graduate runs no repository build or
@@ -115,8 +127,10 @@ agent can deliberately remove selected features from the reconstructed branch.
   After approval, adding `--apply` revalidates every remote input and pushes
   that exact reviewed result. Resume-apply is the exception to rebuilding a
   second time: it uses the reviewed session so a newly learned resolution is
-  not lost. Apply tokens are single-use; abandoned sessions expire and are
-  purged without changing repository refs.
+  not lost. Graduate seals a completed session, then holds its lock through
+  apply while revalidating its final commit, tree, parents, metadata, and plan
+  digest. Apply tokens are single-use; abandoned sessions expire and are purged
+  without changing repository refs.
 - Resumable sessions live in Graduate's mode-restricted platform cache with a
   24-hour inactivity TTL. Resume refreshes activity; every restack invocation
   purges expired sessions; successful apply or explicit abort deletes the
@@ -273,7 +287,10 @@ agent can deliberately remove selected features from the reconstructed branch.
    contrib script or use the personal rr-cache.
 4. Reset the isolated rebuild to the captured remote mainline, then merge each
    retained captured tip with `--no-ff`, canonical messages, configured
-   identity, editor/signing disabled, and no shell interpolation.
+   identity, editor/signing disabled, an empty isolated hooks directory, and no
+   shell interpolation. Every training and reconstruction command that can run
+   Git hooks must override `core.hooksPath`; repository and global hooks must
+   not run.
 5. Keep `rerere.autoupdate` disabled. Explicitly verify rerere remaining paths,
    the unmerged index, conflict markers, `git diff --check`, expected parents,
    order, messages, and final tree before considering preview complete.
@@ -294,9 +311,12 @@ agent can deliberately remove selected features from the reconstructed branch.
 3. On resume, require the expected source repository and environment, reject
    expired/locked/tampered state, require no agent-created commits, verify HEAD
    and merge parent, validate staged conflict resolution, run rerere, create the
-   canonical merge commit, and continue preview.
+   canonical merge commit, and continue preview. Seal the session when preview
+   completes.
 4. Let `--resume <token> --apply` publish the exact reviewed session after the
-   same all-ref revalidation and environment lease. Make apply single-use.
+   same all-ref revalidation and environment lease. Hold the session lock and
+   revalidate the final commit, tree, parents, metadata, and digest through the
+   push. Make apply single-use.
 5. Add `--resume <token> --abort` to delete an abandoned session immediately;
    otherwise purge after 24 hours of inactivity.
 
@@ -304,8 +324,9 @@ agent can deliberately remove selected features from the reconstructed branch.
 
 1. Add `RestackArgs` to `cli.rs` with `ENVIRONMENT`, `--main`, `--remote`,
    `--params`, `--apply`, `--resume`, and `--abort`, including Clap constraints:
-   machine apply requires params plus a digest; resume/abort combinations are
-   explicit; there is no `--no-fetch` or output-format surface.
+   a new machine apply requires params plus a digest; resume takes no params;
+   resume/abort combinations are explicit; there is no `--no-fetch` or
+   output-format surface.
 2. Route the command from `main.rs`. Select interactive mode only when stdin
    and stderr are terminals and neither params nor resume selects machine mode.
 3. Add `restack_tui.rs`: loading, checked branch list, review, confirmation,
@@ -313,8 +334,9 @@ agent can deliberately remove selected features from the reconstructed branch.
    guard/theme, deterministic actions, and `TestBackend`; restore the terminal
    before printing a preserved conflict path.
 4. Serialize the agreed schema-v1 plan/result to stdout and machine errors to
-   stderr. Ensure tokens, credential helper values, remote credentials, and raw
-   rerere contents are redacted from every path.
+   stderr. Return the opaque resume capability only in the documented conflict
+   continuation field. Redact it from all other output. Always redact PATs,
+   credential helper values, remote credentials, and raw rerere contents.
 
 ### 7. Verify behavior
 
@@ -323,9 +345,11 @@ agent can deliberately remove selected features from the reconstructed branch.
    recognition; and every reconstructability error.
 2. Real-Git fixture tests with a bare remote: canonical rebuild, current remote
    tips, mainline advancement, all branches removed, dirty source checkout
-   untouched, no local-ref mutation, no preview push, exact leased apply,
-   environment race, base/feature pre-push drift, deleted refs, direct commits,
-   fast-forwards, octopus/ambiguous merges, and protected/rejected pushes.
+   untouched, no local branch mutation, expected remote-tracking updates, no
+   preview push, exact leased apply, environment race, base/feature pre-push
+   drift, deleted refs, direct commits, fast-forwards, octopus/ambiguous merges,
+   protected/rejected pushes, and hostile repository and global hook
+   configuration that never executes.
 3. Rerere fixtures: train and replay an accepted old resolution; changed
    conflict that remains unresolved; no personal-cache read/write; conflict
    session creation; agent-staged resume; tampered/expired/concurrent resume;
@@ -353,11 +377,11 @@ agent can deliberately remove selected features from the reconstructed branch.
 
 ## Investigated context
 
-- Graduate command surface: `/home/tmr/workspace/personal/graduate/crates/graduate-cli/src/cli.rs`
-- Graduate promotion warning: `/home/tmr/workspace/personal/graduate/README.md`
-- Graduate architecture: `/home/tmr/workspace/personal/graduate/docs/architecture.md`
-- Restack command wrapper: `/home/tmr/workspace/personal/restack/src/commands/integration.rs`
-- Restack rebuild algorithm: `/home/tmr/workspace/personal/restack/src/core/rebuild_service.rs`
+- Graduate command surface: `crates/graduate-cli/src/cli.rs`
+- Graduate promotion warning: `README.md`
+- Graduate architecture: `docs/architecture.md`
+- Sibling Restack command wrapper and rebuild algorithm (local design evidence
+  reviewed during planning)
 - Gitworkflow reference: <https://github.com/rocketraman/gitworkflow>
 - Gitworkflow aliases: <https://gist.github.com/rocketraman/1fdc93feb30aa00f6f3a9d7d732102a9>
 - Git rerere manual: <https://git-scm.com/docs/git-rerere>

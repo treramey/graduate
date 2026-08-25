@@ -6,10 +6,12 @@ status: accepted
 
 `gd restack` is Graduate's first workflow that can change a remote Git ref. We
 will let it replace only a selected remote environment branch. It must not
-change feature branches, the source checkout or index, local refs, or the
-user's personal rerere cache. Deterministic planning belongs in `graduate`;
-fetching, Git execution, filesystem and cache access, terminal handling, and
-publication belong in `graduate-cli`.
+change feature branches, the source checkout or index, local branches
+including the local environment branch, or the user's personal rerere cache.
+A mandatory fetch can update the source repository's remote-tracking refs.
+Deterministic planning belongs in `graduate`; fetching, Git execution,
+filesystem and cache access, terminal handling, and publication belong in
+`graduate-cli`.
 
 ## Decision
 
@@ -17,9 +19,12 @@ Each preview starts with a fetch and captures the mainline, environment, and
 explicit feature ref OIDs. It performs the complete reconstruction in an
 isolated Git work area but does not push. The resulting restack plan is
 immutable. Its digest binds the captured OIDs, configured author, ordered
-feature identities and tips, removal selection, and reviewed final tree. An
-interactive confirmation binds to the same in-memory plan. Machine apply must
-provide the preview digest.
+feature identities and tips, removal selection, reviewed final tree, schema
+version, and remote and ref names. An interactive confirmation binds to the
+same in-memory plan. Machine apply must provide the preview digest. Ordinary
+apply can create different merge commit OIDs because it reconstructs the plan
+with new committer timestamps. Review binds the final tree and canonical merge
+identity, order, parents, and messages instead of the preview commit OIDs.
 
 Apply fetches again and rejects any changed or deleted input. Except when it
 continues a reviewed resumable session, apply reconstructs the plan again and
@@ -42,7 +47,10 @@ expired, locked, or changed session and must verify the expected repository,
 environment, HEAD, merge parent, and staged resolution before continuing. A
 resumed apply publishes that exact reviewed session so a newly recorded
 resolution is not lost. Apply tokens are single-use. Apply and abort delete the
-session immediately; inactive sessions expire after 24 hours.
+session immediately; inactive sessions expire after 24 hours. After preview
+completes, Graduate seals the session. Apply must hold the session lock through
+publication and revalidate the final commit, tree, parents, metadata, and plan
+digest before it pushes.
 
 The public `gd restack` command must remain hidden or absent from releases
 until every safety slice in issue #12 is complete. Implementation branches may
