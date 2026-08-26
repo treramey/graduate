@@ -437,6 +437,331 @@ fn restack_preview_can_remove_every_explicit_feature_without_pushing() -> Result
 }
 
 #[test]
+fn restack_apply_publishes_the_reviewed_tree_without_mutating_local_state(
+) -> Result<(), Box<dyn Error>> {
+    let fixture = RestackFixture::new()?;
+    fixture.git(
+        &fixture.source,
+        &["remote", "set-url", "origin", "../remote.git"],
+    )?;
+    let preview = fixture.preview(&[])?;
+    assert!(preview.status.success());
+    let plan: serde_json::Value = serde_json::from_slice(&preview.stdout)?;
+    let digest = plan["planDigest"].as_str().ok_or("plan digest")?;
+    let local_head = fixture.git_text(&fixture.source, &["rev-parse", "HEAD"])?;
+    let local_environment = fixture.git_text(&fixture.source, &["rev-parse", "refs/heads/qa"])?;
+    let personal = fixture.source.join(".git/rr-cache/personal");
+    std::fs::create_dir_all(personal.parent().ok_or("personal rerere parent")?)?;
+    std::fs::write(&personal, "personal\n")?;
+    let hook_marker = fixture.directory.path().join("pre-push-ran");
+    let hooks = fixture.directory.path().join("push-hooks");
+    std::fs::create_dir(&hooks)?;
+    let hook = hooks.join("pre-push");
+    std::fs::write(
+        &hook,
+        format!("#!/bin/sh\nprintf ran > '{}'\n", hook_marker.display()),
+    )?;
+    make_executable(&hook)?;
+    fixture.git(
+        &fixture.source,
+        &[
+            "config",
+            "--file",
+            path_text(&fixture.global)?,
+            "core.hooksPath",
+            path_text(&hooks)?,
+        ],
+    )?;
+
+    let output = fixture.apply(&[], digest)?;
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(result["kind"], "restackResult");
+    assert_eq!(result["planDigest"], plan["planDigest"]);
+    assert_eq!(result["tree"], plan["finalTree"]);
+    assert_eq!(result["pushed"], true);
+    assert_eq!(result["resolutionCounts"]["clean"], 1);
+    assert_eq!(
+        fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa"])?,
+        result["environment"]["newOid"]
+    );
+    assert_eq!(
+        fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa^{tree}"])?,
+        plan["finalTree"]
+    );
+    assert_eq!(
+        fixture.git_text(&fixture.source, &["rev-parse", "HEAD"])?,
+        local_head
+    );
+    assert_eq!(
+        fixture.git_text(&fixture.source, &["rev-parse", "refs/heads/qa"])?,
+        local_environment
+    );
+    assert_eq!(std::fs::read_to_string(personal)?, "personal\n");
+    assert!(!hook_marker.exists());
+    Ok(())
+}
+
+#[test]
+fn restack_apply_rejects_missing_authority_and_fetched_ref_changes() -> Result<(), Box<dyn Error>> {
+    let missing = RestackFixture::new()?;
+    let unauthorized = missing.apply_without_digest()?;
+    assert_eq!(unauthorized.status.code(), Some(2));
+    assert_eq!(
+        structured_restack_error(unauthorized)?["code"],
+        "plan_digest_required"
+    );
+
+    for drift in ["main", "feature", "environment", "deletedFeature"] {
+        let fixture = RestackFixture::new()?;
+        let preview = fixture.preview(&[])?;
+        let plan: serde_json::Value = serde_json::from_slice(&preview.stdout)?;
+        let digest = plan["planDigest"].as_str().ok_or("plan digest")?;
+        let before = fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa"])?;
+        match drift {
+            "main" => {
+                fixture.advance_main_from_separate_clone()?;
+            }
+            "feature" => {
+                fixture.advance_feature_from_separate_clone()?;
+            }
+            "environment" => {
+                fixture.advance_environment_from_separate_clone()?;
+            }
+            "deletedFeature" => {
+                fixture.git(
+                    &fixture.remote,
+                    &["update-ref", "-d", "refs/heads/feature/a"],
+                )?;
+            }
+            _ => return Err("unknown drift scenario".into()),
+        }
+
+        let output = fixture.apply(&[], digest)?;
+
+        assert_eq!(output.status.code(), Some(1), "{drift}");
+        let error = structured_restack_error(output)?;
+        let expected_code = if drift == "deletedFeature" {
+            "unsupported_history"
+        } else {
+            "stale_plan"
+        };
+        assert_eq!(error["code"], expected_code, "{drift}");
+        if drift != "environment" {
+            assert_eq!(
+                fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa"])?,
+                before,
+                "{drift}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn restack_apply_binds_the_reviewed_remote_endpoint_and_reports_remote_rejection(
+) -> Result<(), Box<dyn Error>> {
+    let redirected = RestackFixture::new()?;
+    let preview = redirected.preview(&[])?;
+    let plan: serde_json::Value = serde_json::from_slice(&preview.stdout)?;
+    let digest = plan["planDigest"].as_str().ok_or("plan digest")?;
+    let other_remote = redirected.directory.path().join("other-remote.git");
+    run_git(
+        redirected.directory.path(),
+        &redirected.global,
+        &[
+            "clone",
+            "--bare",
+            "-q",
+            path_text(&redirected.remote)?,
+            path_text(&other_remote)?,
+        ],
+    )?;
+    redirected.git(
+        &redirected.source,
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            path_text(&other_remote)?,
+        ],
+    )?;
+
+    let changed_endpoint = redirected.apply(&[], digest)?;
+
+    assert_eq!(changed_endpoint.status.code(), Some(1));
+    assert_eq!(
+        structured_restack_error(changed_endpoint)?["code"],
+        "stale_plan"
+    );
+
+    let rejected = RestackFixture::new()?;
+    let preview = rejected.preview(&[])?;
+    let plan: serde_json::Value = serde_json::from_slice(&preview.stdout)?;
+    let digest = plan["planDigest"].as_str().ok_or("plan digest")?;
+    let before = rejected.git_text(&rejected.remote, &["rev-parse", "refs/heads/qa"])?;
+    let hook = rejected.remote.join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n")?;
+    make_executable(&hook)?;
+
+    let output = rejected.apply(&[], digest)?;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(structured_restack_error(output)?["code"], "push_rejected");
+    assert_eq!(
+        rejected.git_text(&rejected.remote, &["rev-parse", "refs/heads/qa"])?,
+        before
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn restack_apply_rejects_a_retargeted_local_remote_symlink() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let fixture = RestackFixture::new()?;
+    let endpoint = fixture.directory.path().join("remote-endpoint");
+    symlink(&fixture.remote, &endpoint)?;
+    fixture.git(
+        &fixture.source,
+        &["remote", "set-url", "origin", path_text(&endpoint)?],
+    )?;
+    let preview = fixture.preview(&[])?;
+    let plan: serde_json::Value = serde_json::from_slice(&preview.stdout)?;
+    let digest = plan["planDigest"].as_str().ok_or("plan digest")?;
+    let other_remote = fixture.directory.path().join("retargeted.git");
+    run_git(
+        fixture.directory.path(),
+        &fixture.global,
+        &[
+            "clone",
+            "--bare",
+            "-q",
+            path_text(&fixture.remote)?,
+            path_text(&other_remote)?,
+        ],
+    )?;
+    std::fs::remove_file(&endpoint)?;
+    symlink(&other_remote, &endpoint)?;
+
+    let output = fixture.apply(&[], digest)?;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(structured_restack_error(output)?["code"], "stale_plan");
+    assert_eq!(
+        fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa"])?,
+        fixture.git_text(&other_remote, &["rev-parse", "refs/heads/qa"])?
+    );
+    Ok(())
+}
+
+#[test]
+fn restack_apply_revalidates_removed_refs_on_a_distinct_push_endpoint() -> Result<(), Box<dyn Error>>
+{
+    let fixture = RestackFixture::new()?;
+    let push_remote = fixture.directory.path().join("push-remote.git");
+    run_git(
+        fixture.directory.path(),
+        &fixture.global,
+        &[
+            "clone",
+            "--bare",
+            "-q",
+            path_text(&fixture.remote)?,
+            path_text(&push_remote)?,
+        ],
+    )?;
+    fixture.git(
+        &fixture.source,
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            path_text(&push_remote)?,
+        ],
+    )?;
+    let preview = fixture.preview(&["feature/a"])?;
+    let plan: serde_json::Value = serde_json::from_slice(&preview.stdout)?;
+    let digest = plan["planDigest"].as_str().ok_or("plan digest")?;
+    let writer = fixture.directory.path().join("push-writer");
+    run_git(
+        fixture.directory.path(),
+        &fixture.global,
+        &["clone", "-q", path_text(&push_remote)?, path_text(&writer)?],
+    )?;
+    fixture.git(&writer, &["config", "user.name", "Other Author"])?;
+    fixture.git(&writer, &["config", "user.email", "other@example.com"])?;
+    fixture.git(&writer, &["checkout", "-q", "feature/a"])?;
+    std::fs::write(writer.join("push-only-change"), "changed\n")?;
+    fixture.git(&writer, &["add", "push-only-change"])?;
+    fixture.git(&writer, &["commit", "-q", "-m", "advance removed ref"])?;
+    fixture.git(&writer, &["push", "-q", "origin", "feature/a"])?;
+    let environment_before = fixture.git_text(&push_remote, &["rev-parse", "refs/heads/qa"])?;
+
+    let output = fixture.apply(&["feature/a"], digest)?;
+
+    assert_eq!(output.status.code(), Some(1));
+    let error = structured_restack_error(output)?;
+    assert_eq!(error["code"], "stale_plan");
+    assert_eq!(error["details"]["reason"], "movedRef");
+    assert_eq!(error["details"]["endpoint"], "push");
+    assert_eq!(
+        fixture.git_text(&push_remote, &["rev-parse", "refs/heads/qa"])?,
+        environment_before
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn restack_apply_exact_lease_rejects_an_environment_race_before_publication(
+) -> Result<(), Box<dyn Error>> {
+    let fixture = RestackFixture::new()?;
+    let preview = fixture.preview(&[])?;
+    let plan: serde_json::Value = serde_json::from_slice(&preview.stdout)?;
+    let digest = plan["planDigest"].as_str().ok_or("plan digest")?;
+    let old_oid = fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa"])?;
+    let race_oid = fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/main"])?;
+    let wrapper_directory = fixture.directory.path().join("git-wrapper");
+    std::fs::create_dir(&wrapper_directory)?;
+    let wrapper = wrapper_directory.join("git");
+    let real_git = find_git_executable()?;
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = push ]; then\n  '{}' --git-dir='{}' update-ref refs/heads/qa '{}' '{}' || exit 91\nfi\nexec '{}' \"$@\"\n",
+            real_git.display(),
+            fixture.remote.display(),
+            race_oid,
+            old_oid,
+            real_git.display(),
+        ),
+    )?;
+    make_executable(&wrapper)?;
+    let path = std::env::join_paths(std::iter::once(wrapper_directory).chain(
+        std::env::split_paths(&std::env::var_os("PATH").ok_or("PATH")?),
+    ))?;
+
+    let output = fixture.apply_with_path(&[], digest, &path)?;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(structured_restack_error(output)?["code"], "push_rejected");
+    assert_eq!(
+        fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa"])?,
+        race_oid
+    );
+    Ok(())
+}
+
+#[test]
 fn restack_preview_prunes_a_deleted_feature_before_inventory() -> Result<(), Box<dyn Error>> {
     let fixture = RestackFixture::new()?;
     fixture.git(
@@ -471,6 +796,7 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
         &["config", "user.email", "fixture@example.com"],
     )?;
     let secret_path = directory.path().join("remote-url-secret-do-not-print");
+    std::fs::create_dir(&secret_path)?;
     run_git(
         &source,
         &global,
@@ -502,7 +828,13 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
 
     let fetch = gd_command()?
         .current_dir(&source)
-        .args(["restack", "qa", "--params", r#"{"removeBranches":[]}"#])
+        .args([
+            "restack",
+            "qa",
+            "--params",
+            r#"{"removeBranches":[],"planDigest":"0000000000000000000000000000000000000000000000000000000000000000"}"#,
+            "--apply",
+        ])
         .env("GIT_PAT", "pat-secret-do-not-print")
         .env("XDG_CACHE_HOME", directory.path().join("cache"))
         .output()?;
@@ -877,6 +1209,66 @@ impl RestackFixture {
         Ok(command.output()?)
     }
 
+    fn apply(
+        &self,
+        removals: &[&str],
+        digest: &str,
+    ) -> Result<std::process::Output, Box<dyn Error>> {
+        let params = serde_json::json!({
+            "removeBranches": removals,
+            "planDigest": digest,
+        })
+        .to_string();
+        Ok(gd_command()?
+            .current_dir(&self.source)
+            .args([
+                "restack", "qa", "--main", "main", "--params", &params, "--apply",
+            ])
+            .env("GIT_CONFIG_GLOBAL", &self.global)
+            .env("XDG_CACHE_HOME", &self.cache)
+            .output()?)
+    }
+
+    #[cfg(unix)]
+    fn apply_with_path(
+        &self,
+        removals: &[&str],
+        digest: &str,
+        path: &std::ffi::OsStr,
+    ) -> Result<std::process::Output, Box<dyn Error>> {
+        let params = serde_json::json!({
+            "removeBranches": removals,
+            "planDigest": digest,
+        })
+        .to_string();
+        Ok(gd_command()?
+            .current_dir(&self.source)
+            .args([
+                "restack", "qa", "--main", "main", "--params", &params, "--apply",
+            ])
+            .env("GIT_CONFIG_GLOBAL", &self.global)
+            .env("XDG_CACHE_HOME", &self.cache)
+            .env("PATH", path)
+            .output()?)
+    }
+
+    fn apply_without_digest(&self) -> Result<std::process::Output, Box<dyn Error>> {
+        Ok(gd_command()?
+            .current_dir(&self.source)
+            .args([
+                "restack",
+                "qa",
+                "--main",
+                "main",
+                "--params",
+                r#"{"removeBranches":[]}"#,
+                "--apply",
+            ])
+            .env("GIT_CONFIG_GLOBAL", &self.global)
+            .env("XDG_CACHE_HOME", &self.cache)
+            .output()?)
+    }
+
     fn advance_feature_from_separate_clone(&self) -> Result<String, Box<dyn Error>> {
         let writer = self.directory.path().join("writer");
         run_git(
@@ -903,6 +1295,34 @@ impl RestackFixture {
             &self.global,
             &["push", "-q", "origin", "feature/a"],
         )?;
+        self.git_text(&writer, &["rev-parse", "HEAD"])
+    }
+
+    fn advance_main_from_separate_clone(&self) -> Result<String, Box<dyn Error>> {
+        let writer = self.directory.path().join("main-writer");
+        run_git(
+            self.directory.path(),
+            &self.global,
+            &["clone", "-q", path_text(&self.remote)?, path_text(&writer)?],
+        )?;
+        run_git(
+            &writer,
+            &self.global,
+            &["config", "user.name", "Other Author"],
+        )?;
+        run_git(
+            &writer,
+            &self.global,
+            &["config", "user.email", "other@example.com"],
+        )?;
+        std::fs::write(writer.join("main-two"), "main two\n")?;
+        run_git(&writer, &self.global, &["add", "main-two"])?;
+        run_git(
+            &writer,
+            &self.global,
+            &["commit", "-q", "-m", "advance main"],
+        )?;
+        run_git(&writer, &self.global, &["push", "-q", "origin", "main"])?;
         self.git_text(&writer, &["rev-parse", "HEAD"])
     }
 
@@ -1123,6 +1543,18 @@ fn isolated_git(global: &Path) -> ProcessCommand {
 fn path_text(path: &Path) -> Result<&str, Box<dyn Error>> {
     path.to_str()
         .ok_or_else(|| "test path is not valid UTF-8".into())
+}
+
+#[cfg(unix)]
+fn find_git_executable() -> Result<PathBuf, Box<dyn Error>> {
+    let path = std::env::var_os("PATH").ok_or("PATH")?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(format!("git{}", std::env::consts::EXE_SUFFIX));
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err("git executable was not found on PATH".into())
 }
 
 #[cfg(unix)]

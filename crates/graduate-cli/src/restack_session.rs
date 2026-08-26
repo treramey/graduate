@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use graduate::restack::{
-    MergeOutcome, RestackAuthor, RestackSelection, RestackSnapshot, RESTACK_SCHEMA_VERSION,
+    MergeOutcome, RemoteEndpointIdentity, RestackAuthor, RestackSelection, RestackSnapshot,
+    RESTACK_SCHEMA_VERSION,
 };
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ pub(crate) struct SessionMetadata {
     pub(crate) schema_version: u8,
     pub(crate) repository_id: String,
     pub(crate) snapshot: RestackSnapshot,
+    pub(crate) remote_endpoints: RemoteEndpointIdentity,
     pub(crate) author: RestackAuthor,
     pub(crate) selection: RestackSelection,
     pub(crate) merges: Vec<MergeOutcome>,
@@ -61,6 +63,7 @@ impl SessionMetadata {
     pub(crate) fn conflicted(
         repository_id: String,
         snapshot: RestackSnapshot,
+        remote_endpoints: RemoteEndpointIdentity,
         author: RestackAuthor,
         selection: RestackSelection,
         conflict: SessionConflict,
@@ -70,6 +73,7 @@ impl SessionMetadata {
             schema_version: RESTACK_SCHEMA_VERSION,
             repository_id,
             snapshot,
+            remote_endpoints,
             author,
             selection,
             merges: conflict.merges,

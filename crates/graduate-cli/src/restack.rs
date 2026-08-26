@@ -1,5 +1,6 @@
-//! Release-gated machine workflow for isolated and resumable restack previews.
+//! Release-gated machine workflow for isolated restack preview, resume, and apply.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -7,8 +8,8 @@ use std::process::{Command, Output, Stdio};
 
 use graduate::restack::{
     build_plan, canonical_merge_message, select_features, BranchIdentity, InventoryError,
-    MergeOutcome, MergeResolution, PlanError, RestackAuthor, RestackPlan, RestackSnapshot,
-    SelectionError, RESTACK_SCHEMA_VERSION,
+    MergeOutcome, MergeResolution, PlanError, RemoteEndpointIdentity, RestackAuthor, RestackPlan,
+    RestackSnapshot, SelectionError, RESTACK_SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -26,8 +27,10 @@ use crate::restack_session::{
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PreviewParams {
+struct MachineParams {
     remove_branches: Vec<String>,
+    #[serde(default)]
+    plan_digest: Option<String>,
 }
 
 pub(crate) fn run(args: RestackArgs) -> Result<(), CliError> {
@@ -51,8 +54,16 @@ pub(crate) fn run(args: RestackArgs) -> Result<(), CliError> {
 fn preview(args: &RestackArgs, source: &Path, sessions: &SessionStore) -> Result<(), CliError> {
     let params = parse_params(args.params.as_deref())?;
     let remote = args.remote.as_deref().unwrap_or("origin");
+    validate_apply_params(args.apply, &params)?;
+    let remote_endpoint = git_process::resolve_restack_remote(remote, source).map_err(|_| {
+        machine_failure(
+            "remote_unavailable",
+            "could not resolve one safe endpoint for the selected remote",
+            json!({"remote": remote}),
+        )
+    })?;
 
-    git_process::fetch_restack_remote(remote, source).map_err(|_| {
+    git_process::fetch_restack_remote(&remote_endpoint, remote, source).map_err(|_| {
         machine_failure(
             "fetch_failed",
             "could not fetch the selected remote",
@@ -96,41 +107,74 @@ fn preview(args: &RestackArgs, source: &Path, sessions: &SessionStore) -> Result
     finish_or_preserve(
         reconstruction,
         draft,
-        repository_id,
-        snapshot,
-        author,
-        selection,
+        FreshRestack {
+            isolated: &isolated,
+            repository_id,
+            snapshot,
+            remote_endpoints: remote_endpoint.identity(),
+            author,
+            selection,
+            apply_digest: if args.apply {
+                params.plan_digest.as_deref()
+            } else {
+                None
+            },
+            source,
+            remote: &remote_endpoint,
+        },
     )
 }
 
 fn finish_or_preserve(
     reconstruction: ReconstructionResult,
     mut draft: SessionDraft,
-    repository_id: String,
-    snapshot: RestackSnapshot,
-    author: RestackAuthor,
-    selection: graduate::restack::RestackSelection,
+    fresh: FreshRestack<'_>,
 ) -> Result<(), CliError> {
     match reconstruction {
         ReconstructionResult::Complete(reconstruction) => {
             let plan = build_plan(
-                snapshot,
-                author,
-                selection,
+                fresh.snapshot,
+                fresh.remote_endpoints,
+                fresh.author,
+                fresh.selection,
                 reconstruction.merges,
                 reconstruction.final_tree,
                 reconstruction.preview_commit,
             )
             .map_err(plan_error)?;
+            if let Some(digest) = fresh.apply_digest {
+                authorize_plan(&plan, Some(digest))?;
+                revalidate_plan(fresh.source, fresh.remote, &plan)?;
+                fresh.isolated.validate_publication_plan(&plan)?;
+                git_process::push_restack_commit(
+                    fresh.remote,
+                    &fresh.isolated.root,
+                    &fresh.isolated.hooks,
+                    &fresh.isolated.global_config,
+                    &plan.preview_commit,
+                    &remote_environment_ref(&plan.snapshot.environment),
+                    &plan.snapshot.environment_tip,
+                )
+                .map_err(|_| {
+                    machine_failure(
+                        "push_rejected",
+                        "the remote rejected the exact leased environment update",
+                        json!({"environment": plan.snapshot.environment}),
+                    )
+                })?;
+                draft.discard().map_err(session_error)?;
+                return write_apply_result(&plan);
+            }
             draft.discard().map_err(session_error)?;
             write_plan(&plan)
         }
         ReconstructionResult::Conflict(conflict) => {
             let metadata = SessionMetadata::conflicted(
-                repository_id,
-                snapshot,
-                author,
-                selection,
+                fresh.repository_id,
+                fresh.snapshot,
+                fresh.remote_endpoints,
+                fresh.author,
+                fresh.selection,
                 SessionConflict {
                     merges: conflict.merges,
                     next_feature: conflict.feature_index,
@@ -236,6 +280,7 @@ fn resume_preview(
         ReconstructionResult::Complete(reconstruction) => {
             let plan = build_plan(
                 session.metadata.snapshot.clone(),
+                session.metadata.remote_endpoints.clone(),
                 session.metadata.author.clone(),
                 session.metadata.selection.clone(),
                 reconstruction.merges,
@@ -263,6 +308,13 @@ fn resume_preview(
 }
 
 fn validate_inputs(args: &RestackArgs) -> Result<(), CliError> {
+    if args.resume.is_some() && args.apply {
+        return Err(machine_usage(
+            "invalid_usage",
+            "resumed apply is not available in this safety slice",
+            json!({}),
+        ));
+    }
     for (label, value) in [
         ("environment", args.environment.as_str()),
         ("remote", args.remote.as_deref().unwrap_or("origin")),
@@ -287,7 +339,7 @@ fn validate_inputs(args: &RestackArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn parse_params(params: Option<&str>) -> Result<PreviewParams, CliError> {
+fn parse_params(params: Option<&str>) -> Result<MachineParams, CliError> {
     let Some(params) = params else {
         return Err(machine_usage(
             "params_required",
@@ -295,11 +347,11 @@ fn parse_params(params: Option<&str>) -> Result<PreviewParams, CliError> {
             json!({"expected": {"removeBranches": []}}),
         ));
     };
-    let parsed: PreviewParams = serde_json::from_str(params).map_err(|_| {
+    let parsed: MachineParams = serde_json::from_str(params).map_err(|_| {
         machine_usage(
             "invalid_params",
-            "--params must match the schema-v1 restack preview parameters",
-            json!({"expected": {"removeBranches": ["feature/BRANCH"]}}),
+            "--params must match the schema-v1 restack machine parameters",
+            json!({"expected": {"removeBranches": ["feature/BRANCH"], "planDigest": "apply only"}}),
         )
     })?;
     for (index, branch) in parsed.remove_branches.iter().enumerate() {
@@ -312,6 +364,30 @@ fn parse_params(params: Option<&str>) -> Result<PreviewParams, CliError> {
         })?;
     }
     Ok(parsed)
+}
+
+fn validate_apply_params(apply: bool, params: &MachineParams) -> Result<(), CliError> {
+    match (apply, params.plan_digest.as_deref()) {
+        (false, None) => Ok(()),
+        (false, Some(_)) => Err(machine_usage(
+            "invalid_params",
+            "planDigest is accepted only with --apply",
+            json!({"field": "planDigest"}),
+        )),
+        (true, Some(digest)) if valid_plan_digest(digest) => Ok(()),
+        (true, _) => Err(machine_usage(
+            "plan_digest_required",
+            "--apply requires the lowercase SHA-256 planDigest from a preview",
+            json!({"field": "planDigest"}),
+        )),
+    }
+}
+
+fn valid_plan_digest(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn configured_author(source: &Path) -> Result<RestackAuthor, CliError> {
@@ -468,6 +544,18 @@ struct ReconstructionConflict {
 enum ReconstructionResult {
     Complete(Reconstruction),
     Conflict(ReconstructionConflict),
+}
+
+struct FreshRestack<'a> {
+    isolated: &'a IsolatedRepository,
+    repository_id: String,
+    snapshot: RestackSnapshot,
+    remote_endpoints: RemoteEndpointIdentity,
+    author: RestackAuthor,
+    selection: graduate::restack::RestackSelection,
+    apply_digest: Option<&'a str>,
+    source: &'a Path,
+    remote: &'a git_process::RestackRemote,
 }
 
 struct IsolatedRepository {
@@ -857,6 +945,27 @@ impl IsolatedRepository {
         )
     }
 
+    fn validate_publication_plan(&self, plan: &RestackPlan) -> Result<(), CliError> {
+        let head = self.read_text(["rev-parse", "HEAD"], "publicationHead")?;
+        let tree = self.read_text(["rev-parse", "HEAD^{tree}"], "publicationTree")?;
+        if head != plan.preview_commit || tree != plan.final_tree {
+            return Err(validation_error("publicationResult"));
+        }
+        let mut first_parent = plan.snapshot.main_tip.as_str();
+        for (merge, feature) in plan.merges.iter().zip(&plan.selection.retained) {
+            let message = canonical_merge_message(&feature.name, &plan.snapshot.environment);
+            self.validate_commit(
+                &merge.commit,
+                first_parent,
+                &feature.tip,
+                &message,
+                &plan.author,
+            )?;
+            first_parent = &merge.commit;
+        }
+        self.validate_clean_state(&plan.snapshot.main_tip, &plan.preview_commit)
+    }
+
     fn unresolved_paths(&self) -> Result<Vec<String>, CliError> {
         let bytes = self.read_bytes(
             ["diff", "--name-only", "--diff-filter=U", "-z"],
@@ -1115,6 +1224,106 @@ fn plan_error(error: PlanError) -> CliError {
     )
 }
 
+fn authorize_plan(plan: &RestackPlan, requested_digest: Option<&str>) -> Result<(), CliError> {
+    if requested_digest == Some(plan.digest.as_str()) {
+        Ok(())
+    } else {
+        Err(machine_failure(
+            "stale_plan",
+            "the freshly reconstructed plan does not match the reviewed digest",
+            json!({"reason": "planDigest"}),
+        ))
+    }
+}
+
+fn revalidate_plan(
+    source: &Path,
+    remote: &git_process::RestackRemote,
+    plan: &RestackPlan,
+) -> Result<(), CliError> {
+    if configured_author(source)? != plan.author {
+        return Err(machine_failure(
+            "stale_plan",
+            "the configured Git identity changed before publication",
+            json!({"reason": "identity"}),
+        ));
+    }
+    let expected = expected_remote_refs(plan);
+    let refs = expected.keys().cloned().collect::<Vec<_>>();
+    validate_remote_refs(
+        git_process::read_restack_remote_refs(remote, source, &refs, false),
+        &expected,
+        "fetch",
+    )?;
+    if remote.has_distinct_push_endpoint() {
+        validate_remote_refs(
+            git_process::read_restack_remote_refs(remote, source, &refs, true),
+            &expected,
+            "push",
+        )?;
+    }
+    Ok(())
+}
+
+fn expected_remote_refs(plan: &RestackPlan) -> BTreeMap<String, String> {
+    let mut refs = BTreeMap::new();
+    refs.insert(
+        remote_environment_ref(&plan.snapshot.environment),
+        plan.snapshot.environment_tip.clone(),
+    );
+    refs.insert(
+        remote_environment_ref(&plan.snapshot.main),
+        plan.snapshot.main_tip.clone(),
+    );
+    for feature in plan
+        .selection
+        .retained
+        .iter()
+        .chain(&plan.selection.removed)
+    {
+        refs.insert(remote_environment_ref(&feature.name), feature.tip.clone());
+    }
+    refs
+}
+
+fn validate_remote_refs(
+    actual: Result<BTreeMap<String, String>, CliError>,
+    expected: &BTreeMap<String, String>,
+    endpoint: &'static str,
+) -> Result<(), CliError> {
+    let actual = actual.map_err(|_| {
+        machine_failure(
+            "remote_revalidation_failed",
+            "could not re-read the remote refs before publication",
+            json!({"endpoint": endpoint}),
+        )
+    })?;
+    for (reference, expected_oid) in expected {
+        match actual.get(reference) {
+            Some(actual_oid) if actual_oid == expected_oid => {}
+            Some(_) => {
+                return Err(machine_failure(
+                    "stale_plan",
+                    "a reviewed remote input moved before publication",
+                    json!({"reason": "movedRef", "ref": reference, "endpoint": endpoint}),
+                ));
+            }
+            None => {
+                return Err(machine_failure(
+                    "stale_plan",
+                    "a reviewed remote input was deleted before publication",
+                    json!({"reason": "deletedRef", "ref": reference, "endpoint": endpoint}),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remote_environment_ref(branch: &str) -> String {
+    format!("refs/heads/{branch}")
+}
+
 fn write_plan(plan: &RestackPlan) -> Result<(), CliError> {
     let value = plan_json(plan);
     let output = serde_json::to_string(&value).map_err(|_| {
@@ -1128,6 +1337,66 @@ fn write_plan(plan: &RestackPlan) -> Result<(), CliError> {
         machine_failure(
             "output_failed",
             "could not write the restack plan to stdout",
+            json!({}),
+        )
+    })
+}
+
+fn write_apply_result(plan: &RestackPlan) -> Result<(), CliError> {
+    let branches = |branches: &[BranchIdentity]| {
+        branches
+            .iter()
+            .map(|branch| json!({"name": branch.name, "tip": branch.tip}))
+            .collect::<Vec<_>>()
+    };
+    let mut clean = 0_u64;
+    let mut rerere = 0_u64;
+    let mut manual = 0_u64;
+    for merge in &plan.merges {
+        match merge.resolution {
+            MergeResolution::Clean => clean += 1,
+            MergeResolution::Reused => rerere += 1,
+            MergeResolution::Manual => manual += 1,
+        }
+    }
+    let value = json!({
+        "kind": "restackResult",
+        "schemaVersion": RESTACK_SCHEMA_VERSION,
+        "remote": plan.snapshot.remote,
+        "environment": {
+            "name": plan.snapshot.environment,
+            "ref": remote_environment_ref(&plan.snapshot.environment),
+            "oldOid": plan.snapshot.environment_tip,
+            "newOid": plan.preview_commit,
+        },
+        "tree": plan.final_tree,
+        "planDigest": plan.digest,
+        "mergedBranches": branches(&plan.selection.retained),
+        "removedBranches": branches(&plan.selection.removed),
+        "resolutionCounts": {
+            "clean": clean,
+            "rerere": rerere,
+            "manual": manual,
+        },
+        "pushed": true,
+        "effects": {
+            "sourceCheckoutChanged": false,
+            "localRefsChanged": false,
+            "personalRerereChanged": false,
+            "commitSigning": "unsigned",
+        },
+    });
+    let output = serde_json::to_string(&value).map_err(|_| {
+        machine_failure(
+            "serialization_failed",
+            "could not serialize the restack apply result",
+            json!({}),
+        )
+    })?;
+    writeln!(std::io::stdout().lock(), "{output}").map_err(|_| {
+        machine_failure(
+            "output_failed",
+            "could not write the restack apply result to stdout",
             json!({}),
         )
     })
@@ -1168,6 +1437,10 @@ fn plan_json(plan: &RestackPlan) -> Value {
         "kind": "restackPlan",
         "schemaVersion": RESTACK_SCHEMA_VERSION,
         "remote": plan.snapshot.remote,
+        "remoteEndpoints": {
+            "fetchSha256": plan.remote_endpoints.fetch_sha256,
+            "pushSha256": plan.remote_endpoints.push_sha256,
+        },
         "environment": {
             "name": plan.snapshot.environment,
             "ref": plan.snapshot.environment_ref,

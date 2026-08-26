@@ -102,23 +102,28 @@ agent can deliberately remove selected features from the reconstructed branch.
   `--apply` in addition to `--params`. JSON parameters select branch removals
   but do not themselves authorize a push.
 - Machine preview returns a canonical SHA-256 `planDigest` over the schema
-  version, remote and ref names, every captured environment, base, and feature
-  OID, configured author identity, ordered feature names and tip OIDs, removal
-  selection, and expected final tree. Machine `--apply` must echo that digest
-  in `--params`; a fresh fetch that changes any input fails and requires a new
-  preview. Interactive confirmation binds to the same in-memory plan. Display
-  JSON, map iteration order, and generated merge commit OIDs are not digest
-  inputs.
+  version, remote and ref names, credential-redacted identities of the single
+  effective fetch and push endpoints, every captured environment, base, and
+  feature OID, configured author identity, ordered feature names and tip OIDs,
+  removal selection, and expected final tree. Machine `--apply` must echo that
+  digest in `--params`; a fresh fetch or changed endpoint that changes any
+  input fails and requires a new preview. Interactive confirmation binds to
+  the same in-memory plan. Display JSON, map iteration order, and generated
+  merge commit OIDs are not digest inputs.
 - Digest fields use their validated UTF-8 bytes without additional string
   normalization. Each field is encoded as its tag followed by its value, with
   both byte strings prefixed by an unsigned 64-bit big-endian byte length.
-  Tags appear in this order: `schema`, `remote`, `environment`,
-  `environment_ref`, `environment_tip`, `main`, `main_ref`, `main_tip`,
-  `author_name`, `author_email`, repeated `feature_name`/`feature_tip`, repeated
-  `removed_name`/`removed_tip`, then `final_tree`. Feature pairs follow
-  discovered merge order; removed pairs follow that same inventory order
-  regardless of request order. The digest is the lowercase hexadecimal
-  SHA-256 of that byte stream.
+  Tags appear in this order: `schema`, `remote`, `remote_fetch_sha256`,
+  `remote_push_sha256`, `environment`, `environment_ref`, `environment_tip`,
+  `main`, `main_ref`, `main_tip`, `author_name`, `author_email`, repeated
+  `feature_name`/`feature_tip`, repeated `removed_name`/`removed_tip`, then
+  `final_tree`. Endpoint identities are lowercase SHA-256 hashes of the
+  effective UTF-8 endpoint strings returned by Git, with local paths made
+  absolute, canonical, and represented as file URLs first; raw endpoints are
+  neither serialized nor persisted, and remotes with multiple effective fetch
+  or push endpoints are rejected. Feature pairs follow discovered merge order;
+  removed pairs follow that same inventory order regardless of request order.
+  The digest is the lowercase hexadecimal SHA-256 of that byte stream.
 - Preview performs the full disposable reconstruction, including rerere replay
   and validation, but never pushes. It reports each clean or rerere-resolved
   merge and the final tree OID. Apply fetches and reconstructs again, requires
@@ -176,12 +181,18 @@ agent can deliberately remove selected features from the reconstructed branch.
   updating a local environment ref. The force update uses an explicit lease
   against the environment OID captured after fetch. Any concurrent remote
   change fails closed and requires a fresh discovery/rebuild.
+- Preview and apply resolve and bind one effective fetch endpoint and one
+  effective push endpoint for the selected remote. Apply uses the captured
+  endpoint directly rather than resolving the remote name again, suppresses
+  source and global push hooks, and never stores or reports a credential-bearing
+  URL. A changed endpoint produces a different digest.
 - Immediately before push, Graduate re-reads the remote environment, mainline,
-  and all discovered feature refs (retained and removed) and compares their
-  OIDs with the reviewed plan. Any moved or deleted input aborts. The target
-  environment's explicit lease remains the atomic server-side guard; input-ref
-  revalidation is best-effort because Git cannot atomically lease refs it is
-  not updating.
+  and all discovered feature refs (retained and removed) from the fetch and,
+  when distinct, push endpoints and compares their OIDs with the reviewed plan.
+  It also rechecks the configured identity and isolated result. Any moved or
+  deleted input aborts. The target environment's explicit lease remains the
+  atomic server-side guard; input-ref revalidation is best-effort because Git
+  cannot atomically lease refs it is not updating.
 - The old Microsoft 365 research in the Drag working tree is unrelated and may
   be removed separately.
 - The final plan belongs in Graduate's `docs/gd-restack.md`; Drag should not

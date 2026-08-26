@@ -39,8 +39,8 @@ actions.
   promotion-report attribution rows, Jira enrichment states, deterministic
   branch-to-ticket mapping, and commit-age projections.
 - `graduate::restack`: deterministic restack graph snapshots, explicit feature
-  ordering, commit attribution, marker recognition, and unsupported-history
-  evidence.
+  ordering, commit attribution, marker recognition, unsupported-history
+  evidence, removal selection, and endpoint-bound plan digests.
 - `graduate::jira`: validated Jira sites, credentials, and identities shared by every delivery path.
 - `graduate::jira_auth`: deterministic Jira onboarding state and secret-retention
   transitions.
@@ -54,13 +54,13 @@ actions.
   unattended output, and CSV export.
 - `graduate_cli::environment_git`: shared Gitoxide ref, reachability, promotion
   inventory, and restack snapshot inspection.
-- `graduate_cli::git_process`: shared Git fetch and credential subprocess boundary.
-- `graduate_cli::restack`: release-gated machine preview orchestration, isolated
-  Git reconstruction, schema-v1 rendering, and redacted error translation.
+- `graduate_cli::git_process`: shared Git fetch, credential, remote endpoint,
+  ref revalidation, and leased-push subprocess boundary.
 - `graduate_cli::diff_tui`: streaming promotion list, selection, ticket details,
   commit history, age-report modal, and open-ticket events.
 - `graduate_cli::restack`: release-gated restack planning, isolated Git
-  reconstruction, historical rerere training, and resumed-preview validation.
+  reconstruction, historical rerere training, resumed-preview validation,
+  clean apply revalidation, and exact leased publication.
 - `graduate_cli::restack_session`: permission-restricted resumable work areas,
   authenticated atomic metadata, exclusive locks, and inactivity expiry.
 
@@ -113,6 +113,11 @@ actions.
   fail closed.
 - Resumable restack metadata is replaced atomically, activity extends a
   24-hour lease, and every restack run purges expired unlocked sessions.
+- Clean restack publication requires a reviewed digest after a fresh fetch and
+  isolated reconstruction. It binds credential-redacted fetch and push
+  endpoint identities, revalidates every reviewed ref and the configured
+  identity, suppresses source and global push hooks, and updates only the
+  remote environment through an exact lease.
 - Restack inventory accepts only uniquely mapped two-parent explicit feature
   merges and exact empty phase markers; direct work, fast-forwards, octopus
   merges, deleted feature refs, and ambiguous mappings fail with evidence.

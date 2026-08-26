@@ -25,6 +25,9 @@ same in-memory plan. Machine apply must provide the preview digest. Ordinary
 apply can create different merge commit OIDs because it reconstructs the plan
 with new committer timestamps. Review binds the final tree and canonical merge
 identity, order, parents, and messages instead of the preview commit OIDs.
+The digest also binds credential-redacted hashes of the remote's single
+effective fetch and push endpoints. Raw endpoint values remain in memory only;
+changing an endpoint requires a new preview.
 
 Apply fetches again and rejects any changed or deleted input. Except when it
 continues a reviewed resumable session, apply reconstructs the plan again and
@@ -34,6 +37,9 @@ force update uses an exact lease against the captured environment OID and does
 not update a local environment ref. Git cannot atomically lease refs that a
 push does not update, so revalidation of the mainline and feature refs is a
 best-effort pre-push guard. The environment lease is the final atomic guard.
+Graduate revalidates distinct fetch and push endpoints and invokes publication
+with the captured push endpoint, isolated hooks, and redacted errors rather
+than trusting a newly resolved remote name.
 
 Graduate trains and replays rerere only in the isolated work area. Training
 uses relevant accepted explicit merges from the captured environment history.
