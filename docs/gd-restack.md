@@ -119,9 +119,9 @@ agent can deliberately remove selected features from the reconstructed branch.
   `feature_name`/`feature_tip`, repeated `removed_name`/`removed_tip`, then
   `final_tree`. Endpoint identities are lowercase SHA-256 hashes of the
   effective UTF-8 endpoint strings returned by Git, with local paths made
-  absolute and canonical first; raw endpoints are neither serialized nor
-  persisted, and remotes with multiple effective fetch or push endpoints are
-  rejected. Feature pairs follow discovered merge order;
+  absolute, canonical, and represented as file URLs first; raw endpoints are
+  neither serialized nor persisted, and remotes with multiple effective fetch
+  or push endpoints are rejected. Feature pairs follow discovered merge order;
   removed pairs follow that same inventory order regardless of request order.
   The digest is the lowercase hexadecimal SHA-256 of that byte stream.
 - Preview performs the full disposable reconstruction, including rerere replay

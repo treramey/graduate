@@ -350,10 +350,9 @@ fn canonical_local_path(path: &Path) -> Result<String, CliError> {
     let endpoint = path
         .canonicalize()
         .map_err(|_| CliError::Git("could not resolve the selected remote endpoint".to_owned()))?;
-    endpoint
-        .to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| CliError::Git("the selected remote endpoint is not valid UTF-8".to_owned()))
+    url::Url::from_file_path(endpoint)
+        .map(String::from)
+        .map_err(|()| CliError::Git("the selected remote endpoint is not valid UTF-8".to_owned()))
 }
 
 fn endpoint_digest(endpoint: &str) -> String {
