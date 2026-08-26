@@ -59,6 +59,10 @@ actions.
   Git reconstruction, schema-v1 rendering, and redacted error translation.
 - `graduate_cli::diff_tui`: streaming promotion list, selection, ticket details,
   commit history, age-report modal, and open-ticket events.
+- `graduate_cli::restack`: release-gated restack planning, isolated Git
+  reconstruction, historical rerere training, and resumed-preview validation.
+- `graduate_cli::restack_session`: permission-restricted resumable work areas,
+  authenticated atomic metadata, exclusive locks, and inactivity expiry.
 
 ## Safety invariants
 
@@ -100,6 +104,15 @@ actions.
 - Non-interactive promotion reports default to structured JSON. Alternative
   formats use the bounded `--format` surface, and `--output` rejects absolute
   paths, parent traversal, and symbolic-link destinations.
+- Restack trains and replays conflict resolutions only in its isolated
+  repository. It never reads or writes the source repository's rerere cache.
+- An unresolved restack conflict is preserved behind an opaque capability in a
+  mode-restricted cache. Resume binds the source repository, environment,
+  captured plan inputs, merge position, HEAD, and MERGE_HEAD; metadata changes,
+  concurrent use, expiry, an altered HEAD reflog, or an agent-created commit
+  fail closed.
+- Resumable restack metadata is replaced atomically, activity extends a
+  24-hour lease, and every restack run purges expired unlocked sessions.
 - Restack inventory accepts only uniquely mapped two-parent explicit feature
   merges and exact empty phase markers; direct work, fast-forwards, octopus
   merges, deleted feature refs, and ambiguous mappings fail with evidence.

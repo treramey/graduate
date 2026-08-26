@@ -11,6 +11,7 @@ mod jira;
 mod jira_auth;
 mod jira_auth_tui;
 mod restack;
+mod restack_session;
 mod terminal;
 mod terminal_text;
 mod theme;
