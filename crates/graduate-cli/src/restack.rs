@@ -2,14 +2,15 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use graduate::restack::{
     build_plan, canonical_merge_message, select_features, BranchIdentity, InventoryError,
-    MergeOutcome, MergeResolution, PlanError, RemoteEndpointIdentity, RestackAuthor, RestackPlan,
-    RestackSnapshot, SelectionError, RESTACK_SCHEMA_VERSION,
+    MergeOutcome, MergeResolution, PlanError, RemoteEndpointIdentity, RestackAuthor,
+    RestackInteraction, RestackPlan, RestackSelection, RestackSnapshot, SelectionError,
+    RESTACK_SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -25,6 +26,8 @@ use crate::restack_session::{
     SessionConflict, SessionDraft, SessionError, SessionHandle, SessionMetadata, SessionStatus,
     SessionStore,
 };
+use crate::restack_tui::{self, ConflictHandoff, ReviewDecision, SelectionDecision};
+use crate::terminal::StderrTerminal;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -35,6 +38,9 @@ struct MachineParams {
 }
 
 pub(crate) fn run(args: RestackArgs) -> Result<(), CliError> {
+    if args.params.is_none() && args.resume.is_none() {
+        return run_interactive(args);
+    }
     validate_inputs(&args)?;
     let sessions = SessionStore::open().map_err(session_error)?;
     let source = std::env::current_dir().map_err(|_| {
@@ -58,6 +64,292 @@ pub(crate) fn run(args: RestackArgs) -> Result<(), CliError> {
     preview(&args, &source, &sessions)
 }
 
+struct InteractiveDiscovery {
+    remote: git_process::RestackRemote,
+    repository_id: String,
+    snapshot: RestackSnapshot,
+    author: RestackAuthor,
+    source_objects: Vec<u8>,
+}
+
+struct InteractivePrepared {
+    isolated: IsolatedRepository,
+    draft: SessionDraft,
+    plan: RestackPlan,
+}
+
+struct InteractiveConflict {
+    environment: String,
+    branch: String,
+    unresolved_paths: Vec<String>,
+    resume_token: String,
+    work_area: String,
+}
+
+enum InteractivePreparation {
+    Complete(Box<InteractivePrepared>),
+    Conflict(InteractiveConflict),
+}
+
+enum InteractiveOutcome {
+    Cancelled(String),
+    Published(Box<RestackPlan>),
+    Conflict(InteractiveConflict),
+}
+
+fn run_interactive(args: RestackArgs) -> Result<(), CliError> {
+    if args.apply || args.abort {
+        return Err(machine_usage(
+            "invalid_usage",
+            "interactive restack uses terminal confirmation instead of --apply or --abort",
+            json!({}),
+        ));
+    }
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Err(machine_usage(
+            "params_required",
+            "a non-terminal restack requires --params or --resume",
+            json!({"expected": {"removeBranches": []}}),
+        ));
+    }
+    validate_inputs(&args)?;
+    let sessions = SessionStore::open().map_err(session_error)?;
+    sessions.purge_expired().map_err(session_error)?;
+    let source = std::env::current_dir().map_err(|_| {
+        machine_failure(
+            "repository_unavailable",
+            "could not access the source repository",
+            json!({"stage": "currentDirectory"}),
+        )
+    })?;
+    let mut terminal = StderrTerminal::new()?;
+    let outcome = interactive_workflow(&args, &source, &sessions, &mut terminal);
+    finish_interactive(outcome, || terminal.restore(), write_interactive_outcome)
+}
+
+fn finish_interactive(
+    outcome: Result<InteractiveOutcome, CliError>,
+    restore: impl FnOnce() -> std::io::Result<()>,
+    write: impl FnOnce(InteractiveOutcome) -> Result<(), CliError>,
+) -> Result<(), CliError> {
+    restore()?;
+    write(outcome.map_err(interactive_error)?)
+}
+
+fn write_interactive_outcome(outcome: InteractiveOutcome) -> Result<(), CliError> {
+    match outcome {
+        InteractiveOutcome::Cancelled(environment) => restack_tui::write_cancelled(&environment),
+        InteractiveOutcome::Published(plan) => restack_tui::write_success(&plan),
+        InteractiveOutcome::Conflict(conflict) => restack_tui::write_conflict(&ConflictHandoff {
+            environment: &conflict.environment,
+            branch: &conflict.branch,
+            unresolved_paths: &conflict.unresolved_paths,
+            resume_token: &conflict.resume_token,
+            work_area: &conflict.work_area,
+        }),
+    }
+}
+
+fn interactive_workflow(
+    args: &RestackArgs,
+    source: &Path,
+    sessions: &SessionStore,
+    terminal: &mut StderrTerminal,
+) -> Result<InteractiveOutcome, CliError> {
+    restack_tui::draw_loading(terminal, "Fetching and inspecting the environment…")?;
+    let discovery = discover_interactive(args, source)?;
+    let mut interaction = RestackInteraction::new(discovery.snapshot.clone());
+    loop {
+        let selection = match restack_tui::choose_features(terminal, &mut interaction)? {
+            SelectionDecision::Preview(selection) => selection,
+            SelectionDecision::Cancel => {
+                return Ok(InteractiveOutcome::Cancelled(args.environment.clone()));
+            }
+        };
+        restack_tui::draw_loading(terminal, "Reconstructing the reviewed selection…")?;
+        let prepared = match prepare_interactive(&discovery, selection, sessions)? {
+            InteractivePreparation::Complete(prepared) => prepared,
+            InteractivePreparation::Conflict(conflict) => {
+                return Ok(InteractiveOutcome::Conflict(conflict));
+            }
+        };
+        match restack_tui::review_plan(terminal, &mut interaction, &prepared.plan)? {
+            ReviewDecision::Revise => {
+                prepared.draft.discard().map_err(session_error)?;
+            }
+            ReviewDecision::Cancel => {
+                prepared.draft.discard().map_err(session_error)?;
+                return Ok(InteractiveOutcome::Cancelled(args.environment.clone()));
+            }
+            ReviewDecision::Publish => {
+                restack_tui::draw_loading(terminal, "Revalidating and publishing under lease…")?;
+                publish_interactive(
+                    source,
+                    &discovery.remote,
+                    &prepared.isolated,
+                    &prepared.plan,
+                )?;
+                prepared.draft.discard().map_err(session_error)?;
+                return Ok(InteractiveOutcome::Published(Box::new(prepared.plan)));
+            }
+        }
+    }
+}
+
+fn discover_interactive(
+    args: &RestackArgs,
+    source: &Path,
+) -> Result<InteractiveDiscovery, CliError> {
+    let remote_name = args.remote.as_deref().unwrap_or("origin");
+    let remote = git_process::resolve_restack_remote(remote_name, source).map_err(|_| {
+        machine_failure(
+            "remote_unavailable",
+            "could not resolve one safe endpoint for the selected remote",
+            json!({"remote": remote_name}),
+        )
+    })?;
+    git_process::fetch_restack_remote(&remote, remote_name, source, true).map_err(|_| {
+        machine_failure(
+            "fetch_failed",
+            "could not fetch the selected remote",
+            json!({"remote": remote_name}),
+        )
+    })?;
+    let repository = gix::discover(source).map_err(|_| {
+        machine_failure(
+            "repository_not_found",
+            "the current directory is not inside a Git repository",
+            json!({}),
+        )
+    })?;
+    let inspection = inspect_environment(
+        &repository,
+        remote_name,
+        &args.environment,
+        args.main.as_deref(),
+    )
+    .map_err(|_| {
+        machine_failure(
+            "inspection_failed",
+            "could not inspect the fetched environment refs",
+            json!({"stage": "refs"}),
+        )
+    })?;
+    Ok(InteractiveDiscovery {
+        remote,
+        repository_id: source_repository_identity(source)?,
+        snapshot: restack_snapshot(&repository, &inspection).map_err(inspection_error)?,
+        author: configured_author(source)?,
+        source_objects: source_object_directory(source)?,
+    })
+}
+
+fn prepare_interactive(
+    discovery: &InteractiveDiscovery,
+    selection: RestackSelection,
+    sessions: &SessionStore,
+) -> Result<InteractivePreparation, CliError> {
+    let mut draft = sessions.begin().map_err(session_error)?;
+    let isolated = IsolatedRepository::create(&draft.repository(), &discovery.source_objects)?;
+    isolated.train_resolutions(&discovery.snapshot, &selection.retained, &discovery.author)?;
+    let reconstruction = isolated.reconstruct(
+        &discovery.snapshot.main_tip,
+        &discovery.snapshot.environment,
+        &selection.retained,
+        &discovery.author,
+        0,
+        Vec::new(),
+    )?;
+    match reconstruction {
+        ReconstructionResult::Complete(reconstruction) => {
+            let plan = build_plan(
+                discovery.snapshot.clone(),
+                discovery.remote.identity(),
+                discovery.author.clone(),
+                selection,
+                reconstruction.merges,
+                reconstruction.final_tree,
+                reconstruction.preview_commit,
+            )
+            .map_err(plan_error)?;
+            Ok(InteractivePreparation::Complete(Box::new(
+                InteractivePrepared {
+                    isolated,
+                    draft,
+                    plan,
+                },
+            )))
+        }
+        ReconstructionResult::Conflict(conflict) => {
+            let metadata = SessionMetadata::conflicted(
+                discovery.repository_id.clone(),
+                discovery.snapshot.clone(),
+                discovery.remote.identity(),
+                discovery.author.clone(),
+                selection,
+                SessionConflict {
+                    merges: conflict.merges,
+                    next_feature: conflict.feature_index,
+                    expected_head: conflict.expected_head,
+                    expected_head_reflog: conflict.expected_head_reflog,
+                    expected_feature_tip: conflict.feature.tip.clone(),
+                },
+            )
+            .map_err(session_error)?;
+            let repository = draft.repository();
+            let work_area = repository.to_str().map(str::to_owned).ok_or_else(|| {
+                machine_failure(
+                    "session_unavailable",
+                    "the restack work area path is not valid UTF-8",
+                    json!({}),
+                )
+            })?;
+            let resume_token = draft.token();
+            draft.save(&metadata).map_err(session_error)?;
+            Ok(InteractivePreparation::Conflict(InteractiveConflict {
+                environment: discovery.snapshot.environment.clone(),
+                branch: conflict.feature.name,
+                unresolved_paths: conflict.unresolved_paths,
+                resume_token,
+                work_area,
+            }))
+        }
+    }
+}
+
+fn publish_interactive(
+    source: &Path,
+    remote: &git_process::RestackRemote,
+    isolated: &IsolatedRepository,
+    plan: &RestackPlan,
+) -> Result<(), CliError> {
+    revalidate_plan(source, remote, plan)?;
+    isolated.validate_publication_plan(plan)?;
+    git_process::push_restack_commit(
+        remote,
+        &isolated.root,
+        &isolated.hooks,
+        &isolated.global_config,
+        &plan.preview_commit,
+        &remote_environment_ref(&plan.snapshot.environment),
+        &plan.snapshot.environment_tip,
+    )
+    .map_err(|_| {
+        machine_failure(
+            "push_rejected",
+            "the remote rejected the exact leased environment update",
+            json!({"environment": plan.snapshot.environment}),
+        )
+    })
+}
+
+fn interactive_error(error: CliError) -> CliError {
+    match error {
+        CliError::Machine(error) => CliError::Restack(error.human_message()),
+        error => error,
+    }
+}
+
 fn preview(args: &RestackArgs, source: &Path, sessions: &SessionStore) -> Result<(), CliError> {
     let params = parse_params(args.params.as_deref())?;
     let remote = args.remote.as_deref().unwrap_or("origin");
@@ -70,7 +362,7 @@ fn preview(args: &RestackArgs, source: &Path, sessions: &SessionStore) -> Result
         )
     })?;
 
-    git_process::fetch_restack_remote(&remote_endpoint, remote, source).map_err(|_| {
+    git_process::fetch_restack_remote(&remote_endpoint, remote, source, false).map_err(|_| {
         machine_failure(
             "fetch_failed",
             "could not fetch the selected remote",
@@ -1785,4 +2077,70 @@ fn machine_usage(code: &'static str, message: &'static str, details: Value) -> C
 
 fn machine_failure(code: &'static str, message: &'static str, details: Value) -> CliError {
     MachineError::failure(code, message, details).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    use super::*;
+
+    #[test]
+    fn interactive_completion_restores_before_ordinary_output(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let terminal = Rc::new(RefCell::new(Terminal::new(TestBackend::new(40, 10))?));
+        terminal.borrow_mut().hide_cursor()?;
+        let restored = Rc::new(RefCell::new(false));
+        let restore_terminal = Rc::clone(&terminal);
+        let restore_state = Rc::clone(&restored);
+        let write_state = Rc::clone(&restored);
+
+        finish_interactive(
+            Ok(InteractiveOutcome::Cancelled("qa".to_owned())),
+            move || {
+                let _ = restore_terminal.borrow_mut().show_cursor();
+                *restore_state.borrow_mut() = true;
+                Ok(())
+            },
+            move |_| {
+                assert!(*write_state.borrow());
+                Ok(())
+            },
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_failure_still_restores_and_skips_ordinary_output(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let terminal = Rc::new(RefCell::new(Terminal::new(TestBackend::new(40, 10))?));
+        terminal.borrow_mut().hide_cursor()?;
+        let restored = Rc::new(RefCell::new(false));
+        let wrote = Rc::new(RefCell::new(false));
+        let restore_terminal = Rc::clone(&terminal);
+        let restore_state = Rc::clone(&restored);
+        let write_state = Rc::clone(&wrote);
+
+        let result = finish_interactive(
+            Err(machine_failure("fetch_failed", "fetch failed", json!({}))),
+            move || {
+                let _ = restore_terminal.borrow_mut().show_cursor();
+                *restore_state.borrow_mut() = true;
+                Ok(())
+            },
+            move |_| {
+                *write_state.borrow_mut() = true;
+                Ok(())
+            },
+        );
+
+        assert!(matches!(result, Err(CliError::Restack("fetch failed"))));
+        assert!(*restored.borrow());
+        assert!(!*wrote.borrow());
+        Ok(())
+    }
 }

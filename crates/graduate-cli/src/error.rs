@@ -56,6 +56,10 @@ impl MachineError {
     pub(crate) const fn exit_code(&self) -> u8 {
         self.exit_code
     }
+
+    pub(crate) const fn human_message(&self) -> &'static str {
+        self.message
+    }
 }
 
 impl std::fmt::Display for MachineError {
@@ -98,6 +102,8 @@ pub(crate) enum CliError {
     Io(#[from] io::Error),
     #[error("{0}")]
     Git(String),
+    #[error("restack failed: {0}")]
+    Restack(&'static str),
     #[error(transparent)]
     Machine(#[from] MachineError),
     #[error("promotion report was cancelled")]
@@ -127,7 +133,8 @@ impl CliError {
             | Self::Json(_)
             | Self::Yaml(_)
             | Self::Io(_)
-            | Self::Git(_) => EXIT_FAILURE,
+            | Self::Git(_)
+            | Self::Restack(_) => EXIT_FAILURE,
             Self::Machine(error) => error.exit_code(),
         }
     }

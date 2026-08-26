@@ -819,6 +819,14 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
     assert_eq!(invalid_error["schemaVersion"], 1);
     assert_eq!(invalid_error["code"], "invalid_params");
 
+    let non_terminal = gd_command()?
+        .current_dir(&source)
+        .args(["restack", "qa"])
+        .output()?;
+    assert_eq!(non_terminal.status.code(), Some(2));
+    let non_terminal_error: serde_json::Value = serde_json::from_slice(&non_terminal.stderr)?;
+    assert_eq!(non_terminal_error["code"], "params_required");
+
     let clap_invalid = gd_command()?
         .args(["restack", "--params", r#"{"removeBranches":[]}"#])
         .output()?;

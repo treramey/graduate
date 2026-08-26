@@ -96,12 +96,13 @@ pub(crate) fn fetch_restack_remote(
     remote: &RestackRemote,
     remote_name: &str,
     source: &Path,
+    interactive: bool,
 ) -> Result<(), CliError> {
     let pat = std::env::var("GIT_PAT")
         .ok()
         .filter(|value| !value.is_empty());
     let used_pat = pat.is_some();
-    if let Some(message) = fetch_status_message(remote_name, used_pat, false) {
+    if let Some(message) = fetch_status_message(remote_name, used_pat, interactive) {
         eprintln!("{message}");
     }
     let refspec = format!("+refs/heads/*:refs/remotes/{remote_name}/*");

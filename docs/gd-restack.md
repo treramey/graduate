@@ -172,9 +172,11 @@ agent can deliberately remove selected features from the reconstructed branch.
   resolution. It rejects untracked or unstaged work and any commit created in
   the work area before Graduate creates the canonical merge commit.
 - When a conflict remains after rerere, interactive mode pauses in the isolated
-  work area, identifies unresolved files, prints the work area's path, and
-  exits without pushing. Machine mode does the same through structured conflict
-  details. The work area is preserved so a human or coding agent can inspect
+  work area, identifies unresolved files, restores the terminal, then prints
+  the work area's path and one token-bearing resume command before exiting
+  without pushing. Machine mode does the same through structured conflict
+  details. The capability appears nowhere except these explicit continuation
+  outputs. The work area is preserved so a human or coding agent can inspect
   and resolve it with normal repository tools. A conflicting feature is never
   silently removed.
 - Rebuilds should reuse prior merge-conflict resolutions with Git `rerere`,
@@ -381,9 +383,10 @@ agent can deliberately remove selected features from the reconstructed branch.
    guard/theme, deterministic actions, and `TestBackend`; restore the terminal
    before printing a preserved conflict path.
 4. Serialize the agreed schema-v1 plan/result to stdout and machine errors to
-   stderr. Return the opaque resume capability only in the documented conflict
-   continuation field. Redact it from all other output. Always redact PATs,
-   credential helper values, remote credentials, and raw rerere contents.
+   stderr. Return the opaque resume capability only in the documented machine
+   conflict continuation field or the post-restoration interactive handoff
+   command. Redact it from all other output. Always redact PATs, credential
+   helper values, remote credentials, and raw rerere contents.
 
 ### 7. Verify behavior
 
