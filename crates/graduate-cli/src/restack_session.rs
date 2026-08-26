@@ -204,13 +204,7 @@ impl SessionStore {
         let directory = self.root.join(&token.id);
         require_directory(&directory)?;
         let lock = open_lock(&directory)?;
-        fs2::FileExt::try_lock_exclusive(&lock).map_err(|error| {
-            if error.kind() == io::ErrorKind::WouldBlock {
-                SessionError::Locked
-            } else {
-                SessionError::Unavailable
-            }
-        })?;
+        fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| SessionError::Locked)?;
         let metadata = read_metadata(&directory, &token.secret)?;
         if metadata.is_expired()? {
             drop(lock);
