@@ -1,12 +1,12 @@
 ---
 name: graduate
-description: Configure Jira Cloud with Graduate. Use when an agent needs to inspect Graduate's CLI contract or establish its Jira connection.
+description: Inspect promotion gaps, safely rebuild Git workflow environments, and configure Jira Cloud with Graduate. Use when an agent needs Graduate's CLI contract, a guarded restack, or a Jira connection.
 ---
 
 # Graduate
 
-Graduate is a Jira Cloud CLI with explicit commands, like Drag. Run `gd --help`
-before constructing a command dynamically.
+Graduate is a Git workflow and Jira Cloud CLI with explicit commands. Run
+`gd --help` before constructing a command dynamically.
 
 ## Configure Jira
 
@@ -57,10 +57,57 @@ the environment and absent from main once, including commits without a branch
 or Jira attribution row. In the interactive report, press `a` after scanning
 completes to open the same scrollable age projection.
 
+## Rebuild an environment safely
+
+Use `gd restack` only for an ephemeral integration branch that may be replaced.
+It reconstructs the environment from the fetched remote mainline and its
+explicit, ungraduated feature merges. It never rewrites feature branches.
+
+Always preview an agent-requested restack before apply:
+
+```sh
+gd restack qa --params '{"removeBranches":["feature/PROJ-123"]}'
+```
+
+Review the schema-v1 `restackPlan` from stdout, including all captured refs,
+retained and removed branches, merge outcomes, final tree, effects, and
+`planDigest`. Then repeat the exact removal selection and add the digest plus
+the separate apply flag:
+
+```sh
+gd restack qa --params '{"removeBranches":["feature/PROJ-123"],"planDigest":"<PLAN_DIGEST>"}' --apply
+```
+
+`--params` alone never pushes. Restack has no offline, stale-ref,
+alternate-format, or output-file mode. Use `--main <branch>` and `--remote
+<remote>` only when discovery needs an explicit override. Provide headless Git
+authentication through `GIT_PAT`; never print it.
+
+An unresolved merge returns a redacted `restackError` on stderr with a work
+area and opaque `resumeToken`. Resolve and stage every reported path in that
+work area. Continue the preview, apply the sealed plan, or discard the session
+with one of these commands:
+
+```sh
+gd restack <environment> --resume <token>
+gd restack <environment> --resume <token> --apply
+gd restack <environment> --resume <token> --abort
+```
+
+Review the sealed plan before apply. Treat the token as a secret and pass it
+only to `--resume`; successful apply or abort consumes it.
+
+Graduate validates Git structure, the final tree, identity, endpoints, and
+reviewed refs. It does not run repository tests or builds. It creates unsigned
+merge commits, isolates hooks and rerere data, leaves the source checkout and
+local branches unchanged, and updates only the remote environment through an
+exact lease. Ref drift, endpoint changes, signed-commit requirements, and lease
+races fail closed; obtain a fresh preview when inputs change.
+
 ## Current command contract
 
 ```text
-Inspect Jira Cloud from the terminal
+Inspect and rebuild Git workflow environments from the terminal
 
 Usage: gd [OPTIONS] <COMMAND>
 
@@ -68,6 +115,7 @@ Commands:
   auth             Configure authentication for a ticket system
   diff             Show feature branches in an environment that have not reached main
   generate-skills  Generate portable AI agent skills from Graduate's command contract
+  restack          Review and safely publish an isolated environment reconstruction
   help             Print this message or the help of the given subcommand(s)
 
 Options:

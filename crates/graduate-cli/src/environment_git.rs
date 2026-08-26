@@ -170,12 +170,6 @@ pub(crate) fn restack_snapshot(
     build_snapshot(&graph).map_err(RestackInspectionError::from)
 }
 
-// Keep this safety slice linked while the public command remains release-gated.
-const _: fn(
-    &gix::Repository,
-    &EnvironmentInspection,
-) -> Result<RestackSnapshot, RestackInspectionError> = restack_snapshot;
-
 fn graph_commit(
     repository: &gix::Repository,
     id: gix::ObjectId,

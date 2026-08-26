@@ -1,4 +1,4 @@
-//! Release-gated machine workflow for isolated restack preview, resume, and apply.
+//! Isolated restack preview, interactive review, resume, and apply workflow.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -793,7 +793,7 @@ fn parse_params(params: Option<&str>) -> Result<MachineParams, CliError> {
     let Some(params) = params else {
         return Err(machine_usage(
             "params_required",
-            "the release-gated restack preview requires --params",
+            "a machine restack preview requires --params",
             json!({"expected": {"removeBranches": []}}),
         ));
     };

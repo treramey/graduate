@@ -1,16 +1,14 @@
-# `gd restack` Plan
+# `gd restack` Safety Contract
 
-## Goal
+## Purpose
 
-Add `gd restack <ENVIRONMENT>` to rebuild an ephemeral Gitworkflow integration
-branch from the remote mainline plus the remote feature branches that were in
-the environment before rebuilding and have not graduated to main. A user or
-agent can deliberately remove selected features from the reconstructed branch.
+`gd restack <ENVIRONMENT>` rebuilds an ephemeral Gitworkflow integration branch
+from the remote mainline plus the remote feature branches that were in the
+environment before rebuilding and have not graduated to main. A user or agent
+can deliberately remove selected features from the reconstructed branch.
 
-## Agreed decisions
+## Contract
 
-- This plan targets the Graduate project (`gd`), not Drag.
-- The sibling Restack repository is reference material for the command.
 - `restack` rebuilds an environment branch; it does not rewrite feature
   branches.
 - The command captures the environment's feature-branch membership before
@@ -204,20 +202,15 @@ agent can deliberately remove selected features from the reconstructed branch.
   deleted input aborts. The target environment's explicit lease remains the
   atomic server-side guard; input-ref revalidation is best-effort because Git
   cannot atomically lease refs it is not updating.
-- The old Microsoft 365 research in the Drag working tree is unrelated and may
-  be removed separately.
-- The final plan belongs in Graduate's `docs/gd-restack.md`; Drag should not
-  retain a copy.
-- Delivery uses one parent issue and bounded implementation slices for shared
+- Delivery used one parent issue and bounded implementation slices for shared
   graph/core planning, isolated preview/rerere, resumable leased apply, and
-  TUI/JSON/docs. The public command remains hidden or unreleased until every
-  safety slice is complete, then ships atomically.
-- No implementation begins until the user explicitly chooses to proceed.
+  TUI/JSON/docs. The command became public only after every safety slice was
+  complete.
 
 ## Important tradeoffs
 
-- Graduate currently inspects Git history and reports promotion risk; adding
-  `restack` introduces its first Git mutation workflow.
+- Before restack, Graduate only inspected Git history and reported promotion
+  risk. `restack` is its first Git mutation workflow.
 - Graduate's existing warning concerns repairing a feature branch polluted by
   an environment merge. The Restack prototype instead rebuilds an integration
   branch from a persisted, ordered topic membership list. These are different
@@ -267,12 +260,11 @@ agent can deliberately remove selected features from the reconstructed branch.
   inspect a preserved conflict work area, and resolve the conflict itself; the
   CLI should not force conflict editing through an embedded TUI editor.
 
-## Open questions
+## Delivery record
 
-- None currently. The final grilling check is whether any agreed scope should
-  be revised or deferred before implementation.
-
-## Proposed next steps
+The feature was delivered through the following bounded slices. The list is a
+historical implementation outline, not an additional user-facing command
+contract.
 
 ### 1. Record the contract
 

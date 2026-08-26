@@ -1,11 +1,11 @@
 <h1 align="center">Graduate</h1>
 
-**Inspect Jira Cloud from the terminal.**
+**Inspect and rebuild Git workflow environments from the terminal.**
 
-Graduate is a Jira Cloud CLI and terminal interface. It shows which feature
-branches are in an environment such as `qa` but have not reached `main`,
-enriched with each branch's Jira ticket, and includes a guided setup for Jira
-Cloud credentials.
+Graduate shows which feature branches are in an environment such as `qa` but
+have not reached `main`. It can also rebuild that ephemeral environment from
+its explicit feature merges. Jira Cloud enrichment links branch work to its
+tickets, and a guided setup configures Jira credentials.
 
 ## Install
 
@@ -36,6 +36,82 @@ gd auth setup jira
 
 Graduate requires an explicit command. Run `gd --help` to list the available
 commands.
+
+## Restack environment branches
+
+`gd restack` rebuilds an ephemeral integration branch from the fetched remote
+mainline and the environment's explicit feature merges. It never rewrites a
+feature branch. Use it only for an environment branch that your team treats as
+replaceable.
+
+For an interactive review, run:
+
+```bash
+gd restack qa
+```
+
+Graduate fetches the remote, checks that it can attribute all environment-only
+work, and selects every ungraduated feature by default. Uncheck a feature to
+remove it from the rebuilt environment. Graduate reconstructs the selection in
+an isolated work area and shows the exact refs, merge order, removals, final
+tree, unsigned-commit policy, and environment lease. It pushes only after you
+confirm that review.
+
+Agents use the JSON-only preview and apply flow. Preview first and retain the
+returned `planDigest`:
+
+```bash
+gd restack qa --params '{"removeBranches":["feature/PROJ-123"]}'
+```
+
+After reviewing the schema-v1 `restackPlan`, pass the same removal selection
+and digest with the separate apply flag:
+
+```bash
+gd restack qa --params '{"removeBranches":["feature/PROJ-123"],"planDigest":"<PLAN_DIGEST>"}' --apply
+```
+
+Machine results go to stdout as JSON. Machine errors go to stderr as redacted
+schema-v1 `restackError` JSON. `--params` never authorizes a push by itself.
+Restack always fetches; it has no stale-ref, alternate-format, or output-file
+mode. Use `--main <branch>` or `--remote <remote>` to override discovery.
+
+If reconstruction conflicts, Graduate preserves the isolated work area for 24
+hours and returns its path plus an opaque `resumeToken`. Resolve files there,
+stage the complete resolution, and continue the preview:
+
+```bash
+git -C <WORK_AREA> add <RESOLVED_PATHS>
+gd restack qa --resume <RESUME_TOKEN>
+```
+
+Review the returned plan, then publish that sealed session or discard it:
+
+```bash
+gd restack qa --resume <RESUME_TOKEN> --apply
+gd restack qa --resume <RESUME_TOKEN> --abort
+```
+
+Do not print, log, or share the resume token. Successful apply and abort
+consume it. A rejected push keeps a sealed session available for a validated
+retry.
+
+Restack validates Git state, not project behavior. It checks the resolved
+index, conflict markers, whitespace errors, canonical merge parents and
+messages, the final tree, configured Git identity, remote endpoints, and every
+reviewed ref. It does not run repository tests or builds. Every generated merge
+commit is unsigned. A remote that requires signed commits rejects the push
+without weakening that policy.
+
+Immediately before publication, Graduate revalidates the mainline,
+environment, retained features, and removed features. It pushes only the
+remote environment ref with an exact `--force-with-lease`. A moved or deleted
+input, changed endpoint, identity change, or lease race fails closed and
+requires a fresh preview. Preview can update the selected remote's
+remote-tracking refs, but reconstruction and publication do not change the
+source checkout, local branches, hooks, or personal rerere cache.
+
+See the complete [`gd restack` safety contract](docs/gd-restack.md).
 
 ## Promotion reports
 

@@ -35,14 +35,16 @@ fn help_uses_the_product_focused_command_style() -> Result<(), Box<dyn Error>> {
         .assert()
         .success()
         .stdout(predicate::str::starts_with(format!(
-            "Inspect Jira Cloud from the terminal\n\n{usage}"
+            "Inspect and rebuild Git workflow environments from the terminal\n\n{usage}"
         )))
         .stdout(predicate::str::contains(usage))
         .stdout(predicate::str::contains("tui").not())
         .stdout(predicate::str::contains(
             "auth             Configure authentication for a ticket system",
         ))
-        .stdout(predicate::str::contains("restack").not())
+        .stdout(predicate::str::contains(
+            "restack          Review and safely publish an isolated environment reconstruction",
+        ))
         .stdout(predicate::str::contains("login").not());
     Ok(())
 }
@@ -97,6 +99,25 @@ fn diff_help_describes_promotion_and_automation_options() -> Result<(), Box<dyn 
         .stdout(predicate::str::contains("--pat").not())
         .stdout(predicate::str::contains("--unattended").not())
         .stdout(predicate::str::contains("--no-fetch"));
+    Ok(())
+}
+
+#[test]
+fn restack_help_exposes_only_the_guarded_contract() -> Result<(), Box<dyn Error>> {
+    gd_command()?
+        .args(["restack", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<ENVIRONMENT>"))
+        .stdout(predicate::str::contains("--main <BRANCH>"))
+        .stdout(predicate::str::contains("--remote <REMOTE>"))
+        .stdout(predicate::str::contains("--params <JSON>"))
+        .stdout(predicate::str::contains("--apply"))
+        .stdout(predicate::str::contains("--resume <TOKEN>"))
+        .stdout(predicate::str::contains("--abort"))
+        .stdout(predicate::str::contains("--no-fetch").not())
+        .stdout(predicate::str::contains("--format").not())
+        .stdout(predicate::str::contains("--output").not());
     Ok(())
 }
 
@@ -843,6 +864,14 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
     for arguments in [
         vec!["restack", "qa", "--abort"],
         vec!["restack", "qa", "--resume", "opaque", "--apply", "--abort"],
+        vec![
+            "restack",
+            "qa",
+            "--resume",
+            "opaque",
+            "--params",
+            r#"{"removeBranches":[]}"#,
+        ],
     ] {
         let invalid_combination = gd_command()?.args(arguments).output()?;
         assert_eq!(invalid_combination.status.code(), Some(2));

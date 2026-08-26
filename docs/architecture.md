@@ -27,6 +27,9 @@ actions.
 8. Promotion reports fetch through the Git credential boundary, inspect refs
    and commit graphs with Gitoxide, then stream branch and Jira updates into a
    Ratatui list or unattended table.
+9. Restack fetches and inventories an environment, reconstructs it in an
+   isolated Git repository, then publishes only after an interactive review or
+   a digest-authorized machine apply.
 
 ## Modules
 
@@ -59,7 +62,7 @@ actions.
   ref revalidation, and leased-push subprocess boundary.
 - `graduate_cli::diff_tui`: streaming promotion list, selection, ticket details,
   commit history, age-report modal, and open-ticket events.
-- `graduate_cli::restack`: release-gated restack planning, isolated Git
+- `graduate_cli::restack`: public restack planning, isolated Git
   reconstruction, historical rerere training, resumed-preview validation,
   interactive review, clean and resumed apply revalidation, exact leased
   publication, and abort.
@@ -145,8 +148,8 @@ actions.
 - Restack preview always fetches, validates removals and dependencies, and
   reconstructs unsigned canonical merges in a temporary repository that only
   borrows source objects. It never pushes or changes the source checkout,
-  local branches, or personal rerere cache. The machine command remains hidden
-  until the complete publication safety slices are implemented.
+  local branches, or personal rerere cache. The public machine contract is
+  JSON-only and requires a reviewed plan digest plus `--apply` to publish.
 
 ## Distribution
 

@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(
     name = "gd",
     version,
-    about = "Inspect Jira Cloud from the terminal",
+    about = "Inspect and rebuild Git workflow environments from the terminal",
     propagate_version = true
 )]
 pub(crate) struct Cli {
@@ -29,23 +29,22 @@ pub(crate) enum Command {
     /// Generate portable AI agent skills from Graduate's command contract.
     GenerateSkills(GenerateSkillsArgs),
     /// Review and safely publish an isolated environment reconstruction.
-    #[command(hide = true)]
     Restack(RestackArgs),
 }
 
-/// Release-gated options for reviewing or applying an environment restack.
+/// Options for reviewing or applying an environment restack.
 #[derive(Args)]
 pub(crate) struct RestackArgs {
     /// Environment branch to reconstruct.
     #[arg(value_name = "ENVIRONMENT")]
     pub(crate) environment: String,
-    /// Main branch name. Defaults to origin/HEAD, then common branch names.
+    /// Main branch name. Defaults to the remote HEAD, then common branch names.
     #[arg(long, value_name = "BRANCH")]
     pub(crate) main: Option<String>,
-    /// Remote that owns the environment and feature branches.
+    /// Remote that owns the environment and feature branches. Defaults to origin.
     #[arg(long, value_name = "REMOTE")]
     pub(crate) remote: Option<String>,
-    /// JSON parameters containing removeBranches and, for apply, planDigest.
+    /// JSON with removeBranches and, only for apply, the reviewed planDigest.
     #[arg(long, value_name = "JSON", conflicts_with = "resume")]
     pub(crate) params: Option<String>,
     /// Publish a freshly reconstructed plan authorized by its reviewed digest.

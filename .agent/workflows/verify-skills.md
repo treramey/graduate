@@ -36,6 +36,7 @@ cargo build --workspace --locked
 ./target/debug/gd auth setup --help 2>&1
 ./target/debug/gd auth setup jira --help 2>&1
 ./target/debug/gd diff --help 2>&1
+./target/debug/gd restack --help 2>&1
 ./target/debug/gd generate-skills --help 2>&1
 ```
 
