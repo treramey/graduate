@@ -4,4 +4,4 @@
 
 | Skill | Description |
 |---|---|
-| [`graduate`](../skills/graduate/SKILL.md) | Configure Graduate and inspect its Jira CLI contract. |
+| [`graduate`](../skills/graduate/SKILL.md) | Inspect and safely rebuild environments, with optional Jira enrichment. |

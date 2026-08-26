@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Added `gd restack <environment>` for interactive and agent-reviewed rebuilds
+  of ephemeral integration branches. It uses isolated unsigned reconstruction,
+  reusable conflict resolutions, resumable conflict handoff, immutable plan
+  digests, fresh ref and endpoint validation, and exact leased publication.
 - Added `gd diff --params '{"branches":[...]}'` for agent-friendly branch and
   age reports scoped to several exact feature branches, with strict validation
   for missing, unpromoted, or already-graduated selections.
