@@ -21,10 +21,13 @@ isolated Git work area but does not push. The resulting restack plan is
 immutable. Its digest binds the captured OIDs, configured author, ordered
 feature identities and tips, removal selection, reviewed final tree, schema
 version, and remote and ref names. An interactive confirmation binds to the
-same in-memory plan. Machine apply must provide the preview digest. Ordinary
-apply can create different merge commit OIDs because it reconstructs the plan
-with new committer timestamps. Review binds the final tree and canonical merge
-identity, order, parents, and messages instead of the preview commit OIDs.
+same in-memory plan. Ordinary machine apply must provide the preview digest.
+Resumed apply is the explicit exception: its opaque capability authorizes only
+the store-authenticated sealed session, whose saved digest and exact result are
+recomputed and revalidated before publication. Ordinary apply can create
+different merge commit OIDs because it reconstructs the plan with new committer
+timestamps. Review binds the final tree and canonical merge identity, order,
+parents, and messages instead of the preview commit OIDs.
 The digest also binds credential-redacted hashes of the remote's single
 effective fetch and push endpoints. Raw endpoint values remain in memory only;
 changing an endpoint requires a new preview.

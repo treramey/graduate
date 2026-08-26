@@ -81,10 +81,11 @@ agent can deliberately remove selected features from the reconstructed branch.
   because a retained branch can contain an earlier part of the feature. Restack
   never cascades removals or claims code was removed when the graph keeps it.
 - Unattended v1 is JSON-only. `--params` selects machine mode; stdout emits one
-  schema-versioned plan or apply result, while progress and errors stay on
-  stderr. A new non-TTY restack without `--params` is a usage error. Resume is
-  a separate machine invocation selected by `--resume <token>` and does not
-  require `--params`. Table, YAML, CSV, and output-file modes are out of scope.
+  schema-versioned plan, apply result, or abort result, while progress and
+  errors stay on stderr. Successful machine operations exit 0. A new non-TTY
+  restack without `--params` is a usage error. Resume is a separate machine
+  invocation selected by `--resume <token>` and does not require `--params`.
+  Table, YAML, CSV, and output-file modes are out of scope.
 - Machine mode also emits schema-versioned, redacted JSON errors on stderr with
   stable `code`, `message`, and `details` fields plus conflict continuation
   fields when relevant. Invalid usage/params exit 2; fetch, Git, conflict,
@@ -96,8 +97,10 @@ agent can deliberately remove selected features from the reconstructed branch.
   digest, old/new environment OIDs, tree OID, merged/removed branches,
   resolution counts, and `pushed: true`. Conflict errors add the branch,
   unresolved paths, resume token, work-area path, and expiry. Jira payloads and
-  raw rerere data are excluded. Abort emits a token-free
-  `restackAbortResult` with `aborted: true` and explicit no-ref-change effects.
+  raw rerere data are excluded. Abort emits a token-free `restackAbortResult`
+  containing schema version 1, the environment name, `aborted: true`, and
+  false `sourceCheckoutChanged`, `localRefsChanged`, `remoteRefsChanged`, and
+  `personalRerereChanged` effects.
 - Discovery/planning does not mutate. Interactive execution requires an
   explicit confirmation after branch selection; unattended execution requires
   `--apply` in addition to `--params`. JSON parameters select branch removals
