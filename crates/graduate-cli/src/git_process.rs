@@ -112,6 +112,7 @@ pub(crate) fn fetch_restack_remote(
             "fetch",
             "--prune",
             "--no-tags",
+            "--no-write-fetch-head",
             "--refmap=",
             &endpoint_name,
             &refspec,

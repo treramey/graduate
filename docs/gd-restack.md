@@ -130,12 +130,13 @@ agent can deliberately remove selected features from the reconstructed branch.
   The digest is the lowercase hexadecimal SHA-256 of that byte stream.
 - Preview performs the full disposable reconstruction, including rerere replay
   and validation, but never pushes. It reports each clean or rerere-resolved
-  merge and the final tree OID. Apply fetches and reconstructs again, requires
-  the same plan digest, verifies that the final tree matches preview, then
-  performs the leased push. New committer timestamps can produce different
+  merge and the final tree OID. Fetch uses an explicit remote-heads refmap,
+  disables tag following, and preserves `FETCH_HEAD`; only the selected remote's
+  remote-tracking namespace is updated. Apply fetches and reconstructs again,
+  requires the same plan digest, verifies that the final tree matches preview,
+  then performs the leased push. New committer timestamps can produce different
   merge commit OIDs during ordinary apply. Review instead binds the configured
-  identity, canonical parent topology, merge order and messages, and final
-  tree.
+  identity, canonical parent topology, merge order and messages, and final tree.
 - Reconstruction validation is Git-only: resolved index, no conflict markers
   or diff-check failures, canonical merge parents/order/messages, reviewed
   final tree, and unchanged remote inputs. Graduate runs no repository build or

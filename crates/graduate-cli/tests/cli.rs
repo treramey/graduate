@@ -195,6 +195,8 @@ fn restack_preview_is_isolated_and_emits_canonical_machine_json() -> Result<(), 
     let remote_environment_tree =
         fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa^{tree}"])?;
     let main_tip = fixture.git_text(&fixture.source, &["rev-parse", "refs/remotes/origin/main"])?;
+    let fetch_head = fixture.source.join(".git/FETCH_HEAD");
+    std::fs::write(&fetch_head, "preserve user fetch state\n")?;
     std::fs::write(fixture.source.join("base"), "dirty base\n")?;
     std::fs::write(fixture.source.join("untracked"), "leave me alone\n")?;
     let rerere = fixture.source.join(".git/rr-cache/personal");
@@ -310,6 +312,10 @@ fn restack_preview_is_isolated_and_emits_canonical_machine_json() -> Result<(), 
         remote_environment
     );
     assert_eq!(std::fs::read_to_string(&rerere)?, "personal resolution\n");
+    assert_eq!(
+        std::fs::read_to_string(fetch_head)?,
+        "preserve user fetch state\n"
+    );
     assert!(!hook_marker.exists());
     assert_eq!(
         std::fs::read_to_string(fixture.source.join("base"))?,
