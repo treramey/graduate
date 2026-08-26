@@ -43,11 +43,14 @@ pub(crate) struct RestackArgs {
     #[arg(long, value_name = "BRANCH")]
     pub(crate) main: Option<String>,
     /// Remote that owns the environment and feature branches.
-    #[arg(long, value_name = "REMOTE", default_value = "origin")]
-    pub(crate) remote: String,
+    #[arg(long, value_name = "REMOTE")]
+    pub(crate) remote: Option<String>,
     /// JSON preview parameters containing removeBranches.
-    #[arg(long, value_name = "JSON")]
+    #[arg(long, value_name = "JSON", conflicts_with = "resume")]
     pub(crate) params: Option<String>,
+    /// Resume an isolated conflicted preview with an opaque continuation token.
+    #[arg(long, value_name = "TOKEN", conflicts_with = "params")]
+    pub(crate) resume: Option<String>,
 }
 
 impl std::fmt::Debug for RestackArgs {
@@ -58,6 +61,7 @@ impl std::fmt::Debug for RestackArgs {
             .field("main", &self.main)
             .field("remote", &self.remote)
             .field("params", &self.params.as_ref().map(|_| "<json>"))
+            .field("resume", &self.resume.as_ref().map(|_| "<token>"))
             .finish()
     }
 }

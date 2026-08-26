@@ -75,9 +75,10 @@ workflow.
 Preview and ordinary apply repeat work, and isolated sessions consume temporary
 disk space. In return, a dirty source checkout remains safe, review is bound to
 exact inputs and output, conflict work can continue without relaxing the plan,
-and concurrent remote changes fail closed. Remotes that require signed commits
-will reject version 1 because its reviewed merge commits are explicitly
-unsigned.
+and concurrent environment-ref changes fail atomically. Mainline and feature
+ref changes have the best-effort pre-push revalidation described above. Remotes
+that require signed commits will reject version 1 because its reviewed merge
+commits are explicitly unsigned.
 
 The complete product contract and delivery slices are recorded in
 [`docs/gd-restack.md`](../gd-restack.md).

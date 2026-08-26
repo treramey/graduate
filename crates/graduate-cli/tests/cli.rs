@@ -262,7 +262,8 @@ fn restack_preview_is_isolated_and_emits_canonical_machine_json() -> Result<(), 
         )?;
     }
 
-    let output = fixture.preview(&[])?;
+    let git_parameters = format!("'core.hooksPath={}'", hooks.display());
+    let output = fixture.preview_with_git_config_parameters(&[], &git_parameters)?;
 
     assert!(
         output.status.success(),
@@ -484,6 +485,7 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
             "--params",
             r#"{"removeBranches":"not-an-array"}"#,
         ])
+        .env("XDG_CACHE_HOME", directory.path().join("cache"))
         .output()?;
     assert_eq!(invalid.status.code(), Some(2));
     let invalid_error: serde_json::Value = serde_json::from_slice(&invalid.stderr)?;
@@ -502,6 +504,7 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
         .current_dir(&source)
         .args(["restack", "qa", "--params", r#"{"removeBranches":[]}"#])
         .env("GIT_PAT", "pat-secret-do-not-print")
+        .env("XDG_CACHE_HOME", directory.path().join("cache"))
         .output()?;
     assert_eq!(fetch.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&fetch.stdout);
@@ -516,11 +519,258 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
     Ok(())
 }
 
+#[test]
+fn restack_reuses_an_accepted_resolution_and_resumes_a_changed_conflict(
+) -> Result<(), Box<dyn Error>> {
+    let trained = ConflictRestackFixture::new()?;
+    let personal = trained.source.join(".git/rr-cache/personal");
+    std::fs::create_dir_all(personal.parent().ok_or("personal rerere parent")?)?;
+    std::fs::write(&personal, "personal\n")?;
+
+    let replay = trained.preview()?;
+
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let replay_plan: serde_json::Value = serde_json::from_slice(&replay.stdout)?;
+    assert_eq!(replay_plan["merges"][0]["outcome"], "rerere");
+    assert_eq!(std::fs::read_to_string(&personal)?, "personal\n");
+
+    let resumed = ConflictRestackFixture::new()?;
+    let remote_before = resumed.git_text(&resumed.remote, &["rev-parse", "refs/heads/qa"])?;
+    resumed.advance_main()?;
+    let conflict = resumed.preview()?;
+    assert_eq!(conflict.status.code(), Some(1));
+    let conflict_stderr = String::from_utf8(conflict.stderr)?;
+    let error: serde_json::Value = serde_json::from_str(
+        conflict_stderr
+            .lines()
+            .last()
+            .ok_or("structured conflict error")?,
+    )?;
+    assert_eq!(error["code"], "reconstruction_conflict");
+    assert_eq!(error["details"]["branch"], "feature/conflict");
+    assert_eq!(
+        error["details"]["unresolvedPaths"],
+        serde_json::json!(["conflict"])
+    );
+    let token = error["details"]["resumeToken"]
+        .as_str()
+        .ok_or("resume token")?;
+    let work_area = PathBuf::from(error["details"]["workArea"].as_str().ok_or("work area")?);
+    assert!(error["details"]["expiresAt"].as_u64().is_some());
+    assert_eq!(
+        resumed.git_text(&resumed.remote, &["rev-parse", "refs/heads/qa"])?,
+        remote_before
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let session = work_area.parent().ok_or("session directory")?;
+        assert_eq!(
+            std::fs::metadata(session)?.permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(session.join("session.json"))?
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    std::fs::write(work_area.join("conflict"), "manual resolution\n")?;
+    resumed.git(&work_area, &["add", "conflict"])?;
+    let output = resumed.resume(token, "qa", &resumed.source)?;
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(plan["merges"][0]["outcome"], "manual");
+    assert_eq!(plan["effects"]["pushed"], false);
+    assert!(!String::from_utf8(output.stdout)?.contains(token));
+    assert_eq!(
+        resumed.git_text(&resumed.remote, &["rev-parse", "refs/heads/qa"])?,
+        remote_before
+    );
+    Ok(())
+}
+
+#[test]
+fn restack_resume_rejects_expired_locked_tampered_and_mismatched_sessions(
+) -> Result<(), Box<dyn Error>> {
+    let fixture = ConflictRestackFixture::new()?;
+    fixture.advance_main()?;
+    let conflict = structured_restack_error(fixture.preview()?)?;
+    let token = conflict["details"]["resumeToken"]
+        .as_str()
+        .ok_or("resume token")?;
+    let work_area = PathBuf::from(
+        conflict["details"]["workArea"]
+            .as_str()
+            .ok_or("work area")?,
+    );
+
+    let wrong_environment =
+        structured_restack_error(fixture.resume(token, "other", &fixture.source)?)?;
+    assert_eq!(wrong_environment["code"], "stale_session");
+    assert_eq!(wrong_environment["details"]["reason"], "environment");
+
+    let other = fixture._directory.path().join("other");
+    std::fs::create_dir(&other)?;
+    fixture.git(&other, &["init", "-q", "-b", "main"])?;
+    let wrong_repository = structured_restack_error(fixture.resume(token, "qa", &other)?)?;
+    assert_eq!(wrong_repository["code"], "stale_session");
+    assert_eq!(wrong_repository["details"]["reason"], "repository");
+
+    let lock_path = work_area
+        .parent()
+        .ok_or("session directory")?
+        .join("session.lock");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+    let locked = structured_restack_error(fixture.resume(token, "qa", &fixture.source)?)?;
+    assert_eq!(locked["code"], "session_locked");
+    fs2::FileExt::unlock(&lock)?;
+    drop(lock);
+
+    let metadata_path = work_area
+        .parent()
+        .ok_or("session directory")?
+        .join("session.json");
+    let mut metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
+    metadata["metadata"]["author"]["name"] = serde_json::json!("tampered");
+    std::fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)?;
+    let tampered = structured_restack_error(fixture.resume(token, "qa", &fixture.source)?)?;
+    assert_eq!(tampered["code"], "invalid_session");
+    assert_eq!(tampered["details"]["reason"], "tampered");
+
+    let committed = ConflictRestackFixture::new()?;
+    committed.advance_main()?;
+    let conflict = structured_restack_error(committed.preview()?)?;
+    let committed_token = conflict["details"]["resumeToken"]
+        .as_str()
+        .ok_or("committed token")?;
+    let committed_area = PathBuf::from(
+        conflict["details"]["workArea"]
+            .as_str()
+            .ok_or("committed work area")?,
+    );
+    std::fs::write(committed_area.join("conflict"), "agent resolution\n")?;
+    committed.git(&committed_area, &["add", "conflict"])?;
+    let expected_head = committed.git_text(&committed_area, &["rev-parse", "HEAD"])?;
+    let expected_feature = committed.git_text(&committed_area, &["rev-parse", "MERGE_HEAD"])?;
+    committed.git(
+        &committed_area,
+        &[
+            "-c",
+            "user.name=Agent",
+            "-c",
+            "user.email=agent@example.com",
+            "-c",
+            "rerere.enabled=false",
+            "commit",
+            "-q",
+            "-m",
+            "agent commit",
+        ],
+    )?;
+    committed.git(&committed_area, &["reset", "--soft", &expected_head])?;
+    std::fs::write(
+        committed_area.join(".git/MERGE_HEAD"),
+        format!("{expected_feature}\n"),
+    )?;
+    assert_eq!(
+        committed.git_text(&committed_area, &["rev-parse", "HEAD"])?,
+        expected_head
+    );
+    assert_eq!(
+        committed.git_text(&committed_area, &["rev-parse", "MERGE_HEAD"])?,
+        expected_feature
+    );
+    let agent_commit =
+        structured_restack_error(committed.resume(committed_token, "qa", &committed.source)?)?;
+    assert_eq!(agent_commit["code"], "invalid_session_state");
+    assert_eq!(agent_commit["details"]["reason"], "agentCommit");
+
+    let expired = ConflictRestackFixture::new()?;
+    expired.advance_main()?;
+    let conflict = structured_restack_error(expired.preview()?)?;
+    let expired_token = conflict["details"]["resumeToken"]
+        .as_str()
+        .ok_or("expired token")?;
+    let expired_area = PathBuf::from(
+        conflict["details"]["workArea"]
+            .as_str()
+            .ok_or("expired work area")?,
+    );
+    expire_session(&expired_area, expired_token)?;
+    let expired_error =
+        structured_restack_error(expired.resume(expired_token, "qa", &expired.source)?)?;
+    assert_eq!(expired_error["code"], "expired_session");
+    assert!(!expired_area.exists());
+    Ok(())
+}
+
+fn structured_restack_error(
+    output: std::process::Output,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    if output.status.success() {
+        return Err("restack invocation unexpectedly succeeded".into());
+    }
+    let stderr = String::from_utf8(output.stderr)?;
+    Ok(serde_json::from_str(
+        stderr.lines().last().ok_or("structured restack error")?,
+    )?)
+}
+
+fn expire_session(work_area: &Path, token: &str) -> Result<(), Box<dyn Error>> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let metadata_path = work_area
+        .parent()
+        .ok_or("session directory")?
+        .join("session.json");
+    let mut envelope: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
+    envelope["metadata"]["expiresAt"] = serde_json::json!(0);
+    let secret = token.split('.').nth(2).ok_or("session token secret")?;
+    let mut key = Vec::with_capacity(secret.len() / 2);
+    for index in (0..secret.len()).step_by(2) {
+        key.push(u8::from_str_radix(&secret[index..index + 2], 16)?);
+    }
+    let canonical = serde_json::to_vec(&envelope["metadata"])?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(&key)?;
+    mac.update(&canonical);
+    let integrity = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    envelope["integrity"] = serde_json::json!(integrity);
+    let mut contents = serde_json::to_vec_pretty(&envelope)?;
+    contents.push(b'\n');
+    std::fs::write(metadata_path, contents)?;
+    Ok(())
+}
+
 struct RestackFixture {
     directory: tempfile::TempDir,
     source: PathBuf,
     remote: PathBuf,
     global: PathBuf,
+    cache: PathBuf,
 }
 
 impl RestackFixture {
@@ -589,6 +839,7 @@ impl RestackFixture {
         run_git(&source, &global, &["push", "-q", "-u", "origin", "qa"])?;
         run_git(&source, &global, &["checkout", "-q", "main"])?;
         Ok(Self {
+            cache: directory.path().join("cache"),
             directory,
             source,
             remote,
@@ -597,12 +848,33 @@ impl RestackFixture {
     }
 
     fn preview(&self, removals: &[&str]) -> Result<std::process::Output, Box<dyn Error>> {
+        self.preview_with_environment(removals, None)
+    }
+
+    fn preview_with_git_config_parameters(
+        &self,
+        removals: &[&str],
+        parameters: &str,
+    ) -> Result<std::process::Output, Box<dyn Error>> {
+        self.preview_with_environment(removals, Some(parameters))
+    }
+
+    fn preview_with_environment(
+        &self,
+        removals: &[&str],
+        git_config_parameters: Option<&str>,
+    ) -> Result<std::process::Output, Box<dyn Error>> {
         let params = serde_json::json!({"removeBranches": removals}).to_string();
-        Ok(gd_command()?
+        let mut command = gd_command()?;
+        command
             .current_dir(&self.source)
             .args(["restack", "qa", "--main", "main", "--params", &params])
             .env("GIT_CONFIG_GLOBAL", &self.global)
-            .output()?)
+            .env("XDG_CACHE_HOME", &self.cache);
+        if let Some(parameters) = git_config_parameters {
+            command.env("GIT_CONFIG_PARAMETERS", parameters);
+        }
+        Ok(command.output()?)
     }
 
     fn advance_feature_from_separate_clone(&self) -> Result<String, Box<dyn Error>> {
@@ -659,6 +931,133 @@ impl RestackFixture {
         )?;
         run_git(&writer, &self.global, &["push", "-q", "origin", "qa"])?;
         self.git_text(&writer, &["rev-parse", "HEAD"])
+    }
+
+    fn git(&self, path: &Path, arguments: &[&str]) -> Result<(), Box<dyn Error>> {
+        run_git(path, &self.global, arguments)
+    }
+
+    fn git_text(&self, path: &Path, arguments: &[&str]) -> Result<String, Box<dyn Error>> {
+        git_text(path, &self.global, arguments)
+    }
+}
+
+struct ConflictRestackFixture {
+    _directory: tempfile::TempDir,
+    source: PathBuf,
+    remote: PathBuf,
+    global: PathBuf,
+    cache: PathBuf,
+}
+
+impl ConflictRestackFixture {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("source");
+        let remote = directory.path().join("remote.git");
+        let global = directory.path().join("global.gitconfig");
+        let cache = directory.path().join("cache");
+        std::fs::write(&global, [])?;
+        std::fs::create_dir(&source)?;
+        std::fs::create_dir(&remote)?;
+        run_git(&remote, &global, &["init", "--bare", "-q"])?;
+        run_git(
+            &remote,
+            &global,
+            &["symbolic-ref", "HEAD", "refs/heads/main"],
+        )?;
+        run_git(&source, &global, &["init", "-q", "-b", "main"])?;
+        run_git(&source, &global, &["config", "user.name", "Fixture Author"])?;
+        run_git(
+            &source,
+            &global,
+            &["config", "user.email", "fixture@example.com"],
+        )?;
+        run_git(
+            &source,
+            &global,
+            &["remote", "add", "origin", path_text(&remote)?],
+        )?;
+        std::fs::write(source.join("conflict"), "base\n")?;
+        run_git(&source, &global, &["add", "conflict"])?;
+        run_git(&source, &global, &["commit", "-q", "-m", "base"])?;
+        run_git(&source, &global, &["push", "-q", "-u", "origin", "main"])?;
+        run_git(
+            &source,
+            &global,
+            &["checkout", "-q", "-b", "feature/conflict", "main"],
+        )?;
+        std::fs::write(source.join("conflict"), "feature\n")?;
+        run_git(&source, &global, &["commit", "-q", "-am", "feature"])?;
+        run_git(
+            &source,
+            &global,
+            &["push", "-q", "-u", "origin", "feature/conflict"],
+        )?;
+        run_git(&source, &global, &["checkout", "-q", "main"])?;
+        std::fs::write(source.join("conflict"), "main old\n")?;
+        run_git(&source, &global, &["commit", "-q", "-am", "main old"])?;
+        run_git(&source, &global, &["push", "-q", "origin", "main"])?;
+        run_git(&source, &global, &["checkout", "-q", "-b", "qa", "main"])?;
+        let merge = isolated_git(&global)
+            .current_dir(&source)
+            .args(["merge", "--no-ff", "--no-commit", "feature/conflict"])
+            .output()?;
+        if merge.status.success() {
+            return Err("fixture merge unexpectedly succeeded".into());
+        }
+        std::fs::write(source.join("conflict"), "accepted\n")?;
+        run_git(&source, &global, &["add", "conflict"])?;
+        run_git(
+            &source,
+            &global,
+            &["commit", "-q", "-m", "accepted conflict"],
+        )?;
+        run_git(&source, &global, &["push", "-q", "-u", "origin", "qa"])?;
+        run_git(&source, &global, &["checkout", "-q", "main"])?;
+        Ok(Self {
+            _directory: directory,
+            source,
+            remote,
+            global,
+            cache,
+        })
+    }
+
+    fn preview(&self) -> Result<std::process::Output, Box<dyn Error>> {
+        Ok(gd_command()?
+            .current_dir(&self.source)
+            .args([
+                "restack",
+                "qa",
+                "--main",
+                "main",
+                "--params",
+                r#"{"removeBranches":[]}"#,
+            ])
+            .env("GIT_CONFIG_GLOBAL", &self.global)
+            .env("XDG_CACHE_HOME", &self.cache)
+            .output()?)
+    }
+
+    fn resume(
+        &self,
+        token: &str,
+        environment: &str,
+        source: &Path,
+    ) -> Result<std::process::Output, Box<dyn Error>> {
+        Ok(gd_command()?
+            .current_dir(source)
+            .args(["restack", environment, "--resume", token])
+            .env("GIT_CONFIG_GLOBAL", &self.global)
+            .env("XDG_CACHE_HOME", &self.cache)
+            .output()?)
+    }
+
+    fn advance_main(&self) -> Result<(), Box<dyn Error>> {
+        std::fs::write(self.source.join("conflict"), "main new\n")?;
+        self.git(&self.source, &["commit", "-q", "-am", "main new"])?;
+        self.git(&self.source, &["push", "-q", "origin", "main"])
     }
 
     fn git(&self, path: &Path, arguments: &[&str]) -> Result<(), Box<dyn Error>> {

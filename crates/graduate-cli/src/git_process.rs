@@ -152,6 +152,8 @@ fn clear_repository_location_environment(command: &mut Command) {
     for variable in [
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
         "GIT_COMMON_DIR",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
         "GIT_DIR",
         "GIT_GRAFT_FILE",
         "GIT_INDEX_FILE",

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -41,7 +42,8 @@ pub struct RestackGraph {
 }
 
 /// A historical two-parent merge accepted for later rerere training.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoricalMerge {
     pub commit: String,
     pub first_parent: String,
@@ -50,7 +52,8 @@ pub struct HistoricalMerge {
 }
 
 /// A surviving explicit feature, ordered by its first merge into the environment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExplicitFeature {
     pub name: String,
     pub tip: String,
@@ -58,14 +61,16 @@ pub struct ExplicitFeature {
 }
 
 /// A captured remote branch name and tip.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BranchIdentity {
     pub name: String,
     pub tip: String,
 }
 
 /// An exact obsolete phase marker that a v1 restack deliberately drops.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DroppedMarker {
     pub commit: String,
     pub parent: String,
@@ -73,14 +78,16 @@ pub struct DroppedMarker {
 }
 
 /// One environment-unique non-merge commit and its explicit feature owners.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AttributedCommit {
     pub commit: String,
     pub branches: Vec<String>,
 }
 
 /// A complete, ordered proof that an environment can be reconstructed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RestackSnapshot {
     pub remote: String,
     pub environment: String,
@@ -97,26 +104,39 @@ pub struct RestackSnapshot {
 }
 
 /// The configured identity used for every reconstructed merge commit.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RestackAuthor {
     pub name: String,
     pub email: String,
 }
 
 /// A validated partition of the explicit feature inventory.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RestackSelection {
     pub retained: Vec<BranchIdentity>,
     pub removed: Vec<BranchIdentity>,
 }
 
+/// How isolated reconstruction resolved one retained feature merge.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MergeResolution {
+    Clean,
+    Reused,
+    Manual,
+}
+
 /// One validated merge produced by isolated reconstruction.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MergeOutcome {
     pub branch: String,
     pub tip: String,
     pub commit: String,
     pub tree: String,
+    pub resolution: MergeResolution,
 }
 
 /// An immutable clean-preview plan.
@@ -743,6 +763,7 @@ mod tests {
             tip: "a".to_owned(),
             commit: "preview-one".to_owned(),
             tree: "tree-a".to_owned(),
+            resolution: MergeResolution::Clean,
         }];
 
         let first = build_plan(
@@ -783,6 +804,7 @@ mod tests {
                 tip: "a".to_owned(),
                 commit: "preview-three".to_owned(),
                 tree: "tree-a".to_owned(),
+                resolution: MergeResolution::Clean,
             }],
             "other-tree".to_owned(),
             "preview-three".to_owned(),

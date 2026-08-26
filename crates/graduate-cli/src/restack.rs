@@ -1,4 +1,4 @@
-//! Release-gated machine workflow for isolated clean restack previews.
+//! Release-gated machine workflow for isolated and resumable restack previews.
 
 use std::fs;
 use std::io::Write;
@@ -6,11 +6,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use graduate::restack::{
-    build_plan, canonical_merge_message, select_features, InventoryError, MergeOutcome, PlanError,
-    RestackAuthor, RestackPlan, SelectionError, RESTACK_SCHEMA_VERSION,
+    build_plan, canonical_merge_message, select_features, BranchIdentity, InventoryError,
+    MergeOutcome, MergeResolution, PlanError, RestackAuthor, RestackPlan, RestackSnapshot,
+    SelectionError, RESTACK_SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::cli::RestackArgs;
 use crate::environment_git::{
@@ -18,6 +20,9 @@ use crate::environment_git::{
 };
 use crate::error::{CliError, MachineError};
 use crate::git_process;
+use crate::restack_session::{
+    SessionConflict, SessionDraft, SessionError, SessionMetadata, SessionStatus, SessionStore,
+};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -27,7 +32,7 @@ struct PreviewParams {
 
 pub(crate) fn run(args: RestackArgs) -> Result<(), CliError> {
     validate_inputs(&args)?;
-    let params = parse_params(args.params.as_deref())?;
+    let sessions = SessionStore::open().map_err(session_error)?;
     let source = std::env::current_dir().map_err(|_| {
         machine_failure(
             "repository_unavailable",
@@ -35,62 +40,232 @@ pub(crate) fn run(args: RestackArgs) -> Result<(), CliError> {
             json!({"stage": "currentDirectory"}),
         )
     })?;
+    if let Some(token) = args.resume.as_deref() {
+        sessions.prepare_resume(token).map_err(session_error)?;
+        return resume_preview(&args, token, &source, &sessions);
+    }
+    sessions.purge_expired().map_err(session_error)?;
+    preview(&args, &source, &sessions)
+}
 
-    git_process::fetch_restack_remote(&args.remote, &source).map_err(|_| {
+fn preview(args: &RestackArgs, source: &Path, sessions: &SessionStore) -> Result<(), CliError> {
+    let params = parse_params(args.params.as_deref())?;
+    let remote = args.remote.as_deref().unwrap_or("origin");
+
+    git_process::fetch_restack_remote(remote, source).map_err(|_| {
         machine_failure(
             "fetch_failed",
             "could not fetch the selected remote",
-            json!({"remote": args.remote}),
+            json!({"remote": remote}),
         )
     })?;
 
-    let repository = gix::discover(&source).map_err(|_| {
+    let repository = gix::discover(source).map_err(|_| {
         machine_failure(
             "repository_not_found",
             "the current directory is not inside a Git repository",
             json!({}),
         )
     })?;
-    let inspection = inspect_environment(
-        &repository,
-        &args.remote,
-        &args.environment,
-        args.main.as_deref(),
-    )
-    .map_err(|_| {
-        machine_failure(
-            "inspection_failed",
-            "could not inspect the fetched environment refs",
-            json!({"stage": "refs"}),
-        )
-    })?;
+    let inspection =
+        inspect_environment(&repository, remote, &args.environment, args.main.as_deref()).map_err(
+            |_| {
+                machine_failure(
+                    "inspection_failed",
+                    "could not inspect the fetched environment refs",
+                    json!({"stage": "refs"}),
+                )
+            },
+        )?;
     let snapshot = restack_snapshot(&repository, &inspection).map_err(inspection_error)?;
     let selection = select_features(&snapshot, &params.remove_branches).map_err(selection_error)?;
-    let author = configured_author(&source)?;
-    let source_objects = source_object_directory(&source)?;
-    let isolated = IsolatedRepository::create(&source_objects)?;
+    let author = configured_author(source)?;
+    let repository_id = source_repository_identity(source)?;
+    let source_objects = source_object_directory(source)?;
+    let draft = sessions.begin().map_err(session_error)?;
+    let isolated = IsolatedRepository::create(&draft.repository(), &source_objects)?;
+    isolated.train_resolutions(&snapshot, &selection.retained, &author)?;
     let reconstruction = isolated.reconstruct(
         &snapshot.main_tip,
         &snapshot.environment,
         &selection.retained,
         &author,
+        0,
+        Vec::new(),
     )?;
-    let plan = build_plan(
+    finish_or_preserve(
+        reconstruction,
+        draft,
+        repository_id,
         snapshot,
         author,
         selection,
-        reconstruction.merges,
-        reconstruction.final_tree,
-        reconstruction.preview_commit,
     )
-    .map_err(plan_error)?;
-    write_plan(&plan)
+}
+
+fn finish_or_preserve(
+    reconstruction: ReconstructionResult,
+    mut draft: SessionDraft,
+    repository_id: String,
+    snapshot: RestackSnapshot,
+    author: RestackAuthor,
+    selection: graduate::restack::RestackSelection,
+) -> Result<(), CliError> {
+    match reconstruction {
+        ReconstructionResult::Complete(reconstruction) => {
+            let plan = build_plan(
+                snapshot,
+                author,
+                selection,
+                reconstruction.merges,
+                reconstruction.final_tree,
+                reconstruction.preview_commit,
+            )
+            .map_err(plan_error)?;
+            draft.discard().map_err(session_error)?;
+            write_plan(&plan)
+        }
+        ReconstructionResult::Conflict(conflict) => {
+            let metadata = SessionMetadata::conflicted(
+                repository_id,
+                snapshot,
+                author,
+                selection,
+                SessionConflict {
+                    merges: conflict.merges,
+                    next_feature: conflict.feature_index,
+                    expected_head: conflict.expected_head,
+                    expected_head_reflog: conflict.expected_head_reflog,
+                    expected_feature_tip: conflict.feature.tip.clone(),
+                },
+            )
+            .map_err(session_error)?;
+            draft.save(&metadata).map_err(session_error)?;
+            Err(conflict_error(
+                &conflict.feature.name,
+                conflict.unresolved_paths,
+                &draft.token(),
+                &draft.repository(),
+                metadata.expires_at,
+            ))
+        }
+    }
+}
+
+fn resume_preview(
+    args: &RestackArgs,
+    token: &str,
+    source: &Path,
+    sessions: &SessionStore,
+) -> Result<(), CliError> {
+    let repository_id = source_repository_identity(source)?;
+    let mut session = sessions.resume(token).map_err(session_error)?;
+    if session.metadata.repository_id != repository_id {
+        return Err(stale_session_error("repository"));
+    }
+    if session.metadata.snapshot.environment != args.environment {
+        return Err(stale_session_error("environment"));
+    }
+    if args
+        .remote
+        .as_ref()
+        .is_some_and(|remote| *remote != session.metadata.snapshot.remote)
+    {
+        return Err(stale_session_error("remote"));
+    }
+    if args
+        .main
+        .as_ref()
+        .is_some_and(|main| *main != session.metadata.snapshot.main)
+    {
+        return Err(stale_session_error("main"));
+    }
+    if session.metadata.status != SessionStatus::Conflicted {
+        return Err(stale_session_error("sealed"));
+    }
+    let feature = session
+        .metadata
+        .selection
+        .retained
+        .get(session.metadata.next_feature)
+        .cloned()
+        .ok_or_else(|| stale_session_error("featurePosition"))?;
+    if session.metadata.expected_feature_tip.as_deref() != Some(feature.tip.as_str())
+        || session.metadata.merges.len() != session.metadata.next_feature
+    {
+        return Err(stale_session_error("featurePosition"));
+    }
+    session.metadata.refresh().map_err(session_error)?;
+    session.save().map_err(session_error)?;
+
+    let source_objects = source_object_directory(source)?;
+    let isolated = IsolatedRepository::open(session.repository(), &source_objects)?;
+    let manual = isolated.complete_manual_merge(
+        &session.metadata.expected_head,
+        &session.metadata.expected_head_reflog,
+        &feature,
+        &session.metadata.snapshot.environment,
+        &session.metadata.author,
+    )?;
+    session.metadata.merges.push(manual);
+    let reconstruction = isolated.reconstruct(
+        &session.metadata.snapshot.main_tip,
+        &session.metadata.snapshot.environment,
+        &session.metadata.selection.retained,
+        &session.metadata.author,
+        session.metadata.next_feature + 1,
+        session.metadata.merges.clone(),
+    )?;
+    match reconstruction {
+        ReconstructionResult::Conflict(conflict) => {
+            session.metadata.merges = conflict.merges;
+            session.metadata.next_feature = conflict.feature_index;
+            session.metadata.expected_head = conflict.expected_head;
+            session.metadata.expected_head_reflog = conflict.expected_head_reflog;
+            session.metadata.expected_feature_tip = Some(conflict.feature.tip.clone());
+            session.metadata.refresh().map_err(session_error)?;
+            session.save().map_err(session_error)?;
+            Err(conflict_error(
+                &conflict.feature.name,
+                conflict.unresolved_paths,
+                token,
+                &session.repository(),
+                session.metadata.expires_at,
+            ))
+        }
+        ReconstructionResult::Complete(reconstruction) => {
+            let plan = build_plan(
+                session.metadata.snapshot.clone(),
+                session.metadata.author.clone(),
+                session.metadata.selection.clone(),
+                reconstruction.merges,
+                reconstruction.final_tree,
+                reconstruction.preview_commit,
+            )
+            .map_err(plan_error)?;
+            session.metadata.merges.clone_from(&plan.merges);
+            session.metadata.next_feature = session.metadata.selection.retained.len();
+            session
+                .metadata
+                .expected_head
+                .clone_from(&plan.preview_commit);
+            session.metadata.expected_head_reflog = isolated.head_reflog_digest()?;
+            session.metadata.expected_feature_tip = None;
+            session.metadata.status = SessionStatus::Sealed;
+            session.metadata.final_tree = Some(plan.final_tree.clone());
+            session.metadata.preview_commit = Some(plan.preview_commit.clone());
+            session.metadata.plan_digest = Some(plan.digest.clone());
+            session.metadata.refresh().map_err(session_error)?;
+            session.save().map_err(session_error)?;
+            write_plan(&plan)
+        }
+    }
 }
 
 fn validate_inputs(args: &RestackArgs) -> Result<(), CliError> {
     for (label, value) in [
         ("environment", args.environment.as_str()),
-        ("remote", args.remote.as_str()),
+        ("remote", args.remote.as_deref().unwrap_or("origin")),
     ] {
         validate_ref_component(label, value).map_err(|_| {
             machine_usage(
@@ -225,6 +400,49 @@ fn source_object_directory(source: &Path) -> Result<Vec<u8>, CliError> {
     Ok(path)
 }
 
+fn source_repository_identity(source: &Path) -> Result<String, CliError> {
+    let output = source_git(source)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|_| {
+            machine_failure(
+                "repository_unavailable",
+                "could not identify the source repository",
+                json!({}),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(machine_failure(
+            "repository_not_found",
+            "the current directory is not inside a Git repository",
+            json!({}),
+        ));
+    }
+    let path = String::from_utf8(output.stdout).map_err(|_| {
+        machine_failure(
+            "repository_unavailable",
+            "the source repository path is not valid UTF-8",
+            json!({}),
+        )
+    })?;
+    let canonical = fs::canonicalize(path.trim_end_matches(['\r', '\n'])).map_err(|_| {
+        machine_failure(
+            "repository_unavailable",
+            "could not identify the source repository",
+            json!({}),
+        )
+    })?;
+    canonical.to_str().map(str::to_owned).ok_or_else(|| {
+        machine_failure(
+            "repository_unavailable",
+            "the source repository path is not valid UTF-8",
+            json!({}),
+        )
+    })
+}
+
 fn source_git(source: &Path) -> Command {
     let mut command = Command::new("git");
     clear_repository_location_environment(&mut command);
@@ -238,30 +456,43 @@ struct Reconstruction {
     preview_commit: String,
 }
 
+struct ReconstructionConflict {
+    merges: Vec<MergeOutcome>,
+    feature_index: usize,
+    expected_head: String,
+    expected_head_reflog: String,
+    feature: BranchIdentity,
+    unresolved_paths: Vec<String>,
+}
+
+enum ReconstructionResult {
+    Complete(Reconstruction),
+    Conflict(ReconstructionConflict),
+}
+
 struct IsolatedRepository {
-    _temporary: tempfile::TempDir,
     root: PathBuf,
     hooks: PathBuf,
     global_config: PathBuf,
 }
 
 impl IsolatedRepository {
-    fn create(source_objects: &[u8]) -> Result<Self, CliError> {
-        let temporary = tempfile::tempdir().map_err(|_| isolated_setup_error())?;
-        let root = temporary.path().join("repository");
-        let hooks = temporary.path().join("hooks");
-        let global_config = temporary.path().join("global.gitconfig");
+    fn create(root: &Path, source_objects: &[u8]) -> Result<Self, CliError> {
+        let root = root.to_path_buf();
+        let session = root.parent().ok_or_else(isolated_setup_error)?;
+        let hooks = session.join("hooks");
+        let global_config = session.join("global.gitconfig");
         fs::create_dir(&root).map_err(|_| isolated_setup_error())?;
         fs::create_dir(&hooks).map_err(|_| isolated_setup_error())?;
         fs::write(&global_config, []).map_err(|_| isolated_setup_error())?;
 
         let isolated = Self {
-            _temporary: temporary,
             root,
             hooks,
             global_config,
         };
         isolated.run_success(["init", "--quiet"], "initialize")?;
+        fs::write(isolated.root.join(".git/config"), []).map_err(|_| isolated_setup_error())?;
         let alternates = isolated.root.join(".git/objects/info/alternates");
         let mut contents = source_objects.to_vec();
         contents.push(b'\n');
@@ -269,20 +500,36 @@ impl IsolatedRepository {
         Ok(isolated)
     }
 
+    fn open(root: PathBuf, source_objects: &[u8]) -> Result<Self, CliError> {
+        let session = root.parent().ok_or_else(isolated_setup_error)?;
+        let isolated = Self {
+            hooks: session.join("hooks"),
+            global_config: session.join("global.gitconfig"),
+            root,
+        };
+        isolated.validate_control_files(source_objects)?;
+        Ok(isolated)
+    }
+
     fn reconstruct(
         &self,
         main_tip: &str,
         environment: &str,
-        retained: &[graduate::restack::BranchIdentity],
+        retained: &[BranchIdentity],
         author: &RestackAuthor,
-    ) -> Result<Reconstruction, CliError> {
-        self.run_success(
-            ["checkout", "--detach", "--quiet", main_tip, "--"],
-            "checkoutBase",
-        )?;
-        let mut merges = Vec::with_capacity(retained.len());
-        let mut previous = main_tip.to_owned();
-        for feature in retained {
+        start_index: usize,
+        mut merges: Vec<MergeOutcome>,
+    ) -> Result<ReconstructionResult, CliError> {
+        let mut previous = if start_index == 0 {
+            self.run_success(
+                ["checkout", "--detach", "--quiet", main_tip, "--"],
+                "checkoutBase",
+            )?;
+            main_tip.to_owned()
+        } else {
+            self.read_text(["rev-parse", "HEAD"], "continuationHead")?
+        };
+        for (feature_index, feature) in retained.iter().enumerate().skip(start_index) {
             let mut merge_command = self.command();
             merge_command
                 .args([
@@ -302,17 +549,33 @@ impl IsolatedRepository {
             let merge = merge_command
                 .output()
                 .map_err(|_| reconstruction_error("merge"))?;
-            if !merge.status.success() {
-                let unresolved = self.unresolved_paths()?;
-                if !unresolved.is_empty() {
-                    return Err(machine_failure(
-                        "reconstruction_conflict",
-                        "the clean restack preview has unresolved conflicts",
-                        json!({"branch": feature.name, "unresolvedPaths": unresolved}),
-                    ));
+            let resolution = if merge.status.success() {
+                MergeResolution::Clean
+            } else {
+                let conflicted = self.unresolved_paths()?;
+                if conflicted.is_empty() {
+                    return Err(reconstruction_error("merge"));
                 }
-                return Err(reconstruction_error("merge"));
-            }
+                self.run_success(["rerere"], "rerereReplay")?;
+                let remaining = self.rerere_remaining()?;
+                let resolved = conflicted
+                    .iter()
+                    .filter(|path| !remaining.contains(path))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                self.stage_paths(&resolved)?;
+                if !remaining.is_empty() {
+                    return Ok(ReconstructionResult::Conflict(ReconstructionConflict {
+                        merges,
+                        feature_index,
+                        expected_head: previous,
+                        expected_head_reflog: self.head_reflog_digest()?,
+                        feature: feature.clone(),
+                        unresolved_paths: remaining,
+                    }));
+                }
+                MergeResolution::Reused
+            };
             self.validate_index()?;
             let tree = self.read_text(["write-tree"], "writeTree")?;
             let message = canonical_merge_message(&feature.name, environment);
@@ -326,6 +589,7 @@ impl IsolatedRepository {
                 tip: feature.tip.clone(),
                 commit,
                 tree,
+                resolution,
             });
         }
         self.validate_clean_state(main_tip, &previous)?;
@@ -341,11 +605,169 @@ impl IsolatedRepository {
                 return Err(validation_error("finalTree"));
             }
         }
-        Ok(Reconstruction {
+        Ok(ReconstructionResult::Complete(Reconstruction {
             merges,
             final_tree,
             preview_commit: previous,
+        }))
+    }
+
+    fn train_resolutions(
+        &self,
+        snapshot: &RestackSnapshot,
+        retained: &[BranchIdentity],
+        author: &RestackAuthor,
+    ) -> Result<(), CliError> {
+        for feature in &snapshot.features {
+            if !retained
+                .iter()
+                .any(|retained| retained.name == feature.name)
+            {
+                continue;
+            }
+            for historical in &feature.historical_merges {
+                self.run_success(
+                    [
+                        "checkout",
+                        "--detach",
+                        "--quiet",
+                        &historical.first_parent,
+                        "--",
+                    ],
+                    "trainingCheckout",
+                )?;
+                let merge = self
+                    .command()
+                    .args([
+                        "merge",
+                        "--no-ff",
+                        "--no-commit",
+                        "--no-edit",
+                        "--no-gpg-sign",
+                        &historical.feature_parent,
+                    ])
+                    .env("GIT_AUTHOR_NAME", &author.name)
+                    .env("GIT_AUTHOR_EMAIL", &author.email)
+                    .env("GIT_COMMITTER_NAME", &author.name)
+                    .env("GIT_COMMITTER_EMAIL", &author.email)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .output()
+                    .map_err(|_| reconstruction_error("trainingMerge"))?;
+                if merge.status.success() {
+                    self.run_success(
+                        ["reset", "--hard", "--quiet", &historical.first_parent],
+                        "trainingReset",
+                    )?;
+                    continue;
+                }
+                if self.unresolved_paths()?.is_empty() {
+                    return Err(reconstruction_error("trainingMerge"));
+                }
+                self.run_success(["rerere"], "trainingPreimage")?;
+                self.run_success(
+                    ["checkout", "--quiet", &historical.commit, "--", "."],
+                    "trainingResolution",
+                )?;
+                let accepted_tree = self.read_text(["write-tree"], "trainingTree")?;
+                if accepted_tree != historical.tree {
+                    return Err(validation_error("trainingTree"));
+                }
+                self.run_success(["rerere"], "trainingPostimage")?;
+                self.run_success(
+                    ["reset", "--hard", "--quiet", &historical.first_parent],
+                    "trainingReset",
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn complete_manual_merge(
+        &self,
+        expected_head: &str,
+        expected_head_reflog: &str,
+        feature: &BranchIdentity,
+        environment: &str,
+        author: &RestackAuthor,
+    ) -> Result<MergeOutcome, CliError> {
+        let head = self.read_text(["rev-parse", "HEAD"], "resumeHead")?;
+        if head != expected_head {
+            return Err(session_state_error("agentCommit"));
+        }
+        if self.head_reflog_digest()? != expected_head_reflog {
+            return Err(session_state_error("agentCommit"));
+        }
+        let merge_head = self.read_text(["rev-parse", "MERGE_HEAD"], "resumeMergeHead")?;
+        if merge_head != feature.tip {
+            return Err(session_state_error("mergeParent"));
+        }
+        if !self.unresolved_paths()?.is_empty() {
+            return Err(session_state_error("resolutionNotStaged"));
+        }
+        let unstaged = self.read_bytes(["diff", "--name-only", "-z"], "unstagedState")?;
+        let untracked = self.read_bytes(
+            ["ls-files", "--others", "--exclude-standard", "-z"],
+            "untrackedState",
+        )?;
+        if !unstaged.is_empty() || !untracked.is_empty() {
+            return Err(session_state_error("resolutionNotStaged"));
+        }
+        self.run_success(["rerere"], "recordResolution")?;
+        if !self.rerere_remaining()?.is_empty() {
+            return Err(session_state_error("resolutionNotStaged"));
+        }
+        self.validate_index()?;
+        let tree = self.read_text(["write-tree"], "writeTree")?;
+        let message = canonical_merge_message(&feature.name, environment);
+        let commit = self.commit_tree(&tree, expected_head, &feature.tip, &message, author)?;
+        self.run_success(["reset", "--hard", "--quiet", &commit], "resetResult")?;
+        self.validate_commit(&commit, expected_head, &feature.tip, &message, author)?;
+        self.validate_clean_state(expected_head, &commit)?;
+        Ok(MergeOutcome {
+            branch: feature.name.clone(),
+            tip: feature.tip.clone(),
+            commit,
+            tree,
+            resolution: MergeResolution::Manual,
         })
+    }
+
+    fn rerere_remaining(&self) -> Result<Vec<String>, CliError> {
+        let output = self.read_text(["rerere", "remaining"], "rerereRemaining")?;
+        Ok(output
+            .lines()
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect())
+    }
+
+    fn head_reflog_digest(&self) -> Result<String, CliError> {
+        let reflog = self.read_bytes(
+            ["reflog", "show", "HEAD", "--format=%H%x00%gD"],
+            "headReflog",
+        )?;
+        Ok(format!("{:x}", Sha256::digest(reflog)))
+    }
+
+    fn stage_paths(&self, paths: &[String]) -> Result<(), CliError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let output = self
+            .command()
+            .arg("add")
+            .arg("--")
+            .args(paths)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|_| reconstruction_error("stageRerere"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(reconstruction_error("stageRerere"))
+        }
     }
 
     fn commit_tree(
@@ -455,6 +877,35 @@ impl IsolatedRepository {
             .collect()
     }
 
+    fn validate_control_files(&self, source_objects: &[u8]) -> Result<(), CliError> {
+        require_plain_directory(&self.root)?;
+        require_plain_directory(&self.hooks)?;
+        if fs::read_dir(&self.hooks)
+            .map_err(|_| session_state_error("hooks"))?
+            .next()
+            .is_some()
+        {
+            return Err(session_state_error("hooks"));
+        }
+        for path in [&self.global_config, &self.root.join(".git/config")] {
+            require_plain_file(path)?;
+            if !fs::read(path)
+                .map_err(|_| session_state_error("configuration"))?
+                .is_empty()
+            {
+                return Err(session_state_error("configuration"));
+            }
+        }
+        let alternates = self.root.join(".git/objects/info/alternates");
+        require_plain_file(&alternates)?;
+        let mut expected = source_objects.to_vec();
+        expected.push(b'\n');
+        if fs::read(alternates).map_err(|_| session_state_error("objectStore"))? != expected {
+            return Err(session_state_error("objectStore"));
+        }
+        Ok(())
+    }
+
     fn read_text<const N: usize>(
         &self,
         arguments: [&str; N],
@@ -519,7 +970,7 @@ impl IsolatedRepository {
             .env("GIT_CONFIG_KEY_3", "tag.gpgSign")
             .env("GIT_CONFIG_VALUE_3", "false")
             .env("GIT_CONFIG_KEY_4", "rerere.enabled")
-            .env("GIT_CONFIG_VALUE_4", "false")
+            .env("GIT_CONFIG_VALUE_4", "true")
             .env("GIT_CONFIG_KEY_5", "rerere.autoupdate")
             .env("GIT_CONFIG_VALUE_5", "false")
             .env("GIT_CONFIG_KEY_6", "core.autocrlf")
@@ -534,6 +985,8 @@ fn clear_repository_location_environment(command: &mut Command) {
     for variable in [
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
         "GIT_COMMON_DIR",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
         "GIT_DIR",
         "GIT_GRAFT_FILE",
         "GIT_INDEX_FILE",
@@ -560,6 +1013,7 @@ fn clear_isolated_environment(command: &mut Command) {
         "GIT_CONFIG_COUNT",
         "GIT_CONFIG_GLOBAL",
         "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_PARAMETERS",
         "GIT_CONFIG_SYSTEM",
         "GIT_EXEC_PATH",
     ] {
@@ -691,10 +1145,15 @@ fn plan_json(plan: &RestackPlan) -> Value {
         .merges
         .iter()
         .map(|merge| {
+            let outcome = match merge.resolution {
+                MergeResolution::Clean => "clean",
+                MergeResolution::Reused => "rerere",
+                MergeResolution::Manual => "manual",
+            };
             let value = json!({
                 "branch": merge.branch,
                 "tip": merge.tip,
-                "outcome": "clean",
+                "outcome": outcome,
                 "commit": merge.commit,
                 "tree": merge.tree,
                 "firstParent": first_parent,
@@ -764,6 +1223,100 @@ fn validation_error(stage: &'static str) -> CliError {
         "isolated reconstruction failed validation",
         json!({"stage": stage}),
     )
+}
+
+fn conflict_error(
+    branch: &str,
+    unresolved_paths: Vec<String>,
+    token: &str,
+    work_area: &Path,
+    expires_at: u64,
+) -> CliError {
+    let Some(work_area) = work_area.to_str() else {
+        return machine_failure(
+            "session_unavailable",
+            "the restack work area path is not valid UTF-8",
+            json!({}),
+        );
+    };
+    machine_failure(
+        "reconstruction_conflict",
+        "the restack preview has unresolved conflicts",
+        json!({
+            "branch": branch,
+            "unresolvedPaths": unresolved_paths,
+            "resumeToken": token,
+            "workArea": work_area,
+            "expiresAt": expires_at,
+        }),
+    )
+}
+
+fn session_error(error: SessionError) -> CliError {
+    match error {
+        SessionError::InvalidToken => machine_failure(
+            "invalid_session",
+            "the restack continuation token is not valid",
+            json!({"reason": "token"}),
+        ),
+        SessionError::Missing => machine_failure(
+            "invalid_session",
+            "the restack session does not exist",
+            json!({"reason": "missing"}),
+        ),
+        SessionError::Locked => machine_failure(
+            "session_locked",
+            "the restack session is already in use",
+            json!({}),
+        ),
+        SessionError::Tampered => machine_failure(
+            "invalid_session",
+            "the restack session failed integrity validation",
+            json!({"reason": "tampered"}),
+        ),
+        SessionError::Expired => machine_failure(
+            "expired_session",
+            "the restack session has expired",
+            json!({}),
+        ),
+        SessionError::Unavailable => machine_failure(
+            "session_unavailable",
+            "the restack session store is unavailable",
+            json!({}),
+        ),
+    }
+}
+
+fn stale_session_error(reason: &'static str) -> CliError {
+    machine_failure(
+        "stale_session",
+        "the restack session does not match this invocation",
+        json!({"reason": reason}),
+    )
+}
+
+fn session_state_error(reason: &'static str) -> CliError {
+    machine_failure(
+        "invalid_session_state",
+        "the restack work area is not in the expected resumable state",
+        json!({"reason": reason}),
+    )
+}
+
+fn require_plain_directory(path: &Path) -> Result<(), CliError> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| session_state_error("layout"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(session_state_error("layout"));
+    }
+    Ok(())
+}
+
+fn require_plain_file(path: &Path) -> Result<(), CliError> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| session_state_error("layout"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(session_state_error("layout"));
+    }
+    Ok(())
 }
 
 fn machine_usage(code: &'static str, message: &'static str, details: Value) -> CliError {

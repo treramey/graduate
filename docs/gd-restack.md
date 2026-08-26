@@ -149,6 +149,15 @@ agent can deliberately remove selected features from the reconstructed branch.
   24-hour inactivity TTL. Resume refreshes activity; every restack invocation
   purges expired sessions; successful apply or explicit abort deletes the
   session immediately. V1 adds no separate cleanup command.
+- Session capabilities combine a non-secret lookup identifier with an
+  unguessable secret that authenticates atomically replaced metadata. The
+  secret is returned only in conflict continuation output and is not stored in
+  that metadata. The session holds an exclusive lock during every transition.
+- Resume verifies the canonical source Git common directory, explicit
+  environment, optional remote/main assertions, isolated control files,
+  expected HEAD, preserved HEAD reflog, MERGE_HEAD, and a fully staged
+  resolution. It rejects untracked or unstaged work and any commit created in
+  the work area before Graduate creates the canonical merge commit.
 - When a conflict remains after rerere, interactive mode pauses in the isolated
   work area, identifies unresolved files, prints the work area's path, and
   exits without pushing. Machine mode does the same through structured conflict
