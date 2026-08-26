@@ -49,11 +49,14 @@ pub(crate) struct RestackArgs {
     #[arg(long, value_name = "JSON", conflicts_with = "resume")]
     pub(crate) params: Option<String>,
     /// Publish a freshly reconstructed plan authorized by its reviewed digest.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "abort")]
     pub(crate) apply: bool,
     /// Resume an isolated conflicted preview with an opaque continuation token.
     #[arg(long, value_name = "TOKEN", conflicts_with = "params")]
     pub(crate) resume: Option<String>,
+    /// Delete an abandoned resumable session without changing repository refs.
+    #[arg(long, requires = "resume", conflicts_with = "apply")]
+    pub(crate) abort: bool,
 }
 
 impl std::fmt::Debug for RestackArgs {
@@ -66,6 +69,7 @@ impl std::fmt::Debug for RestackArgs {
             .field("params", &self.params.as_ref().map(|_| "<json>"))
             .field("apply", &self.apply)
             .field("resume", &self.resume.as_ref().map(|_| "<token>"))
+            .field("abort", &self.abort)
             .finish()
     }
 }

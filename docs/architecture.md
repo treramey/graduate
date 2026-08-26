@@ -60,9 +60,10 @@ actions.
   commit history, age-report modal, and open-ticket events.
 - `graduate_cli::restack`: release-gated restack planning, isolated Git
   reconstruction, historical rerere training, resumed-preview validation,
-  clean apply revalidation, and exact leased publication.
+  clean and resumed apply revalidation, exact leased publication, and abort.
 - `graduate_cli::restack_session`: permission-restricted resumable work areas,
-  authenticated atomic metadata, exclusive locks, and inactivity expiry.
+  store-key-authenticated atomic metadata, capability authentication,
+  exclusive locks, single-use consumption, and inactivity expiry.
 
 ## Safety invariants
 
@@ -118,6 +119,13 @@ actions.
   endpoint identities, revalidates every reviewed ref and the configured
   identity, suppresses source and global push hooks, and updates only the
   remote environment through an exact lease.
+- Resumed publication keeps the session locked, revalidates its sealed commit,
+  tree, parents, metadata, digest, endpoint identities, configured identity,
+  and every remote input, then uses the same exact environment lease. A failed
+  publication preserves the session; successful apply or explicit abort
+  consumes its capability and removes the isolated work area. A durable
+  publishing state prevents post-push cleanup failure from restoring replayable
+  sealed authority.
 - Restack inventory accepts only uniquely mapped two-parent explicit feature
   merges and exact empty phase markers; direct work, fast-forwards, octopus
   merges, deleted feature refs, and ambiguous mappings fail with evidence.
