@@ -118,7 +118,7 @@ impl SessionStore {
         let cache = dirs::cache_dir().ok_or(SessionError::Unavailable)?;
         let root = cache.join("graduate").join("restack").join("sessions");
         create_restricted_directory(&root)?;
-        let root = fs::canonicalize(root).map_err(|_| SessionError::Unavailable)?;
+        let root = canonical_session_root(root)?;
         if root.to_str().is_none() {
             return Err(SessionError::Unavailable);
         }
@@ -224,6 +224,16 @@ impl SessionStore {
             metadata,
         })
     }
+}
+
+#[cfg(not(windows))]
+fn canonical_session_root(root: PathBuf) -> Result<PathBuf, SessionError> {
+    fs::canonicalize(root).map_err(|_| SessionError::Unavailable)
+}
+
+#[cfg(windows)]
+fn canonical_session_root(root: PathBuf) -> Result<PathBuf, SessionError> {
+    Ok(root)
 }
 
 pub(crate) struct SessionDraft {
