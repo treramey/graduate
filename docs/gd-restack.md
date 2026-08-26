@@ -81,10 +81,11 @@ agent can deliberately remove selected features from the reconstructed branch.
   because a retained branch can contain an earlier part of the feature. Restack
   never cascades removals or claims code was removed when the graph keeps it.
 - Unattended v1 is JSON-only. `--params` selects machine mode; stdout emits one
-  schema-versioned plan or apply result, while progress and errors stay on
-  stderr. A new non-TTY restack without `--params` is a usage error. Resume is
-  a separate machine invocation selected by `--resume <token>` and does not
-  require `--params`. Table, YAML, CSV, and output-file modes are out of scope.
+  schema-versioned plan, apply result, or abort result, while progress and
+  errors stay on stderr. Successful machine operations exit 0. A new non-TTY
+  restack without `--params` is a usage error. Resume is a separate machine
+  invocation selected by `--resume <token>` and does not require `--params`.
+  Table, YAML, CSV, and output-file modes are out of scope.
 - Machine mode also emits schema-versioned, redacted JSON errors on stderr with
   stable `code`, `message`, and `details` fields plus conflict continuation
   fields when relevant. Invalid usage/params exit 2; fetch, Git, conflict,
@@ -96,7 +97,10 @@ agent can deliberately remove selected features from the reconstructed branch.
   digest, old/new environment OIDs, tree OID, merged/removed branches,
   resolution counts, and `pushed: true`. Conflict errors add the branch,
   unresolved paths, resume token, work-area path, and expiry. Jira payloads and
-  raw rerere data are excluded.
+  raw rerere data are excluded. Abort emits a token-free `restackAbortResult`
+  containing schema version 1, the environment name, `aborted: true`, and
+  false `sourceCheckoutChanged`, `localRefsChanged`, `remoteRefsChanged`, and
+  `personalRerereChanged` effects.
 - Discovery/planning does not mutate. Interactive execution requires an
   explicit confirmation after branch selection; unattended execution requires
   `--apply` in addition to `--params`. JSON parameters select branch removals
@@ -148,16 +152,20 @@ agent can deliberately remove selected features from the reconstructed branch.
   apply while revalidating its final commit, tree, parents, metadata, and plan
   digest. A token becomes unusable after successful apply or explicit abort; a
   failed publication preserves the sealed session and token for another
-  validated attempt. Abandoned sessions expire and are purged without changing
-  repository refs.
+  validated attempt. Graduate persists a non-replayable publication state
+  immediately before push, so a process or cleanup failure after a successful
+  remote update cannot leave sealed authority behind. Abandoned sessions
+  expire and are purged without changing repository refs.
 - Resumable sessions live in Graduate's mode-restricted platform cache with a
   24-hour inactivity TTL. Resume refreshes activity; every restack invocation
   purges expired sessions; successful apply or explicit abort deletes the
   session immediately. V1 adds no separate cleanup command.
 - Session capabilities combine a non-secret lookup identifier with an
-  unguessable secret that authenticates atomically replaced metadata. The
-  secret is returned only in conflict continuation output and is not stored in
-  that metadata. The session holds an exclusive lock during every transition.
+  unguessable secret whose digest authenticates use of the session. A separate
+  mode-restricted store key authenticates atomically replaced metadata, so the
+  continuation secret cannot sign replacement sealed plans. The secret is
+  returned only in conflict continuation output and is not stored in that
+  metadata. The session holds an exclusive lock during every transition.
 - Resume verifies the canonical source Git common directory, explicit
   environment, optional remote/main assertions, isolated control files,
   expected HEAD, preserved HEAD reflog, MERGE_HEAD, and a fully staged

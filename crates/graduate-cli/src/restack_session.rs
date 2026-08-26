@@ -1,7 +1,7 @@
 //! Permission-restricted, expiring state for resumable restack conflicts.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,11 +11,12 @@ use graduate::restack::{
 };
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 const SESSION_TTL_SECONDS: u64 = 24 * 60 * 60;
 const SESSION_FILE: &str = "session.json";
 const LOCK_FILE: &str = "session.lock";
+const INTEGRITY_KEY_FILE: &str = "integrity.key";
 const REPOSITORY_DIRECTORY: &str = "repository";
 const MAX_METADATA_BYTES: u64 = 1024 * 1024;
 
@@ -49,6 +50,8 @@ pub(crate) struct SessionMetadata {
 pub(crate) enum SessionStatus {
     Conflicted,
     Sealed,
+    Publishing,
+    Consumed,
 }
 
 pub(crate) struct SessionConflict {
@@ -115,6 +118,7 @@ pub(crate) enum SessionError {
 
 pub(crate) struct SessionStore {
     root: PathBuf,
+    integrity_key: [u8; 32],
 }
 
 impl SessionStore {
@@ -126,7 +130,11 @@ impl SessionStore {
         if root.to_str().is_none() {
             return Err(SessionError::Unavailable);
         }
-        Ok(Self { root })
+        let integrity_key = load_or_create_integrity_key(&root)?;
+        Ok(Self {
+            root,
+            integrity_key,
+        })
     }
 
     pub(crate) fn purge_expired(&self) -> Result<(), SessionError> {
@@ -191,6 +199,7 @@ impl SessionStore {
                     return Ok(SessionDraft {
                         id,
                         secret,
+                        integrity_key: self.integrity_key,
                         directory,
                         lock: Some(lock),
                         preserved: false,
@@ -209,7 +218,7 @@ impl SessionStore {
         require_directory(&directory)?;
         let lock = open_lock(&directory)?;
         fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| SessionError::Locked)?;
-        let metadata = read_metadata(&directory, &token.secret)?;
+        let metadata = read_metadata(&directory, &self.integrity_key, &token.secret)?;
         if metadata.is_expired()? {
             drop(lock);
             let _ = fs::remove_dir_all(&directory);
@@ -217,10 +226,51 @@ impl SessionStore {
         }
         Ok(SessionHandle {
             secret: token.secret,
+            integrity_key: self.integrity_key,
             directory,
-            lock,
+            lock: Some(lock),
             metadata,
         })
+    }
+}
+
+fn load_or_create_integrity_key(root: &Path) -> Result<[u8; 32], SessionError> {
+    let path = root.join(INTEGRITY_KEY_FILE);
+    match OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            restrict_file(&file)?;
+            fs2::FileExt::lock_exclusive(&file).map_err(|_| SessionError::Unavailable)?;
+            let key = random_bytes::<32>()?;
+            file.write_all(&key)
+                .and_then(|()| file.sync_all())
+                .map_err(|_| SessionError::Unavailable)?;
+            sync_directory(root).map_err(|_| SessionError::Unavailable)?;
+            Ok(key)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let metadata = fs::symlink_metadata(&path).map_err(|_| SessionError::Unavailable)?;
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || !restricted_file_metadata(&metadata)
+            {
+                return Err(SessionError::Tampered);
+            }
+            let mut file = OpenOptions::new()
+                .read(true)
+                .open(path)
+                .map_err(|_| SessionError::Unavailable)?;
+            fs2::FileExt::lock_shared(&file).map_err(|_| SessionError::Unavailable)?;
+            let mut key = Vec::new();
+            file.read_to_end(&mut key)
+                .map_err(|_| SessionError::Unavailable)?;
+            key.try_into().map_err(|_| SessionError::Tampered)
+        }
+        Err(_) => Err(SessionError::Unavailable),
     }
 }
 
@@ -237,6 +287,7 @@ fn canonical_session_root(root: PathBuf) -> Result<PathBuf, SessionError> {
 pub(crate) struct SessionDraft {
     id: String,
     secret: [u8; 32],
+    integrity_key: [u8; 32],
     directory: PathBuf,
     lock: Option<File>,
     preserved: bool,
@@ -252,7 +303,7 @@ impl SessionDraft {
     }
 
     pub(crate) fn save(&mut self, metadata: &SessionMetadata) -> Result<(), SessionError> {
-        write_metadata(&self.directory, &self.secret, metadata)?;
+        write_metadata(&self.directory, &self.integrity_key, &self.secret, metadata)?;
         self.preserved = true;
         Ok(())
     }
@@ -283,8 +334,9 @@ impl Drop for SessionDraft {
 
 pub(crate) struct SessionHandle {
     secret: [u8; 32],
+    integrity_key: [u8; 32],
     directory: PathBuf,
-    lock: File,
+    lock: Option<File>,
     pub(crate) metadata: SessionMetadata,
 }
 
@@ -294,13 +346,41 @@ impl SessionHandle {
     }
 
     pub(crate) fn save(&self) -> Result<(), SessionError> {
-        write_metadata(&self.directory, &self.secret, &self.metadata)
+        write_metadata(
+            &self.directory,
+            &self.integrity_key,
+            &self.secret,
+            &self.metadata,
+        )
+    }
+
+    pub(crate) fn begin_publication(&mut self) -> Result<(), SessionError> {
+        self.metadata.status = SessionStatus::Publishing;
+        self.save()
+    }
+
+    pub(crate) fn restore_sealed(&mut self) -> Result<(), SessionError> {
+        self.metadata.status = SessionStatus::Sealed;
+        self.save()
+    }
+
+    pub(crate) fn consume(mut self) -> Result<(), SessionError> {
+        self.metadata.status = SessionStatus::Consumed;
+        self.save()?;
+        let directory = self.directory.clone();
+        if let Some(lock) = self.lock.take() {
+            let _ = fs2::FileExt::unlock(&lock);
+            drop(lock);
+        }
+        fs::remove_dir_all(directory).map_err(|_| SessionError::Unavailable)
     }
 }
 
 impl Drop for SessionHandle {
     fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self.lock);
+        if let Some(lock) = &self.lock {
+            let _ = fs2::FileExt::unlock(lock);
+        }
     }
 }
 
@@ -308,6 +388,7 @@ impl Drop for SessionHandle {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SessionEnvelope {
     metadata: SessionMetadata,
+    capability: String,
     integrity: String,
 }
 
@@ -340,12 +421,15 @@ impl SessionToken {
 
 fn write_metadata(
     directory: &Path,
+    integrity_key: &[u8; 32],
     secret: &[u8; 32],
     metadata: &SessionMetadata,
 ) -> Result<(), SessionError> {
-    let integrity = metadata_integrity(secret, metadata)?;
+    let capability = capability_digest(secret);
+    let integrity = metadata_integrity(integrity_key, metadata, &capability)?;
     let envelope = SessionEnvelope {
         metadata: metadata.clone(),
+        capability,
         integrity,
     };
     let mut contents =
@@ -382,7 +466,11 @@ fn write_metadata(
     sync_directory(directory).map_err(|_| SessionError::Unavailable)
 }
 
-fn read_metadata(directory: &Path, secret: &[u8; 32]) -> Result<SessionMetadata, SessionError> {
+fn read_metadata(
+    directory: &Path,
+    integrity_key: &[u8; 32],
+    secret: &[u8; 32],
+) -> Result<SessionMetadata, SessionError> {
     let path = directory.join(SESSION_FILE);
     let file_metadata = fs::symlink_metadata(&path).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
@@ -404,7 +492,10 @@ fn read_metadata(directory: &Path, secret: &[u8; 32]) -> Result<SessionMetadata,
     if envelope.metadata.schema_version != RESTACK_SCHEMA_VERSION {
         return Err(SessionError::Tampered);
     }
-    let expected = metadata_integrity(secret, &envelope.metadata)?;
+    if envelope.capability != capability_digest(secret) {
+        return Err(SessionError::InvalidToken);
+    }
+    let expected = metadata_integrity(integrity_key, &envelope.metadata, &envelope.capability)?;
     if expected != envelope.integrity {
         return Err(SessionError::Tampered);
     }
@@ -412,14 +503,22 @@ fn read_metadata(directory: &Path, secret: &[u8; 32]) -> Result<SessionMetadata,
 }
 
 fn metadata_integrity(
-    secret: &[u8; 32],
+    integrity_key: &[u8; 32],
     metadata: &SessionMetadata,
+    capability: &str,
 ) -> Result<String, SessionError> {
     let canonical = serde_json::to_value(metadata).map_err(|_| SessionError::Unavailable)?;
     let encoded = serde_json::to_vec(&canonical).map_err(|_| SessionError::Unavailable)?;
-    let mut mac = HmacSha256::new_from_slice(secret).map_err(|_| SessionError::Unavailable)?;
+    let mut mac =
+        HmacSha256::new_from_slice(integrity_key).map_err(|_| SessionError::Unavailable)?;
     mac.update(&encoded);
+    mac.update(&[0]);
+    mac.update(capability.as_bytes());
     Ok(encode_hex(&mac.finalize().into_bytes()))
+}
+
+fn capability_digest(secret: &[u8; 32]) -> String {
+    encode_hex(&Sha256::digest(secret))
 }
 
 fn session_expired_without_token(directory: &Path) -> Result<bool, SessionError> {
