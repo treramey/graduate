@@ -33,7 +33,7 @@ pub(crate) enum Command {
     Restack(RestackArgs),
 }
 
-/// Release-gated machine options for previewing an environment restack.
+/// Release-gated machine options for previewing or applying an environment restack.
 #[derive(Args)]
 pub(crate) struct RestackArgs {
     /// Environment branch to reconstruct.
@@ -45,9 +45,12 @@ pub(crate) struct RestackArgs {
     /// Remote that owns the environment and feature branches.
     #[arg(long, value_name = "REMOTE")]
     pub(crate) remote: Option<String>,
-    /// JSON preview parameters containing removeBranches.
+    /// JSON parameters containing removeBranches and, for apply, planDigest.
     #[arg(long, value_name = "JSON", conflicts_with = "resume")]
     pub(crate) params: Option<String>,
+    /// Publish a freshly reconstructed plan authorized by its reviewed digest.
+    #[arg(long)]
+    pub(crate) apply: bool,
     /// Resume an isolated conflicted preview with an opaque continuation token.
     #[arg(long, value_name = "TOKEN", conflicts_with = "params")]
     pub(crate) resume: Option<String>,
@@ -61,6 +64,7 @@ impl std::fmt::Debug for RestackArgs {
             .field("main", &self.main)
             .field("remote", &self.remote)
             .field("params", &self.params.as_ref().map(|_| "<json>"))
+            .field("apply", &self.apply)
             .field("resume", &self.resume.as_ref().map(|_| "<token>"))
             .finish()
     }

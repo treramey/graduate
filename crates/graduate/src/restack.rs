@@ -111,6 +111,14 @@ pub struct RestackAuthor {
     pub email: String,
 }
 
+/// Credential-redacted identities for the remote endpoints reviewed by a plan.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteEndpointIdentity {
+    pub fetch_sha256: String,
+    pub push_sha256: String,
+}
+
 /// A validated partition of the explicit feature inventory.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -143,6 +151,7 @@ pub struct MergeOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestackPlan {
     pub snapshot: RestackSnapshot,
+    pub remote_endpoints: RemoteEndpointIdentity,
     pub author: RestackAuthor,
     pub selection: RestackSelection,
     pub merges: Vec<MergeOutcome>,
@@ -474,6 +483,7 @@ pub fn select_features(
 /// Bind validated reconstruction output to the captured inputs.
 pub fn build_plan(
     snapshot: RestackSnapshot,
+    remote_endpoints: RemoteEndpointIdentity,
     author: RestackAuthor,
     selection: RestackSelection,
     merges: Vec<MergeOutcome>,
@@ -494,9 +504,16 @@ pub fn build_plan(
             });
         }
     }
-    let digest = plan_digest(&snapshot, &author, &selection, &final_tree);
+    let digest = plan_digest(
+        &snapshot,
+        &remote_endpoints,
+        &author,
+        &selection,
+        &final_tree,
+    );
     Ok(RestackPlan {
         snapshot,
+        remote_endpoints,
         author,
         selection,
         merges,
@@ -513,6 +530,7 @@ pub fn canonical_merge_message(feature: &str, environment: &str) -> String {
 
 fn plan_digest(
     snapshot: &RestackSnapshot,
+    remote_endpoints: &RemoteEndpointIdentity,
     author: &RestackAuthor,
     selection: &RestackSelection,
     final_tree: &str,
@@ -520,6 +538,16 @@ fn plan_digest(
     let mut digest = Sha256::new();
     digest_field(&mut digest, "schema", &RESTACK_SCHEMA_VERSION.to_string());
     digest_field(&mut digest, "remote", &snapshot.remote);
+    digest_field(
+        &mut digest,
+        "remote_fetch_sha256",
+        &remote_endpoints.fetch_sha256,
+    );
+    digest_field(
+        &mut digest,
+        "remote_push_sha256",
+        &remote_endpoints.push_sha256,
+    );
     digest_field(&mut digest, "environment", &snapshot.environment);
     digest_field(&mut digest, "environment_ref", &snapshot.environment_ref);
     digest_field(&mut digest, "environment_tip", &snapshot.environment_tip);
@@ -758,6 +786,10 @@ mod tests {
             name: "Test Author".to_owned(),
             email: "test@example.com".to_owned(),
         };
+        let endpoints = RemoteEndpointIdentity {
+            fetch_sha256: "11".repeat(32),
+            push_sha256: "22".repeat(32),
+        };
         let outcomes = vec![MergeOutcome {
             branch: "feature/a".to_owned(),
             tip: "a".to_owned(),
@@ -768,6 +800,7 @@ mod tests {
 
         let first = build_plan(
             snapshot.clone(),
+            endpoints.clone(),
             author.clone(),
             selection.clone(),
             outcomes.clone(),
@@ -778,6 +811,7 @@ mod tests {
         regenerated[0].commit = "preview-two".to_owned();
         let second = build_plan(
             snapshot.clone(),
+            endpoints.clone(),
             author.clone(),
             selection.clone(),
             regenerated.clone(),
@@ -786,6 +820,7 @@ mod tests {
         )?;
         let changed_author = build_plan(
             snapshot.clone(),
+            endpoints.clone(),
             RestackAuthor {
                 name: "Other Author".to_owned(),
                 email: author.email.clone(),
@@ -796,9 +831,10 @@ mod tests {
             "preview-two".to_owned(),
         )?;
         let changed_tree = build_plan(
-            snapshot,
-            author,
-            selection,
+            snapshot.clone(),
+            endpoints.clone(),
+            author.clone(),
+            selection.clone(),
             vec![MergeOutcome {
                 branch: "feature/a".to_owned(),
                 tip: "a".to_owned(),
@@ -809,14 +845,33 @@ mod tests {
             "other-tree".to_owned(),
             "preview-three".to_owned(),
         )?;
+        let changed_endpoint = build_plan(
+            snapshot,
+            RemoteEndpointIdentity {
+                fetch_sha256: endpoints.fetch_sha256,
+                push_sha256: "33".repeat(32),
+            },
+            author,
+            selection,
+            vec![MergeOutcome {
+                branch: "feature/a".to_owned(),
+                tip: "a".to_owned(),
+                commit: "preview-four".to_owned(),
+                tree: "tree-a".to_owned(),
+                resolution: MergeResolution::Clean,
+            }],
+            "final-tree".to_owned(),
+            "preview-four".to_owned(),
+        )?;
 
         assert_eq!(first.digest, second.digest);
         assert_eq!(
             first.digest,
-            "3713b701bfe317d21954833623e8b6a22d1a4dbf518bce88df79b409ac35854f"
+            "8463eab275c4a4eff5210685e598b0239f829d2543fdbd5dd02e800ec8e029cb"
         );
         assert_ne!(first.digest, changed_author.digest);
         assert_ne!(first.digest, changed_tree.digest);
+        assert_ne!(first.digest, changed_endpoint.digest);
         assert_eq!(first.digest.len(), 64);
         Ok(())
     }
