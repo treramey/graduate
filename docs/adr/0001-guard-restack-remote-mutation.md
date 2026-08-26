@@ -8,7 +8,9 @@ status: accepted
 will let it replace only a selected remote environment branch. It must not
 change feature branches, the source checkout or index, local branches
 including the local environment branch, or the user's personal rerere cache.
-A mandatory fetch can update the source repository's remote-tracking refs.
+A mandatory fetch can update the source repository's remote-tracking refs. It
+uses an explicit heads-only refmap without tag following and does not write
+`FETCH_HEAD`, so repository fetch configuration cannot widen those effects.
 Deterministic planning belongs in `graduate`; fetching, Git execution,
 filesystem and cache access, terminal handling, and publication belong in
 `graduate-cli`.

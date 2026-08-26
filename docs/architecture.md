@@ -40,7 +40,8 @@ actions.
   branch-to-ticket mapping, and commit-age projections.
 - `graduate::restack`: deterministic restack graph snapshots, explicit feature
   ordering, commit attribution, marker recognition, unsupported-history
-  evidence, removal selection, and endpoint-bound plan digests.
+  evidence, removal selection, terminal-independent review transitions, and
+  endpoint-bound plan digests.
 - `graduate::jira`: validated Jira sites, credentials, and identities shared by every delivery path.
 - `graduate::jira_auth`: deterministic Jira onboarding state and secret-retention
   transitions.
@@ -60,7 +61,10 @@ actions.
   commit history, age-report modal, and open-ticket events.
 - `graduate_cli::restack`: release-gated restack planning, isolated Git
   reconstruction, historical rerere training, resumed-preview validation,
-  clean and resumed apply revalidation, exact leased publication, and abort.
+  interactive review, clean and resumed apply revalidation, exact leased
+  publication, and abort.
+- `graduate_cli::restack_tui`: ordered feature selection, exact-effects review,
+  explicit rewrite confirmation, and post-restoration human handoff output.
 - `graduate_cli::restack_session`: permission-restricted resumable work areas,
   store-key-authenticated atomic metadata, capability authentication,
   exclusive locks, single-use consumption, and inactivity expiry.
@@ -80,7 +84,9 @@ actions.
   misleading diagnostics.
 - Tests never initialize the developer's real terminal.
 - Generated skills are reproducible from the checked-in CLI generator.
-- Tokens never appear in result text, errors, review screens, or debug output.
+- Credentials never appear in result text, errors, review screens, or debug
+  output. A resumable-session capability appears only in explicit conflict
+  continuation or handoff output.
 - Existing Jira tokens remain inside workflow state and are represented only
   as retainable credentials, never editable field values.
 - Jira setup creates a unique same-directory temporary file with exclusive access,
@@ -105,6 +111,13 @@ actions.
 - Non-interactive promotion reports default to structured JSON. Alternative
   formats use the bounded `--format` surface, and `--output` rejects absolute
   paths, parent traversal, and symbolic-link destinations.
+- Interactive restack requires terminal-capable stdin and stderr, uses only
+  locally parsed Jira keys, and binds confirmation to the reviewed in-memory
+  plan. It restores the shared terminal lifecycle before success, cancellation,
+  errors, or conflict paths reach ordinary stderr.
+- Interactive and machine restack share isolated unsigned reconstruction,
+  endpoint/ref revalidation, suppressed hooks, and exact environment leases;
+  neither path changes the source checkout, local refs, or personal rerere.
 - Restack trains and replays conflict resolutions only in its isolated
   repository. It never reads or writes the source repository's rerere cache.
 - An unresolved restack conflict is preserved behind an opaque capability in a

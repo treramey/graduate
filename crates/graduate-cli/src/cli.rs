@@ -28,12 +28,12 @@ pub(crate) enum Command {
     Diff(DiffArgs),
     /// Generate portable AI agent skills from Graduate's command contract.
     GenerateSkills(GenerateSkillsArgs),
-    /// Preview an isolated environment reconstruction through machine JSON.
+    /// Review and safely publish an isolated environment reconstruction.
     #[command(hide = true)]
     Restack(RestackArgs),
 }
 
-/// Release-gated machine options for previewing or applying an environment restack.
+/// Release-gated options for reviewing or applying an environment restack.
 #[derive(Args)]
 pub(crate) struct RestackArgs {
     /// Environment branch to reconstruct.

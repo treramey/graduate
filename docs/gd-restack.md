@@ -130,12 +130,13 @@ agent can deliberately remove selected features from the reconstructed branch.
   The digest is the lowercase hexadecimal SHA-256 of that byte stream.
 - Preview performs the full disposable reconstruction, including rerere replay
   and validation, but never pushes. It reports each clean or rerere-resolved
-  merge and the final tree OID. Apply fetches and reconstructs again, requires
-  the same plan digest, verifies that the final tree matches preview, then
-  performs the leased push. New committer timestamps can produce different
+  merge and the final tree OID. Fetch uses an explicit remote-heads refmap,
+  disables tag following, and preserves `FETCH_HEAD`; only the selected remote's
+  remote-tracking namespace is updated. Apply fetches and reconstructs again,
+  requires the same plan digest, verifies that the final tree matches preview,
+  then performs the leased push. New committer timestamps can produce different
   merge commit OIDs during ordinary apply. Review instead binds the configured
-  identity, canonical parent topology, merge order and messages, and final
-  tree.
+  identity, canonical parent topology, merge order and messages, and final tree.
 - Reconstruction validation is Git-only: resolved index, no conflict markers
   or diff-check failures, canonical merge parents/order/messages, reviewed
   final tree, and unchanged remote inputs. Graduate runs no repository build or
@@ -172,9 +173,11 @@ agent can deliberately remove selected features from the reconstructed branch.
   resolution. It rejects untracked or unstaged work and any commit created in
   the work area before Graduate creates the canonical merge commit.
 - When a conflict remains after rerere, interactive mode pauses in the isolated
-  work area, identifies unresolved files, prints the work area's path, and
-  exits without pushing. Machine mode does the same through structured conflict
-  details. The work area is preserved so a human or coding agent can inspect
+  work area, identifies unresolved files, restores the terminal, then prints
+  the work area's path and one token-bearing resume command before exiting
+  without pushing. Machine mode does the same through structured conflict
+  details. The capability appears nowhere except these explicit continuation
+  outputs. The work area is preserved so a human or coding agent can inspect
   and resolve it with normal repository tools. A conflicting feature is never
   silently removed.
 - Rebuilds should reuse prior merge-conflict resolutions with Git `rerere`,
@@ -381,9 +384,10 @@ agent can deliberately remove selected features from the reconstructed branch.
    guard/theme, deterministic actions, and `TestBackend`; restore the terminal
    before printing a preserved conflict path.
 4. Serialize the agreed schema-v1 plan/result to stdout and machine errors to
-   stderr. Return the opaque resume capability only in the documented conflict
-   continuation field. Redact it from all other output. Always redact PATs,
-   credential helper values, remote credentials, and raw rerere contents.
+   stderr. Return the opaque resume capability only in the documented machine
+   conflict continuation field or the post-restoration interactive handoff
+   command. Redact it from all other output. Always redact PATs, credential
+   helper values, remote credentials, and raw rerere contents.
 
 ### 7. Verify behavior
 

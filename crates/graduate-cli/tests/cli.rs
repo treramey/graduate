@@ -195,6 +195,8 @@ fn restack_preview_is_isolated_and_emits_canonical_machine_json() -> Result<(), 
     let remote_environment_tree =
         fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa^{tree}"])?;
     let main_tip = fixture.git_text(&fixture.source, &["rev-parse", "refs/remotes/origin/main"])?;
+    let fetch_head = fixture.source.join(".git/FETCH_HEAD");
+    std::fs::write(&fetch_head, "preserve user fetch state\n")?;
     std::fs::write(fixture.source.join("base"), "dirty base\n")?;
     std::fs::write(fixture.source.join("untracked"), "leave me alone\n")?;
     let rerere = fixture.source.join(".git/rr-cache/personal");
@@ -310,6 +312,10 @@ fn restack_preview_is_isolated_and_emits_canonical_machine_json() -> Result<(), 
         remote_environment
     );
     assert_eq!(std::fs::read_to_string(&rerere)?, "personal resolution\n");
+    assert_eq!(
+        std::fs::read_to_string(fetch_head)?,
+        "preserve user fetch state\n"
+    );
     assert!(!hook_marker.exists());
     assert_eq!(
         std::fs::read_to_string(fixture.source.join("base"))?,
@@ -818,6 +824,14 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
     assert_eq!(invalid_error["kind"], "restackError");
     assert_eq!(invalid_error["schemaVersion"], 1);
     assert_eq!(invalid_error["code"], "invalid_params");
+
+    let non_terminal = gd_command()?
+        .current_dir(&source)
+        .args(["restack", "qa"])
+        .output()?;
+    assert_eq!(non_terminal.status.code(), Some(2));
+    let non_terminal_error: serde_json::Value = serde_json::from_slice(&non_terminal.stderr)?;
+    assert_eq!(non_terminal_error["code"], "params_required");
 
     let clap_invalid = gd_command()?
         .args(["restack", "--params", r#"{"removeBranches":[]}"#])

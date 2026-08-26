@@ -178,6 +178,187 @@ pub enum SelectionError {
     },
 }
 
+/// One screen in the deterministic interactive restack review flow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestackInteractionStage {
+    Selection,
+    Review,
+    Confirmation,
+}
+
+/// A terminal-independent action in the interactive restack review flow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestackInteractionAction {
+    MoveUp,
+    MoveDown,
+    Toggle,
+    Continue,
+    Back,
+    Confirm,
+    Cancel,
+}
+
+/// An effect requested by an interactive restack state transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestackInteractionEffect {
+    None,
+    Preview(RestackSelection),
+    Revise,
+    Publish,
+    Cancel,
+    Rejected(SelectionError),
+}
+
+/// Deterministic feature selection, review, and confirmation state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestackInteraction {
+    snapshot: RestackSnapshot,
+    retained: Vec<bool>,
+    cursor: usize,
+    review_scroll: usize,
+    stage: RestackInteractionStage,
+}
+
+impl RestackInteraction {
+    /// Start with every explicit feature retained in discovered merge order.
+    #[must_use]
+    pub fn new(snapshot: RestackSnapshot) -> Self {
+        Self {
+            retained: vec![true; snapshot.features.len()],
+            snapshot,
+            cursor: 0,
+            review_scroll: 0,
+            stage: RestackInteractionStage::Selection,
+        }
+    }
+
+    #[must_use]
+    pub const fn stage(&self) -> RestackInteractionStage {
+        self.stage
+    }
+
+    #[must_use]
+    pub const fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    #[must_use]
+    pub const fn review_scroll(&self) -> usize {
+        self.review_scroll
+    }
+
+    #[must_use]
+    pub fn is_retained(&self, index: usize) -> bool {
+        self.retained.get(index).copied().unwrap_or(false)
+    }
+
+    #[must_use]
+    pub const fn snapshot(&self) -> &RestackSnapshot {
+        &self.snapshot
+    }
+
+    /// Mark the selected reconstruction as ready for review.
+    pub fn review_ready(&mut self) {
+        self.stage = RestackInteractionStage::Review;
+    }
+
+    /// Apply one action and return any requested workflow effect.
+    pub fn update(&mut self, action: RestackInteractionAction) -> RestackInteractionEffect {
+        match action {
+            RestackInteractionAction::Cancel => RestackInteractionEffect::Cancel,
+            RestackInteractionAction::MoveUp
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                self.cursor = self.cursor.saturating_sub(1);
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::MoveDown
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                self.cursor = self
+                    .cursor
+                    .saturating_add(1)
+                    .min(self.snapshot.features.len().saturating_sub(1));
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::MoveUp if self.stage == RestackInteractionStage::Review => {
+                self.review_scroll = self.review_scroll.saturating_sub(1);
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::MoveDown if self.stage == RestackInteractionStage::Review => {
+                self.review_scroll = self.review_scroll.saturating_add(1);
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::Toggle
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                self.toggle_current()
+            }
+            RestackInteractionAction::Continue
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                match self.selection() {
+                    Ok(selection) => RestackInteractionEffect::Preview(selection),
+                    Err(error) => RestackInteractionEffect::Rejected(error),
+                }
+            }
+            RestackInteractionAction::Continue if self.stage == RestackInteractionStage::Review => {
+                self.stage = RestackInteractionStage::Confirmation;
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::Back if self.stage == RestackInteractionStage::Review => {
+                self.stage = RestackInteractionStage::Selection;
+                RestackInteractionEffect::Revise
+            }
+            RestackInteractionAction::Back
+                if self.stage == RestackInteractionStage::Confirmation =>
+            {
+                self.stage = RestackInteractionStage::Review;
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::Confirm
+                if self.stage == RestackInteractionStage::Confirmation =>
+            {
+                RestackInteractionEffect::Publish
+            }
+            RestackInteractionAction::MoveUp
+            | RestackInteractionAction::MoveDown
+            | RestackInteractionAction::Toggle
+            | RestackInteractionAction::Continue
+            | RestackInteractionAction::Back
+            | RestackInteractionAction::Confirm => RestackInteractionEffect::None,
+        }
+    }
+
+    fn toggle_current(&mut self) -> RestackInteractionEffect {
+        let Some(retained) = self.retained.get_mut(self.cursor) else {
+            return RestackInteractionEffect::None;
+        };
+        *retained = !*retained;
+        match self.selection() {
+            Ok(_) => RestackInteractionEffect::None,
+            Err(error) => {
+                if let Some(retained) = self.retained.get_mut(self.cursor) {
+                    *retained = !*retained;
+                }
+                RestackInteractionEffect::Rejected(error)
+            }
+        }
+    }
+
+    fn selection(&self) -> Result<RestackSelection, SelectionError> {
+        let removals = self
+            .snapshot
+            .features
+            .iter()
+            .zip(&self.retained)
+            .filter(|(_, retained)| !**retained)
+            .map(|(feature, _)| feature.name.clone())
+            .collect::<Vec<_>>();
+        select_features(&self.snapshot, &removals)
+    }
+}
+
 /// Evidence that reconstruction output does not match the selected plan.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PlanError {
@@ -1004,6 +1185,82 @@ mod tests {
             build_snapshot(&other_empty),
             Err(InventoryError::DirectCommit { commit }) if commit == "empty"
         ));
+    }
+
+    #[test]
+    fn interaction_starts_with_every_feature_retained_in_merge_order() {
+        let mut interaction = RestackInteraction::new(planning_snapshot());
+
+        assert_eq!(interaction.stage(), RestackInteractionStage::Selection);
+        assert!(interaction.is_retained(0));
+        assert!(interaction.is_retained(1));
+        assert_eq!(
+            interaction.update(RestackInteractionAction::Continue),
+            RestackInteractionEffect::Preview(RestackSelection {
+                retained: vec![
+                    BranchIdentity {
+                        name: "feature/a".to_owned(),
+                        tip: "a".to_owned(),
+                    },
+                    BranchIdentity {
+                        name: "feature/b".to_owned(),
+                        tip: "b".to_owned(),
+                    },
+                ],
+                removed: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn interaction_rejects_a_removal_that_a_retained_branch_still_carries() {
+        let mut interaction = RestackInteraction::new(planning_snapshot());
+
+        let effect = interaction.update(RestackInteractionAction::Toggle);
+
+        assert_eq!(
+            effect,
+            RestackInteractionEffect::Rejected(SelectionError::RetainedDependency {
+                branch: "feature/a".to_owned(),
+                dependents: vec!["feature/b".to_owned()],
+            })
+        );
+        assert!(interaction.is_retained(0));
+    }
+
+    #[test]
+    fn interaction_requires_review_then_explicit_confirmation() {
+        let mut interaction = RestackInteraction::new(planning_snapshot());
+        let _ = interaction.update(RestackInteractionAction::MoveDown);
+        assert_eq!(interaction.cursor(), 1);
+        let _ = interaction.update(RestackInteractionAction::MoveUp);
+        assert_eq!(interaction.cursor(), 0);
+        interaction.review_ready();
+
+        let _ = interaction.update(RestackInteractionAction::MoveDown);
+        assert_eq!(interaction.review_scroll(), 1);
+        let _ = interaction.update(RestackInteractionAction::MoveUp);
+        assert_eq!(interaction.review_scroll(), 0);
+
+        assert_eq!(
+            interaction.update(RestackInteractionAction::Continue),
+            RestackInteractionEffect::None
+        );
+        assert_eq!(interaction.stage(), RestackInteractionStage::Confirmation);
+        assert_eq!(
+            interaction.update(RestackInteractionAction::Confirm),
+            RestackInteractionEffect::Publish
+        );
+        assert_eq!(
+            interaction.update(RestackInteractionAction::Back),
+            RestackInteractionEffect::None
+        );
+        assert_eq!(interaction.stage(), RestackInteractionStage::Review);
+        assert_eq!(
+            interaction.update(RestackInteractionAction::Back),
+            RestackInteractionEffect::Revise
+        );
+        assert_eq!(interaction.stage(), RestackInteractionStage::Selection);
     }
 
     fn base_graph() -> RestackGraph {
