@@ -1,5 +1,32 @@
 # @treramey/graduate
 
+## 1.4.0
+
+### Minor Changes
+
+- 0ca5829: Add runtime schema discovery and an explicit dry-run option for agent-driven restack previews.
+- 0ca5829: Add runtime JSON introspection for restack and harden encoded ref validation.
+- d94f082: Publish `gd restack` with interactive review, agent JSON previews, resumable conflict resolution, and exact leased environment updates.
+- cde06c9: Add an advanced authored-date-derived commit-age report to `gd diff`, an
+  interactive age-report modal, consistent wide sizing across report modals, and
+  JSON parameters for reports scoped to several feature branches. Base aggregate
+  reporting on the authoritative environment-versus-main commit inventory and
+  expose when an environment is behind main.
+
+### Patch Changes
+
+- 0ca5829: Clarify restack review consequences and the final publication checkpoint.
+- fb23f43: Require deliberate restack publication and clarify rewrite impact at confirmation.
+- 0ca5829: Block hidden restack actions and correct review scrolling and safety language.
+- 0ca5829: Harden the interactive restack review, dependency guidance, conflict recovery, filter treatment, and compact terminal layouts.
+- 6c28fea: Add the release-gated interactive restack checklist, safety review, confirmation, and conflict handoff.
+- 3336acd: Add digest-authorized clean restack publication with fresh reconstruction and an exact remote lease.
+- 0ca5829: Keep interactive restack evidence visible in compact terminals and add faster inventory controls.
+- a85b3d7: Add isolated conflict-resolution reuse and resumable restack previews.
+- a345539: Add single-use resumed restack publication and explicit session abort.
+- e909343: Simplify the interactive Jira setup with compact inline prompts, arrow-key navigation, a plain review screen, and an isolated local test launcher.
+- 0ca5829: Make interactive restack selection and review compact, structured, and impact-first while preserving smooth navigation through long feature lists.
+
 ## 1.3.0
 
 ### Minor Changes
