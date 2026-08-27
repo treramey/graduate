@@ -204,20 +204,22 @@ from inventory or `Esc` to cancel.
 **Description:** Make inventory mode visible in the selection screen.
 
 **Acceptance criteria:**
-- [ ] In reachability mode a one-line banner above the list reads:
-      "Inventory mode: membership from reachability, merge order by tip age,
-      no reused conflict resolutions."
-- [ ] Carried branches render as indented, non-selectable rows under their
+- [x] In reachability mode a one-line banner above the list reads
+      "Inventory mode: reachability · oldest tip first · no reused resolutions"
+      (≥100 columns) or "Inventory mode · no rerere" (narrower), sharing the
+      row with the drop count. The full sentence lives on the
+      unsupported-history screen.
+- [x] Carried branches render as indented, non-selectable rows under their
       first carrier with "carried by X, Y"; the cursor skips them; filter
       matches them and shows their carrier.
-- [ ] Impact summary adds "N commits will be dropped" from
+- [x] Impact summary adds "N commits will be dropped" from
       `orphaned_commit_count()`, updating on every toggle; 0 renders as
       "no commits dropped".
-- [ ] Tests: banner absent in history mode; carried rows and cursor skipping;
+- [x] Tests: banner absent in history mode; carried rows and cursor skipping;
       impact line updates after a toggle; compact width still shows the line.
 
 **Verification:**
-- [ ] `cargo test --locked -p graduate-cli restack_tui`
+- [x] `cargo test --locked -p graduate-cli restack_tui`
 
 **Dependencies:** Task 5
 **Files:** `crates/graduate-cli/src/restack_tui.rs`

@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use graduate::promotion::jira_key_from_branch;
 use graduate::restack::{
-    RestackInteraction, RestackInteractionAction, RestackInteractionEffect,
+    InventoryMode, RestackInteraction, RestackInteractionAction, RestackInteractionEffect,
     RestackInteractionStage, RestackPlan, RestackSelection, SelectionError,
 };
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -287,9 +287,30 @@ fn filtered_feature_indices(interaction: &RestackInteraction, filter: &str) -> V
         .features
         .iter()
         .enumerate()
-        .filter(|(_, feature)| filter.is_empty() || feature.name.to_lowercase().contains(&filter))
+        .filter(|(_, feature)| {
+            filter.is_empty()
+                || feature.name.to_lowercase().contains(&filter)
+                || carried_by(interaction, &feature.name)
+                    .any(|carried| carried.name.to_lowercase().contains(&filter))
+        })
         .map(|(index, _)| index)
         .collect()
+}
+
+/// Carried branches shown under `carrier`: the first listed carrier owns the row.
+fn carried_by<'a>(
+    interaction: &'a RestackInteraction,
+    carrier: &'a str,
+) -> impl Iterator<Item = &'a graduate::restack::CarriedFeature> + 'a {
+    interaction
+        .carried_features()
+        .iter()
+        .filter(move |carried| {
+            carried
+                .carriers
+                .first()
+                .is_some_and(|first| first == carrier)
+        })
 }
 
 fn next_action(
@@ -712,6 +733,42 @@ fn render_selection(
         .alignment(Alignment::Right),
         Rect::new(area.x, area.y, area.width, 1),
     );
+    let inventory_mode = interaction.inventory_mode() == InventoryMode::Reachability;
+    if inventory_mode {
+        let dropped = interaction.orphaned_commit_count();
+        let dropped_text = match dropped {
+            0 => "no commits dropped".to_owned(),
+            1 => "1 commit will be dropped".to_owned(),
+            count => format!("{count} commits will be dropped"),
+        };
+        let banner = if area.width >= 100 {
+            "Inventory mode: reachability · oldest tip first · no reused resolutions"
+        } else {
+            "Inventory mode · no rerere"
+        };
+        let banner_row = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
+        let dropped_width = u16::try_from(dropped_text.chars().count()).unwrap_or(u16::MAX);
+        let banner_width = area.width.saturating_sub(dropped_width.saturating_add(2));
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                truncate_text(banner, usize::from(banner_width)),
+                Palette::primary(),
+            )),
+            Rect::new(banner_row.x, banner_row.y, banner_width, 1),
+        );
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                dropped_text,
+                if dropped == 0 {
+                    Palette::muted()
+                } else {
+                    Palette::warning()
+                },
+            ))
+            .alignment(Alignment::Right),
+            banner_row,
+        );
+    }
     let row_width = usize::from(area.width.saturating_sub(4));
     let wide_rows = area.width >= 96;
     let branch_width = if wide_rows {
@@ -719,87 +776,52 @@ fn render_selection(
     } else {
         row_width.saturating_sub(17).clamp(16, 46)
     };
-    let items = visible
+    let mut item_features = Vec::new();
+    let mut items = Vec::new();
+    for (index, feature) in visible.iter().filter_map(|index| {
+        snapshot
+            .features
+            .get(*index)
+            .map(|feature| (*index, feature))
+    }) {
+        item_features.push(Some(index));
+        items.push(feature_item(FeatureRow {
+            interaction,
+            index,
+            feature,
+            row_width,
+            wide_rows,
+            branch_width,
+        }));
+        for carried in carried_by(interaction, &feature.name) {
+            let also = carried
+                .carriers
+                .iter()
+                .skip(1)
+                .map(|carrier| escape(carrier))
+                .collect::<Vec<_>>();
+            let suffix = if also.is_empty() {
+                String::new()
+            } else {
+                format!("  (also via {})", also.join(", "))
+            };
+            item_features.push(None);
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled("      ↳ carried  ", Palette::muted()),
+                Span::styled(
+                    truncate_text(&escape(&carried.name), branch_width),
+                    Palette::muted(),
+                ),
+                Span::styled(
+                    format!("  {}{suffix}", short_oid(&carried.tip)),
+                    Palette::muted(),
+                ),
+            ])));
+        }
+    }
+    let selected = item_features
         .iter()
-        .filter_map(|index| {
-            snapshot
-                .features
-                .get(*index)
-                .map(|feature| (*index, feature))
-        })
-        .map(|(index, feature)| {
-            let retained = interaction.is_retained(index);
-            let locked = !interaction.retained_dependents(index).is_empty();
-            let keep = if retained { "✓" } else { "–" };
-            let lock = if locked { "◆" } else { " " };
-            let keep_style = if retained {
-                Palette::success()
-            } else {
-                Palette::warning()
-            };
-            let jira = jira_key_from_branch(&feature.name).unwrap_or_else(|| "—".to_owned());
-            let history = if feature.historical_merges.is_empty() {
-                "—"
-            } else {
-                "available"
-            };
-            let history_style = if feature.historical_merges.is_empty() {
-                Palette::muted()
-            } else {
-                Palette::success()
-            };
-            let branch = pad_text(
-                &truncate_text(&escape(&feature.name), branch_width),
-                branch_width,
-            );
-            let branch_style = if retained {
-                Palette::text().bold()
-            } else {
-                Palette::muted()
-            };
-            let left_meta = format!("    #{} · {}", index + 1, short_oid(&feature.tip));
-            let required = if locked { "  ◆ required" } else { "" };
-            let right_width =
-                "history: ".chars().count() + history.chars().count() + required.chars().count();
-            let gap = row_width
-                .saturating_sub(left_meta.chars().count() + right_width)
-                .max(1);
-            let first_line = Line::from(vec![
-                Span::styled(keep, keep_style.bold()),
-                Span::styled(lock, Palette::warning()),
-                Span::raw("  "),
-                Span::styled(branch.clone(), branch_style),
-                Span::styled(format!(" {jira:>12}"), Palette::muted()),
-            ]);
-            if wide_rows {
-                ListItem::new(Line::from(vec![
-                    Span::styled(keep, keep_style.bold()),
-                    Span::styled(lock, Palette::warning()),
-                    Span::raw(format!("  #{}  ", index + 1)),
-                    Span::styled(branch, branch_style),
-                    Span::styled(format!("  {}", short_oid(&feature.tip)), Palette::muted()),
-                    Span::styled(format!("  {jira:>12}"), Palette::muted()),
-                    Span::styled("  history: ", Palette::muted()),
-                    Span::styled(history, history_style),
-                    Span::styled(required, Palette::warning()),
-                ]))
-            } else {
-                ListItem::new(Text::from(vec![
-                    first_line,
-                    Line::from(vec![
-                        Span::styled(left_meta, Palette::muted()),
-                        Span::raw(" ".repeat(gap)),
-                        Span::styled("history: ", Palette::muted()),
-                        Span::styled(history, history_style),
-                        Span::styled(required, Palette::warning()),
-                    ]),
-                ]))
-            }
-        })
-        .collect::<Vec<_>>();
-    let selected = visible
-        .iter()
-        .position(|index| *index == interaction.cursor());
+        .position(|index| *index == Some(interaction.cursor()));
     view.feature_list.select(selected);
     let selected_context = selection_context(interaction, view.show_shortcuts);
     let context_height = rejection.map_or_else(
@@ -865,7 +887,100 @@ fn render_selection(
             context_height.min(area.bottom().saturating_sub(context_y)),
         ),
     );
-    visible.len().saturating_mul(if wide_rows { 1 } else { 2 }) > usize::from(list_height)
+    let carried_rows = item_features.iter().filter(|index| index.is_none()).count();
+    visible
+        .len()
+        .saturating_mul(if wide_rows { 1 } else { 2 })
+        .saturating_add(carried_rows)
+        > usize::from(list_height)
+}
+
+struct FeatureRow<'a> {
+    interaction: &'a RestackInteraction,
+    index: usize,
+    feature: &'a graduate::restack::ExplicitFeature,
+    row_width: usize,
+    wide_rows: bool,
+    branch_width: usize,
+}
+
+fn feature_item(row: FeatureRow<'_>) -> ListItem<'static> {
+    let FeatureRow {
+        interaction,
+        index,
+        feature,
+        row_width,
+        wide_rows,
+        branch_width,
+    } = row;
+
+    let retained = interaction.is_retained(index);
+    let locked = !interaction.retained_dependents(index).is_empty();
+    let keep = if retained { "✓" } else { "–" };
+    let lock = if locked { "◆" } else { " " };
+    let keep_style = if retained {
+        Palette::success()
+    } else {
+        Palette::warning()
+    };
+    let jira = jira_key_from_branch(&feature.name).unwrap_or_else(|| "—".to_owned());
+    let history = if feature.historical_merges.is_empty() {
+        "—"
+    } else {
+        "available"
+    };
+    let history_style = if feature.historical_merges.is_empty() {
+        Palette::muted()
+    } else {
+        Palette::success()
+    };
+    let branch = pad_text(
+        &truncate_text(&escape(&feature.name), branch_width),
+        branch_width,
+    );
+    let branch_style = if retained {
+        Palette::text().bold()
+    } else {
+        Palette::muted()
+    };
+    let left_meta = format!("    #{} · {}", index + 1, short_oid(&feature.tip));
+    let required = if locked { "  ◆ required" } else { "" };
+    let right_width =
+        "history: ".chars().count() + history.chars().count() + required.chars().count();
+    let gap = row_width
+        .saturating_sub(left_meta.chars().count() + right_width)
+        .max(1);
+    let first_line = Line::from(vec![
+        Span::styled(keep, keep_style.bold()),
+        Span::styled(lock, Palette::warning()),
+        Span::raw("  "),
+        Span::styled(branch.clone(), branch_style),
+        Span::styled(format!(" {jira:>12}"), Palette::muted()),
+    ]);
+    if wide_rows {
+        ListItem::new(Line::from(vec![
+            Span::styled(keep, keep_style.bold()),
+            Span::styled(lock, Palette::warning()),
+            Span::raw(format!("  #{}  ", index + 1)),
+            Span::styled(branch, branch_style),
+            Span::styled(format!("  {}", short_oid(&feature.tip)), Palette::muted()),
+            Span::styled(format!("  {jira:>12}"), Palette::muted()),
+            Span::styled("  history: ", Palette::muted()),
+            Span::styled(history, history_style),
+            Span::styled(required, Palette::warning()),
+        ]))
+    } else {
+        ListItem::new(Text::from(vec![
+            first_line,
+            Line::from(vec![
+                Span::styled(left_meta, Palette::muted()),
+                Span::raw(" ".repeat(gap)),
+                Span::styled("history: ", Palette::muted()),
+                Span::styled(history, history_style),
+                Span::styled(required, Palette::warning()),
+            ]),
+        ]))
+    }
 }
 
 fn selection_context(interaction: &RestackInteraction, show_shortcuts: bool) -> String {
@@ -883,6 +998,9 @@ fn selection_context(interaction: &RestackInteraction, show_shortcuts: bool) -> 
     if show_shortcuts {
         return "Shortcuts: a keep all · x remove all · Home/End first/last · PgUp/PgDn page · q/Ctrl-C cancel"
             .to_owned();
+    }
+    if interaction.inventory_mode() == InventoryMode::Reachability {
+        return "✓ retained · – removed · ◆ dependency · ↳ carried".to_owned();
     }
     "✓ retained · – removed · ◆ retained dependency · history = reusable resolution".to_owned()
 }
@@ -2158,6 +2276,55 @@ mod tests {
                 KeyEvent::from(KeyCode::Char('r'))
             ),
             None
+        );
+    }
+
+    #[test]
+    fn inventory_checklist_shows_the_banner_carried_rows_and_drop_count(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut interaction = RestackInteraction::from_inventory(inventory_snapshot(
+            UnsupportedHistory::from(InventoryError::DirectCommit {
+                commit: "stray".to_owned(),
+            }),
+        ));
+        let _ = interaction.update(RestackInteractionAction::AcceptInventoryFallback);
+
+        let narrow = rendered_at(&interaction, None, None, 60, 24)?;
+        assert!(narrow.contains("Inventory mode · no rerere"));
+        assert!(narrow.contains("1 commit will be dropped"));
+        assert!(narrow.contains("feature/two"));
+        assert!(narrow.contains("↳ carried  feature/PROJ-12-one"));
+        assert!(narrow.contains("◆ dependency · ↳ carried"), "{narrow}");
+
+        let wide = rendered_at(&interaction, None, None, 120, 30)?;
+        assert!(wide
+            .contains("Inventory mode: reachability · oldest tip first · no reused resolutions"));
+
+        let _ = interaction.update(RestackInteractionAction::RemoveAll);
+        let removed = rendered_at(&interaction, None, None, 60, 24)?;
+        assert!(removed.contains("3 commits will be dropped"));
+        assert!(removed.contains("0 retained · 1 removed"));
+
+        let history = RestackInteraction::new(snapshot());
+        let plain = rendered_at(&history, None, None, 60, 24)?;
+        assert!(!plain.contains("Inventory mode"));
+        assert!(!plain.contains("dropped"));
+        assert!(!plain.contains("carried"));
+        Ok(())
+    }
+
+    #[test]
+    fn inventory_filter_matches_carried_branches_through_their_carrier() {
+        let mut interaction = RestackInteraction::from_inventory(inventory_snapshot(
+            UnsupportedHistory::from(InventoryError::DirectCommit {
+                commit: "stray".to_owned(),
+            }),
+        ));
+        let _ = interaction.update(RestackInteractionAction::AcceptInventoryFallback);
+        assert_eq!(filtered_feature_indices(&interaction, "proj-12"), vec![0]);
+        assert_eq!(
+            filtered_feature_indices(&interaction, "nothing"),
+            Vec::<usize>::new()
         );
     }
 
