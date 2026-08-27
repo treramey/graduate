@@ -36,9 +36,9 @@ actions.
 - `graduate_cli::cli`: public command-line shape.
 - `graduate_cli::describe`: side-effect-free runtime JSON descriptions of
   machine command contracts.
-- `graduate_cli::terminal`: stderr terminal initialization and restoration.
-- `graduate_cli::theme`: shared ANSI-palette visual language.
-- `graduate_cli::error`: process-facing error categories and exit codes.
+- `graduate_cli::shared::terminal`: stderr terminal initialization and restoration.
+- `graduate_cli::shared::theme`: shared ANSI-palette visual language.
+- `graduate_cli::shared::error`: process-facing error categories and exit codes.
 - `graduate_cli::generate_skills`: deterministic repository-controlled Agent Skill generation.
 - `graduate::promotion`: authoritative environment commit inventories,
   promotion-report attribution rows, Jira enrichment states, deterministic
@@ -52,25 +52,25 @@ actions.
   transitions.
 - `graduate_cli::jira_auth`: environment and interactive Jira authentication
   orchestration behind an injected verifier.
-- `graduate_cli::jira_auth_tui`: masked token input, setup navigation, review,
+- `graduate_cli::jira_auth::tui`: masked token input, setup navigation, review,
   and rendering.
-- `graduate_cli::config`: validated Jira sites and atomic secret-restricted persistence.
-- `graduate_cli::jira`: read-only Jira identity and issue-query boundary.
+- `graduate_cli::shared::config`: validated Jira sites and atomic secret-restricted persistence.
+- `graduate_cli::shared::jira`: read-only Jira identity and issue-query boundary.
 - `graduate_cli::diff`: Git fetch, Gitoxide graph inspection, Jira enrichment,
   unattended output, and CSV export.
-- `graduate_cli::environment_git`: shared Gitoxide ref, reachability, promotion
+- `graduate_cli::shared::environment_git`: shared Gitoxide ref, reachability, promotion
   inventory, and restack snapshot inspection.
-- `graduate_cli::git_process`: shared Git fetch, credential, remote endpoint,
+- `graduate_cli::shared::git_process`: shared Git fetch, credential, remote endpoint,
   ref revalidation, and leased-push subprocess boundary.
-- `graduate_cli::diff_tui`: streaming promotion list, selection, ticket details,
+- `graduate_cli::diff::tui`: streaming promotion list, selection, ticket details,
   commit history, age-report modal, and open-ticket events.
 - `graduate_cli::restack`: public restack planning, isolated Git
   reconstruction, historical rerere training, resumed-preview validation,
   interactive review, clean and resumed apply revalidation, exact leased
   publication, and abort.
-- `graduate_cli::restack_tui`: ordered feature selection, exact-effects review,
+- `graduate_cli::restack::tui`: ordered feature selection, exact-effects review,
   explicit rewrite confirmation, and post-restoration human handoff output.
-- `graduate_cli::restack_session`: permission-restricted resumable work areas,
+- `graduate_cli::restack::session`: permission-restricted resumable work areas,
   store-key-authenticated atomic metadata, capability authentication,
   exclusive locks, single-use consumption, and inactivity expiry.
 
@@ -170,5 +170,31 @@ workspace is available as a Nix flake with locked inputs.
 
 Put deterministic services and state transitions in `graduate`. Keep
 terminal, filesystem, process, prompt, and network behavior in
-`graduate-cli`. For a larger feature, place workflow in `<feature>.rs` and
-rendering and terminal events in `<feature>_tui.rs`.
+`graduate-cli`. Each feature is a vertical slice: `<feature>/mod.rs` holds the
+workflow, `<feature>/tui/` holds rendering and terminal events, and
+feature-private state stays inside the slice (for example
+`restack/session/`). Code used by more than one slice lives under `shared/`.
+
+## Module layout
+
+```text
+crates/graduate-cli/src/
+├── main.rs, cli.rs, describe.rs   # process entry and command surface
+├── diff/        # promotion report: mod.rs workflow, report_*.rs, tui/
+├── restack/     # environment rebuild: mod.rs, isolated_*.rs, session/, tui/
+├── jira_auth/   # Jira onboarding: mod.rs workflow, tui/
+├── generate_skills/
+└── shared/      # config, environment_git, git_process, jira, terminal, theme, error
+```
+
+Every feature is a directory module. `mod.rs` owns the public surface: it
+declares the submodules, re-exports the items other modules use, and keeps the
+top-level workflow or data model. Each submodule holds one concept
+(`restack/isolated_merge.rs`, `diff/tui/inspector.rs`) and stays around 300
+lines; a cohesive file may run longer rather than splitting a single
+responsibility across files. Unit tests live in `<feature>/tests.rs`, or in
+`<feature>/tests/mod.rs` (shared fixtures) with `<feature>/tests/<topic>_tests.rs`
+siblings once one file is not enough. Integration tests follow the same shape
+under `crates/graduate-cli/tests/cli/`: `main.rs` declares `common.rs`, `git.rs`,
+and the repository fixtures, and each `<topic>_test.rs` exercises one command
+surface.

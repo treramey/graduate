@@ -5,7 +5,7 @@ use std::io::Write;
 use serde_json::json;
 
 use crate::cli::DescribeRestackArgs;
-use crate::error::CliError;
+use crate::shared::error::CliError;
 
 pub(crate) fn restack(args: &DescribeRestackArgs) -> Result<(), CliError> {
     if args.json {
