@@ -38,7 +38,7 @@ struct MachineParams {
 }
 
 pub(crate) fn run(args: RestackArgs) -> Result<(), CliError> {
-    if args.params.is_none() && args.resume.is_none() {
+    if args.params.is_none() && args.resume.is_none() && !args.dry_run {
         return run_interactive(args);
     }
     validate_inputs(&args)?;
@@ -98,7 +98,7 @@ enum InteractiveOutcome {
 }
 
 fn run_interactive(args: RestackArgs) -> Result<(), CliError> {
-    if args.apply || args.abort {
+    if args.apply || args.abort || args.dry_run {
         return Err(machine_usage(
             "invalid_usage",
             "interactive restack uses terminal confirmation instead of --apply or --abort",
@@ -351,7 +351,7 @@ fn interactive_error(error: CliError) -> CliError {
 }
 
 fn preview(args: &RestackArgs, source: &Path, sessions: &SessionStore) -> Result<(), CliError> {
-    let params = parse_params(args.params.as_deref())?;
+    let params = parse_params(args.params.as_deref(), args.dry_run)?;
     let remote = args.remote.as_deref().unwrap_or("origin");
     validate_apply_params(args.apply, &params)?;
     let remote_endpoint = git_process::resolve_restack_remote(remote, source).map_err(|_| {
@@ -789,8 +789,14 @@ fn validate_inputs(args: &RestackArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn parse_params(params: Option<&str>) -> Result<MachineParams, CliError> {
+fn parse_params(params: Option<&str>, dry_run: bool) -> Result<MachineParams, CliError> {
     let Some(params) = params else {
+        if dry_run {
+            return Ok(MachineParams {
+                remove_branches: Vec::new(),
+                plan_digest: None,
+            });
+        }
         return Err(machine_usage(
             "params_required",
             "a machine restack preview requires --params",

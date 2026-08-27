@@ -1,6 +1,7 @@
 mod browser;
 mod cli;
 mod config;
+mod describe;
 mod diff;
 mod diff_tui;
 mod environment_git;
@@ -20,7 +21,7 @@ mod theme;
 use std::process::ExitCode;
 
 use clap::Parser;
-use cli::{AuthCommand, Cli, Command, SetupSystem};
+use cli::{AuthCommand, Cli, Command, DescribeCommand, SchemaCommand, SetupSystem};
 use error::{CliError, MachineError};
 
 #[tokio::main]
@@ -91,10 +92,16 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             }
         }
         Command::GenerateSkills(args) => generate_skills::run(&args),
+        Command::Describe(args) => match args.command {
+            DescribeCommand::Restack(args) => describe::restack(&args),
+        },
         Command::Diff(args) => {
             let path = cli.config.unwrap_or(config::config_path()?);
             diff::run(args, &path).await
         }
         Command::Restack(args) => restack::run(args),
+        Command::Schema(args) => match args.command {
+            SchemaCommand::Restack => describe::restack_schema(),
+        },
     }
 }

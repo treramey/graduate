@@ -8,8 +8,8 @@ use graduate::restack::{
     RestackInteraction, RestackInteractionAction, RestackInteractionEffect,
     RestackInteractionStage, RestackPlan, RestackSelection, SelectionError,
 };
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Modifier;
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
@@ -38,6 +38,16 @@ pub(crate) struct ConflictHandoff<'a> {
     pub(crate) work_area: &'a str,
 }
 
+#[derive(Default)]
+struct RestackViewState {
+    feature_list: ListState,
+    scrollable: bool,
+    undersized: bool,
+    filter: String,
+    filtering: bool,
+    show_shortcuts: bool,
+}
+
 pub(crate) fn draw_loading(terminal: &mut StderrTerminal, message: &str) -> Result<(), CliError> {
     terminal.terminal_mut().draw(|frame| {
         let area = constrain_content_width(frame.area());
@@ -64,13 +74,24 @@ pub(crate) fn choose_features(
     interaction: &mut RestackInteraction,
 ) -> Result<SelectionDecision, CliError> {
     let mut rejection = None;
+    let mut view = RestackViewState {
+        feature_list: ListState::default().with_selected(Some(interaction.cursor())),
+        scrollable: false,
+        undersized: false,
+        filter: String::new(),
+        filtering: false,
+        show_shortcuts: false,
+    };
     loop {
         terminal
             .terminal_mut()
-            .draw(|frame| render(frame, interaction, None, rejection.as_deref()))?;
-        let Some(action) = next_action(interaction.stage())? else {
+            .draw(|frame| render(frame, interaction, None, rejection.as_deref(), &mut view))?;
+        let Some(action) = next_selection_action(interaction, &mut view)? else {
             continue;
         };
+        if view.undersized && !action_allowed_when_undersized(action) {
+            continue;
+        }
         match interaction.update(action) {
             RestackInteractionEffect::Preview(selection) => {
                 return Ok(SelectionDecision::Preview(selection));
@@ -92,13 +113,29 @@ pub(crate) fn review_plan(
     plan: &RestackPlan,
 ) -> Result<ReviewDecision, CliError> {
     interaction.review_ready();
+    let mut view = RestackViewState::default();
     loop {
         terminal
             .terminal_mut()
-            .draw(|frame| render(frame, interaction, Some(plan), None))?;
+            .draw(|frame| render(frame, interaction, Some(plan), None, &mut view))?;
         let Some(action) = next_action(interaction.stage())? else {
             continue;
         };
+        if view.undersized && !action_allowed_when_undersized(action) {
+            continue;
+        }
+        if matches!(
+            action,
+            RestackInteractionAction::MoveUp
+                | RestackInteractionAction::MoveDown
+                | RestackInteractionAction::MovePageUp
+                | RestackInteractionAction::MovePageDown
+                | RestackInteractionAction::MoveFirst
+                | RestackInteractionAction::MoveLast
+        ) && !view.scrollable
+        {
+            continue;
+        }
         match interaction.update(action) {
             RestackInteractionEffect::Revise => return Ok(ReviewDecision::Revise),
             RestackInteractionEffect::Publish => return Ok(ReviewDecision::Publish),
@@ -135,12 +172,14 @@ fn cancelled_text(environment: &str) -> String {
 
 fn success_text(plan: &RestackPlan) -> String {
     format!(
-        "Restacked {}/{}: {} -> {} (tree {}).",
+        "Restacked {}/{}: {} -> {} (tree {}); {} retained, {} omitted from the environment.",
         escape(&plan.snapshot.remote),
         escape(&plan.snapshot.environment),
         short_oid(&plan.snapshot.environment_tip),
         short_oid(&plan.preview_commit),
         short_oid(&plan.final_tree),
+        plan.selection.retained.len(),
+        plan.selection.removed.len(),
     )
 }
 
@@ -152,7 +191,7 @@ fn conflict_text(handoff: &ConflictHandoff<'_>) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "Restack of {} paused on {}.\nUnresolved paths:\n{}\nWork area: {}\nResume with: gd restack {} --resume {}",
+        "Restack of {} paused on {}.\nUnresolved paths:\n{}\nWork area: {}\n\nResolve this preserved session:\n  1. Edit the unresolved files in the work area.\n  2. Stage every resolution there; leave no unstaged or untracked files.\n  3. Resume with: gd restack {} --resume {}\n\nDo not commit; Graduate creates the canonical merge commit.\nThis resumable session expires after 24 hours of inactivity.",
         escape(handoff.environment),
         escape(handoff.branch),
         paths,
@@ -160,6 +199,97 @@ fn conflict_text(handoff: &ConflictHandoff<'_>) -> String {
         escape(handoff.environment),
         handoff.resume_token,
     )
+}
+
+fn next_selection_action(
+    interaction: &RestackInteraction,
+    view: &mut RestackViewState,
+) -> Result<Option<RestackInteractionAction>, CliError> {
+    let event = event::read()?;
+    let Event::Key(key) = event else {
+        return Ok(None);
+    };
+    if key.kind != KeyEventKind::Press {
+        return Ok(None);
+    }
+    Ok(selection_action_for_key(interaction, view, key))
+}
+
+fn selection_action_for_key(
+    interaction: &RestackInteraction,
+    view: &mut RestackViewState,
+    key: KeyEvent,
+) -> Option<RestackInteractionAction> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return Some(RestackInteractionAction::Cancel);
+    }
+    if view.filtering {
+        match key.code {
+            KeyCode::Esc => {
+                view.filtering = false;
+                view.filter.clear();
+            }
+            KeyCode::Enter => view.filtering = false,
+            KeyCode::Backspace => {
+                let _ = view.filter.pop();
+            }
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                view.filter.push(character);
+            }
+            _ => return None,
+        }
+        return first_filtered_index(interaction, &view.filter)
+            .map(RestackInteractionAction::MoveTo);
+    }
+    if key.code == KeyCode::Char('/') {
+        view.filtering = true;
+        return None;
+    }
+    if key.code == KeyCode::Char('?') {
+        view.show_shortcuts = !view.show_shortcuts;
+        return None;
+    }
+    let visible = filtered_feature_indices(interaction, &view.filter);
+    let position = visible
+        .iter()
+        .position(|index| *index == interaction.cursor())
+        .unwrap_or(0);
+    let target = match key.code {
+        KeyCode::Up | KeyCode::Char('k') => position.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => position.saturating_add(1),
+        KeyCode::PageUp => position.saturating_sub(10),
+        KeyCode::PageDown => position.saturating_add(10),
+        KeyCode::Home => 0,
+        KeyCode::End => visible.len().saturating_sub(1),
+        _ => return action_for_key(RestackInteractionStage::Selection, key),
+    }
+    .min(visible.len().saturating_sub(1));
+    visible
+        .get(target)
+        .copied()
+        .map(RestackInteractionAction::MoveTo)
+}
+
+fn first_filtered_index(interaction: &RestackInteraction, filter: &str) -> Option<usize> {
+    filtered_feature_indices(interaction, filter)
+        .first()
+        .copied()
+}
+
+fn filtered_feature_indices(interaction: &RestackInteraction, filter: &str) -> Vec<usize> {
+    let filter = filter.to_lowercase();
+    interaction
+        .snapshot()
+        .features
+        .iter()
+        .enumerate()
+        .filter(|(_, feature)| filter.is_empty() || feature.name.to_lowercase().contains(&filter))
+        .map(|(index, _)| index)
+        .collect()
 }
 
 fn next_action(
@@ -193,14 +323,40 @@ fn action_for_key(
         (RestackInteractionStage::Selection, KeyCode::Down | KeyCode::Char('j')) => {
             Some(RestackInteractionAction::MoveDown)
         }
+        (RestackInteractionStage::Selection | RestackInteractionStage::Review, KeyCode::PageUp) => {
+            Some(RestackInteractionAction::MovePageUp)
+        }
+        (
+            RestackInteractionStage::Selection | RestackInteractionStage::Review,
+            KeyCode::PageDown,
+        ) => Some(RestackInteractionAction::MovePageDown),
+        (RestackInteractionStage::Selection, KeyCode::Home) => {
+            Some(RestackInteractionAction::MoveFirst)
+        }
+        (RestackInteractionStage::Selection, KeyCode::End) => {
+            Some(RestackInteractionAction::MoveLast)
+        }
         (RestackInteractionStage::Review, KeyCode::Up | KeyCode::Char('k')) => {
             Some(RestackInteractionAction::MoveUp)
         }
         (RestackInteractionStage::Review, KeyCode::Down | KeyCode::Char('j')) => {
             Some(RestackInteractionAction::MoveDown)
         }
+        (RestackInteractionStage::Review, KeyCode::Home) => {
+            Some(RestackInteractionAction::MoveFirst)
+        }
+        (RestackInteractionStage::Review, KeyCode::End) => Some(RestackInteractionAction::MoveLast),
+        (RestackInteractionStage::Review, KeyCode::Char('d')) => {
+            Some(RestackInteractionAction::ToggleDetails)
+        }
         (RestackInteractionStage::Selection, KeyCode::Char(' ')) => {
             Some(RestackInteractionAction::Toggle)
+        }
+        (RestackInteractionStage::Selection, KeyCode::Char('a')) => {
+            Some(RestackInteractionAction::KeepAll)
+        }
+        (RestackInteractionStage::Selection, KeyCode::Char('x')) => {
+            Some(RestackInteractionAction::RemoveAll)
         }
         (RestackInteractionStage::Selection | RestackInteractionStage::Review, KeyCode::Enter) => {
             Some(RestackInteractionAction::Continue)
@@ -217,30 +373,129 @@ fn action_for_key(
     }
 }
 
+const fn action_allowed_when_undersized(action: RestackInteractionAction) -> bool {
+    matches!(
+        action,
+        RestackInteractionAction::Back | RestackInteractionAction::Cancel
+    )
+}
+
 fn render(
     frame: &mut Frame<'_>,
     interaction: &RestackInteraction,
     plan: Option<&RestackPlan>,
     rejection: Option<&str>,
+    view: &mut RestackViewState,
 ) {
+    let content_width = frame.area().width.min(115);
+    let minimum_height = match interaction.stage() {
+        RestackInteractionStage::Confirmation => confirmation_minimum_height(plan, content_width),
+        RestackInteractionStage::Selection => 18,
+        RestackInteractionStage::Review => 12,
+    };
+    if frame.area().width < 56 || frame.area().height < minimum_height {
+        view.scrollable = false;
+        view.undersized = true;
+        render_too_small(frame, frame.area(), minimum_height);
+        return;
+    }
+    view.undersized = false;
     let area = constrain_content_width(frame.area());
+    let footer_height = footer_height(interaction.stage(), area.width);
+    let available_height = area.height.saturating_sub(4 + footer_height);
     let rows = Layout::vertical([
-        Constraint::Length(GRADUATE_ART_HEIGHT + 1),
-        Constraint::Min(6),
-        Constraint::Length(2),
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Length(available_height),
+        Constraint::Length(footer_height),
+        Constraint::Min(0),
     ])
     .split(area);
-    render_brand_header(frame, rows[0]);
-    match interaction.stage() {
+    render_workflow_header(frame, rows[0], interaction.stage());
+    view.scrollable = match interaction.stage() {
         RestackInteractionStage::Selection => {
-            render_selection(frame, rows[1], interaction, rejection);
+            render_selection(frame, rows[2], interaction, rejection, view)
         }
-        RestackInteractionStage::Review => {
-            render_review(frame, rows[1], plan, interaction.review_scroll());
+        RestackInteractionStage::Review => render_review(
+            frame,
+            rows[2],
+            plan,
+            interaction.review_scroll(),
+            interaction.review_details(),
+        ),
+        RestackInteractionStage::Confirmation => {
+            render_confirmation(frame, rows[2], plan);
+            false
         }
-        RestackInteractionStage::Confirmation => render_confirmation(frame, rows[1], plan),
+    };
+    render_footer(frame, rows[3], interaction.stage(), view);
+}
+
+fn confirmation_minimum_height(plan: Option<&RestackPlan>, width: u16) -> u16 {
+    let text_height = wrapped_text_height(&confirmation_text(plan), width);
+    let text_height = text_height.min(usize::from(u16::MAX)) as u16;
+    text_height.saturating_add(6).max(16)
+}
+
+fn render_too_small(frame: &mut Frame<'_>, area: Rect, minimum_height: u16) {
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                "Terminal too small for a safe restack review.",
+                Palette::warning().bold(),
+            ),
+            Line::styled(
+                format!("Resize to at least 56 columns × {minimum_height} rows."),
+                Palette::muted(),
+            ),
+        ])
+        .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_workflow_header(frame: &mut Frame<'_>, area: Rect, stage: RestackInteractionStage) {
+    let current = match stage {
+        RestackInteractionStage::Selection => 0,
+        RestackInteractionStage::Review => 1,
+        RestackInteractionStage::Confirmation => 2,
+    };
+    let brand = Line::from(vec![
+        Span::styled("GRADUATE", Palette::primary().bold()),
+        Span::styled(
+            format!("  v{}", env!("CARGO_PKG_VERSION")),
+            Palette::muted(),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(brand),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    let mut spans = Vec::new();
+    for (index, label) in ["Select", "Review", "Publish"].into_iter().enumerate() {
+        let style = if index == current {
+            Palette::primary().bold()
+        } else if index < current {
+            Palette::success()
+        } else {
+            Palette::muted()
+        };
+        let marker = if index < current {
+            "✓".to_owned()
+        } else if index == current {
+            format!("● {}", index + 1)
+        } else {
+            format!("○ {}", index + 1)
+        };
+        spans.push(Span::styled(format!("{marker} {label}"), style));
+        if index < 2 {
+            spans.push(Span::styled(" › ", Palette::muted()));
+        }
     }
-    render_footer(frame, rows[2], interaction.stage());
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(area.x, area.y.saturating_add(2), area.width, 1),
+    );
 }
 
 fn render_selection(
@@ -248,139 +503,362 @@ fn render_selection(
     area: Rect,
     interaction: &RestackInteraction,
     rejection: Option<&str>,
-) {
+    view: &mut RestackViewState,
+) -> bool {
     let snapshot = interaction.snapshot();
-    let items = snapshot
+    let retained_count = snapshot
         .features
         .iter()
         .enumerate()
+        .filter(|(index, _)| interaction.is_retained(*index))
+        .count();
+    let removed_count = snapshot.features.len().saturating_sub(retained_count);
+    let visible = filtered_feature_indices(interaction, &view.filter);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("SELECT FEATURES", Palette::primary().bold()),
+            Span::styled(
+                format!(
+                    "  {}/{}",
+                    escape(&snapshot.remote),
+                    escape(&snapshot.environment)
+                ),
+                Palette::muted(),
+            ),
+        ])),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    let summary_style = if removed_count == 0 {
+        Palette::muted()
+    } else {
+        Palette::warning()
+    };
+    let filter_summary = if !view.filter.is_empty() && area.width >= 76 {
+        format!(" · {}/{} shown", visible.len(), snapshot.features.len())
+    } else {
+        String::new()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            format!("{retained_count} retained · {removed_count} removed{filter_summary}"),
+            summary_style,
+        ))
+        .alignment(Alignment::Right),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    let row_width = usize::from(area.width.saturating_sub(4));
+    let wide_rows = area.width >= 96;
+    let branch_width = if wide_rows {
+        row_width.saturating_sub(63).clamp(16, 38)
+    } else {
+        row_width.saturating_sub(17).clamp(16, 46)
+    };
+    let items = visible
+        .iter()
+        .filter_map(|index| {
+            snapshot
+                .features
+                .get(*index)
+                .map(|feature| (*index, feature))
+        })
         .map(|(index, feature)| {
-            let retained = if interaction.is_retained(index) {
-                "[x]"
+            let retained = interaction.is_retained(index);
+            let locked = !interaction.retained_dependents(index).is_empty();
+            let keep = if retained { "✓" } else { "–" };
+            let lock = if locked { "◆" } else { " " };
+            let keep_style = if retained {
+                Palette::success()
             } else {
-                "[ ]"
+                Palette::warning()
             };
             let jira = jira_key_from_branch(&feature.name).unwrap_or_else(|| "—".to_owned());
-            let rerere = if feature.historical_merges.is_empty() {
-                "rerere unavailable"
+            let history = if feature.historical_merges.is_empty() {
+                "—"
             } else {
-                "rerere history available"
+                "available"
             };
-            ListItem::new(format!(
-                "{retained} {:>2}.  {}  {}  {jira}  {rerere}",
-                index + 1,
-                escape(&feature.name),
-                short_oid(&feature.tip),
-            ))
+            let history_style = if feature.historical_merges.is_empty() {
+                Palette::muted()
+            } else {
+                Palette::success()
+            };
+            let branch = pad_text(
+                &truncate_text(&escape(&feature.name), branch_width),
+                branch_width,
+            );
+            let branch_style = if retained {
+                Palette::text().bold()
+            } else {
+                Palette::muted()
+            };
+            let left_meta = format!("    #{} · {}", index + 1, short_oid(&feature.tip));
+            let required = if locked { "  ◆ required" } else { "" };
+            let right_width =
+                "history: ".chars().count() + history.chars().count() + required.chars().count();
+            let gap = row_width
+                .saturating_sub(left_meta.chars().count() + right_width)
+                .max(1);
+            let first_line = Line::from(vec![
+                Span::styled(keep, keep_style.bold()),
+                Span::styled(lock, Palette::warning()),
+                Span::raw("  "),
+                Span::styled(branch.clone(), branch_style),
+                Span::styled(format!(" {jira:>12}"), Palette::muted()),
+            ]);
+            if wide_rows {
+                ListItem::new(Line::from(vec![
+                    Span::styled(keep, keep_style.bold()),
+                    Span::styled(lock, Palette::warning()),
+                    Span::raw(format!("  #{}  ", index + 1)),
+                    Span::styled(branch, branch_style),
+                    Span::styled(format!("  {}", short_oid(&feature.tip)), Palette::muted()),
+                    Span::styled(format!("  {jira:>12}"), Palette::muted()),
+                    Span::styled("  history: ", Palette::muted()),
+                    Span::styled(history, history_style),
+                    Span::styled(required, Palette::warning()),
+                ]))
+            } else {
+                ListItem::new(Text::from(vec![
+                    first_line,
+                    Line::from(vec![
+                        Span::styled(left_meta, Palette::muted()),
+                        Span::raw(" ".repeat(gap)),
+                        Span::styled("history: ", Palette::muted()),
+                        Span::styled(history, history_style),
+                        Span::styled(required, Palette::warning()),
+                    ]),
+                ]))
+            }
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default().with_selected(Some(interaction.cursor()));
-    let title = format!(
-        " SELECT FEATURES · {}/{} ",
-        snapshot.remote, snapshot.environment
+    let selected = visible
+        .iter()
+        .position(|index| *index == interaction.cursor());
+    view.feature_list.select(selected);
+    let selected_context = selection_context(interaction, view.show_shortcuts);
+    let context_height = rejection.map_or_else(
+        || {
+            u16::try_from(
+                Line::raw(&selected_context)
+                    .width()
+                    .div_ceil(usize::from(area.width).max(1)),
+            )
+            .unwrap_or(2)
+            .max(1)
+        },
+        |message| {
+            u16::try_from(
+                Line::raw(message)
+                    .width()
+                    .div_ceil(usize::from(area.width).max(1)),
+            )
+            .unwrap_or(2)
+            .max(1)
+        },
     );
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(escape(&title)))
-            .highlight_style(Palette::action_focus())
-            .highlight_symbol("› "),
-        area,
-        &mut state,
-    );
-    if let Some(rejection) = rejection {
-        let warning = Rect::new(
-            area.x.saturating_add(2),
-            area.bottom().saturating_sub(3),
-            area.width.saturating_sub(4),
-            2,
-        );
+    let list_height = area
+        .height
+        .saturating_sub(2_u16.saturating_add(context_height));
+    let list_area = Rect::new(area.x, area.y.saturating_add(2), area.width, list_height);
+    if items.is_empty() {
         frame.render_widget(
-            Paragraph::new(rejection.to_owned())
-                .style(Palette::error())
-                .wrap(Wrap { trim: true }),
-            warning,
+            Paragraph::new(Line::styled(
+                format!("No branches match “{}”.", escape(&view.filter)),
+                Palette::muted(),
+            ))
+            .alignment(Alignment::Center),
+            list_area,
+        );
+    } else {
+        frame.render_stateful_widget(
+            List::new(items)
+                .highlight_style(
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("› ")
+                .scroll_padding(1),
+            list_area,
+            &mut view.feature_list,
         );
     }
+    let context_y = list_area.bottom();
+    let (context, style) = rejection.map_or_else(
+        || (selected_context, Palette::muted()),
+        |message| (message.to_owned(), Palette::error()),
+    );
+    frame.render_widget(
+        Paragraph::new(context)
+            .style(style)
+            .wrap(Wrap { trim: true }),
+        Rect::new(
+            area.x,
+            context_y,
+            area.width,
+            context_height.min(area.bottom().saturating_sub(context_y)),
+        ),
+    );
+    visible.len().saturating_mul(if wide_rows { 1 } else { 2 }) > usize::from(list_height)
 }
 
-fn render_review(frame: &mut Frame<'_>, area: Rect, plan: Option<&RestackPlan>, scroll: usize) {
+fn selection_context(interaction: &RestackInteraction, show_shortcuts: bool) -> String {
+    let dependents = interaction.retained_dependents(interaction.cursor());
+    if !dependents.is_empty() {
+        return format!(
+            "◆ Required by {}. Remove those retained features first.",
+            dependents
+                .iter()
+                .map(|dependent| escape(dependent))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if show_shortcuts {
+        return "Shortcuts: a keep all · x remove all · Home/End first/last · PgUp/PgDn page · q/Ctrl-C cancel"
+            .to_owned();
+    }
+    "✓ retained · – removed · ◆ retained dependency · history = reusable resolution".to_owned()
+}
+
+fn render_review(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    plan: Option<&RestackPlan>,
+    scroll: usize,
+    show_details: bool,
+) -> bool {
     let text = plan.map_or_else(
         || Text::from("The reviewed plan is unavailable."),
-        review_text,
+        |plan| review_text(plan, show_details),
     );
+    let line_count = wrapped_text_height(&text, area.width);
+    let max_scroll = line_count.saturating_sub(usize::from(area.height));
+    let scroll = if scroll > max_scroll {
+        let distance_from_end = usize::MAX.saturating_sub(scroll);
+        max_scroll.saturating_sub(distance_from_end)
+    } else {
+        scroll
+    };
     let scroll = scroll.min(usize::from(u16::MAX)) as u16;
     frame.render_widget(
         Paragraph::new(text)
-            .block(Block::default().borders(Borders::ALL).title(" REVIEW "))
             .scroll((scroll, 0))
             .wrap(Wrap { trim: false }),
         area,
     );
+    max_scroll > 0
 }
 
-fn review_text(plan: &RestackPlan) -> Text<'static> {
+fn wrapped_text_height(text: &Text<'_>, width: u16) -> usize {
+    Paragraph::new(text.clone())
+        .wrap(Wrap { trim: false })
+        .line_count(width.max(1))
+}
+
+fn review_text(plan: &RestackPlan, show_details: bool) -> Text<'static> {
+    let retained = plan.selection.retained.len();
+    let removed = plan.selection.removed.len();
+    let outcomes = resolution_summary(plan);
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("Base          ", Palette::muted()),
-            Span::raw(format!(
-                "{} @ {}",
-                escape(&plan.snapshot.main_ref),
-                escape(&plan.snapshot.main_tip)
-            )),
-        ]),
-        Line::from(vec![
-            Span::styled("Environment   ", Palette::muted()),
-            Span::raw(format!(
-                "{} @ {}",
-                escape(&plan.snapshot.environment_ref),
-                escape(&plan.snapshot.environment_tip)
-            )),
-        ]),
-        Line::from(vec![
-            Span::styled("Author        ", Palette::muted()),
-            Span::raw(format!(
-                "{} <{}>",
-                escape(&plan.author.name),
-                escape(&plan.author.email)
-            )),
-        ]),
-        Line::from(vec![
-            Span::styled("Fetch endpoint", Palette::muted()),
-            Span::raw(format!(" sha256:{}", plan.remote_endpoints.fetch_sha256)),
-        ]),
-        Line::from(vec![
-            Span::styled("Push endpoint ", Palette::muted()),
-            Span::raw(format!(" sha256:{}", plan.remote_endpoints.push_sha256)),
-        ]),
-        Line::from(vec![
-            Span::styled("Remote rewrite", Palette::muted()),
-            Span::raw(format!(
-                " refs/heads/{}  {} -> {}",
-                escape(&plan.snapshot.environment),
-                escape(&plan.snapshot.environment_tip),
-                escape(&plan.preview_commit)
-            )),
-        ]),
-        Line::from(vec![
-            Span::styled("Final tree    ", Palette::muted()),
-            Span::raw(escape(&plan.final_tree)),
-        ]),
-        Line::from(vec![
-            Span::styled("Signing       ", Palette::muted()),
-            Span::raw("unsigned canonical merge commits"),
-        ]),
-        Line::from(vec![
-            Span::styled("Dropped markers", Palette::muted()),
-            Span::raw(format!(
-                " {} exact phase marker(s)",
-                plan.snapshot.dropped_markers.len()
-            )),
+            Span::styled("RESTACK REVIEW", Palette::primary().bold()),
+            Span::styled(
+                format!(
+                    "  ·  {}/{}",
+                    escape(&plan.snapshot.remote),
+                    escape(&plan.snapshot.environment)
+                ),
+                Palette::muted(),
+            ),
         ]),
         Line::from(""),
-        Line::styled("Retained merge order", Palette::primary().bold()),
+        Line::styled("Remote rewrite", Palette::warning().bold()),
+        Line::from(vec![
+            Span::styled("Rewrite         ", Palette::muted()),
+            Span::styled(
+                short_oid(&plan.snapshot.environment_tip),
+                Palette::warning(),
+            ),
+            Span::styled("  →  ", Palette::muted()),
+            Span::styled(short_oid(&plan.preview_commit), Palette::primary().bold()),
+        ]),
+        Line::from(vec![
+            Span::styled("Impact          ", Palette::muted()),
+            Span::raw(format!(
+                "{retained} retained · {removed} omitted from the rebuilt environment · {outcomes}"
+            )),
+        ]),
     ];
+    if !plan.selection.removed.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!(
+                "Omitted from {}/{}",
+                escape(&plan.snapshot.remote),
+                escape(&plan.snapshot.environment)
+            ),
+            Palette::warning().bold(),
+        ));
+        lines.push(Line::styled(
+            "Their remote branches are not changed or deleted; press Esc to revise.",
+            Palette::muted(),
+        ));
+        lines.extend(plan.selection.removed.iter().map(|branch| {
+            Line::from(vec![
+                Span::styled(
+                    format!("  –  {}", escape(&branch.name)),
+                    Palette::warning().bold(),
+                ),
+                Span::styled(
+                    format!("  {}  omitted by your selection", short_oid(&branch.tip)),
+                    Palette::warning(),
+                ),
+            ])
+        }));
+    }
+    lines.extend([
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Remote guard    ", Palette::muted()),
+            Span::raw(format!(
+                "publish stops if {}/{} changed since this review",
+                escape(&plan.snapshot.remote),
+                escape(&plan.snapshot.environment)
+            )),
+        ]),
+    ]);
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Plan details", Palette::muted().bold()),
+        Span::styled(
+            if show_details {
+                "  ·  d hide refs, identities, endpoints, and signing"
+            } else {
+                "  ·  d show refs, identities, endpoints, and signing"
+            },
+            Palette::muted(),
+        ),
+    ]));
+    if show_details {
+        lines.extend(technical_detail_lines(plan));
+    }
+    lines.extend([
+        Line::from(""),
+        Line::styled("Retained merge order", Palette::primary().bold()),
+        Line::styled(
+            "Selected feature tips are rebuilt in this order.",
+            Palette::muted(),
+        ),
+        Line::styled(
+            "   #  BRANCH                            COMMIT   OUTCOME",
+            Palette::muted(),
+        ),
+    ]);
     if plan.selection.retained.is_empty() {
-        lines.push(Line::raw("  none (environment becomes the captured base)"));
+        lines.push(Line::raw(
+            "  —  none; the environment becomes the captured base",
+        ));
     } else {
         lines.extend(
             plan.selection
@@ -388,34 +866,48 @@ fn review_text(plan: &RestackPlan) -> Text<'static> {
                 .iter()
                 .enumerate()
                 .map(|(index, branch)| {
-                    let outcome = plan
-                        .merges
-                        .get(index)
-                        .map_or("unavailable", |merge| match merge.resolution {
-                            graduate::restack::MergeResolution::Clean => "clean",
-                            graduate::restack::MergeResolution::Reused => "rerere reused",
-                            graduate::restack::MergeResolution::Manual => "manual",
-                        });
-                    Line::raw(format!(
-                        "  {:>2}. {} @ {} ({outcome})",
-                        index + 1,
-                        escape(&branch.name),
-                        escape(&branch.tip)
-                    ))
+                    let (outcome, style) = plan.merges.get(index).map_or(
+                        ("unavailable", Palette::warning()),
+                        |merge| match merge.resolution {
+                            graduate::restack::MergeResolution::Clean => {
+                                ("✓ clean", Palette::success())
+                            }
+                            graduate::restack::MergeResolution::Reused => {
+                                ("✓ history reused", Palette::success())
+                            }
+                            graduate::restack::MergeResolution::Manual => {
+                                ("◆ manual", Palette::warning())
+                            }
+                        },
+                    );
+                    Line::from(vec![
+                        Span::raw(format!(
+                            "  {:>2}  {}  {:<7}  ",
+                            index + 1,
+                            pad_text(&truncate_text(&escape(&branch.name), 32), 32),
+                            short_oid(&branch.tip)
+                        )),
+                        Span::styled(outcome, style),
+                    ])
                 }),
         );
     }
-    lines.push(Line::from(""));
-    lines.push(Line::styled(
-        "Deliberate removals",
-        Palette::warning().bold(),
-    ));
-    if plan.selection.removed.is_empty() {
-        lines.push(Line::raw("  none"));
-    } else {
+    if show_details {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Exact feature identities",
+            Palette::muted().bold(),
+        ));
+        lines.extend(plan.selection.retained.iter().map(|branch| {
+            Line::raw(format!(
+                "  retained  {} @ {}",
+                escape(&branch.name),
+                escape(&branch.tip)
+            ))
+        }));
         lines.extend(plan.selection.removed.iter().map(|branch| {
             Line::raw(format!(
-                "  {} @ {}",
+                "  removed   {} @ {}",
                 escape(&branch.name),
                 escape(&branch.tip)
             ))
@@ -424,10 +916,134 @@ fn review_text(plan: &RestackPlan) -> Text<'static> {
     Text::from(lines)
 }
 
+fn technical_detail_lines(plan: &RestackPlan) -> Vec<Line<'static>> {
+    vec![
+        Line::from(vec![
+            Span::styled("Base            ", Palette::muted()),
+            Span::raw(format!(
+                "{} @ {}",
+                escape(&plan.snapshot.main_ref),
+                escape(&plan.snapshot.main_tip)
+            )),
+        ]),
+        Line::from(vec![
+            Span::styled("Environment     ", Palette::muted()),
+            Span::raw(format!(
+                "{} @ {}",
+                escape(&plan.snapshot.environment_ref),
+                escape(&plan.snapshot.environment_tip)
+            )),
+        ]),
+        Line::from(vec![
+            Span::styled("Preview commit  ", Palette::muted()),
+            Span::raw(escape(&plan.preview_commit)),
+        ]),
+        Line::from(vec![
+            Span::styled("Final tree      ", Palette::muted()),
+            Span::raw(escape(&plan.final_tree)),
+        ]),
+        Line::from(vec![
+            Span::styled("Author          ", Palette::muted()),
+            Span::raw(format!(
+                "{} <{}>",
+                escape(&plan.author.name),
+                escape(&plan.author.email)
+            )),
+        ]),
+        Line::from(vec![
+            Span::styled("Fetch endpoint  ", Palette::muted()),
+            Span::raw(format!("sha256:{}", plan.remote_endpoints.fetch_sha256)),
+        ]),
+        Line::from(vec![
+            Span::styled("Push endpoint   ", Palette::muted()),
+            Span::raw(format!("sha256:{}", plan.remote_endpoints.push_sha256)),
+        ]),
+        Line::from(vec![
+            Span::styled("Publish guard   ", Palette::muted()),
+            Span::raw(format!(
+                "exact lease; {}/{} must still be at {}",
+                escape(&plan.snapshot.remote),
+                escape(&plan.snapshot.environment),
+                escape(&plan.snapshot.environment_tip)
+            )),
+        ]),
+        Line::from(vec![
+            Span::styled("Signing         ", Palette::muted()),
+            Span::raw("unsigned canonical merge commits"),
+        ]),
+        Line::from(vec![
+            Span::styled("Dropped markers ", Palette::muted()),
+            Span::raw(format!(
+                "{} exact phase marker(s)",
+                plan.snapshot.dropped_markers.len()
+            )),
+        ]),
+    ]
+}
+
+fn resolution_summary(plan: &RestackPlan) -> String {
+    let clean = plan
+        .merges
+        .iter()
+        .filter(|merge| merge.resolution == graduate::restack::MergeResolution::Clean)
+        .count();
+    let reused = plan
+        .merges
+        .iter()
+        .filter(|merge| merge.resolution == graduate::restack::MergeResolution::Reused)
+        .count();
+    let manual = plan
+        .merges
+        .iter()
+        .filter(|merge| merge.resolution == graduate::restack::MergeResolution::Manual)
+        .count();
+    let mut parts = Vec::new();
+    if clean > 0 {
+        parts.push(format!("{clean} clean"));
+    }
+    if reused > 0 {
+        parts.push(format!("{reused} history reused"));
+    }
+    if manual > 0 {
+        parts.push(format!("{manual} manual"));
+    }
+    let total = clean.saturating_add(reused).saturating_add(manual);
+    if parts.is_empty() {
+        "0 merges".to_owned()
+    } else if parts.len() == 1 {
+        format!(
+            "{} {}",
+            parts.join(""),
+            if total == 1 { "merge" } else { "merges" }
+        )
+    } else {
+        format!("{total} merges: {}", parts.join(" · "))
+    }
+}
+
 fn render_confirmation(frame: &mut Frame<'_>, area: Rect, plan: Option<&RestackPlan>) {
-    let text = plan.map_or_else(
-        || "The reviewed plan is unavailable.".to_owned(),
+    let text = confirmation_text(plan);
+    let text_height = wrapped_text_height(&text, area.width).min(usize::from(u16::MAX)) as u16;
+    let panel_height = area.height.min(text_height.saturating_add(1));
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Palette::warning())
+                    .title(" PUBLISH REMOTE REWRITE "),
+            )
+            .wrap(Wrap { trim: false })
+            .alignment(Alignment::Left),
+        Rect::new(area.x, area.y, area.width, panel_height),
+    );
+}
+
+fn confirmation_text(plan: Option<&RestackPlan>) -> Text<'static> {
+    plan.map_or_else(
+        || Text::from("The reviewed plan is unavailable."),
         |plan| {
+            const OMITTED_BRANCH_LIMIT: usize = 3;
             let retained = plan.selection.retained.len();
             let removed = plan.selection.removed.len();
             let retained_label = if retained == 1 { "feature" } else { "features" };
@@ -436,40 +1052,190 @@ fn render_confirmation(frame: &mut Frame<'_>, area: Rect, plan: Option<&RestackP
                 escape(&plan.snapshot.remote),
                 escape(&plan.snapshot.environment)
             );
-            format!(
-                "Replace {target} with the reviewed result?\n\nCurrent tip    {}\nReviewed tip   {}\nRewrite scope  {retained} retained {retained_label} · {removed} omitted\n\nPublish stops if {target} changed since review (exact lease).\nThis rewrites {target} history; collaborators tracking it must resync after publish.\n\nFeature branches, the source checkout, local refs, hooks, and personal rerere stay unchanged. Merge commits are unsigned.\n\nPress Ctrl+Y to publish. Esc returns to Review; q abandons this plan without changing refs.",
-                escape(&plan.snapshot.environment_tip),
-                escape(&plan.preview_commit),
-            )
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled("Current tip     ", Palette::muted()),
+                    Span::raw(format!("{target} @ ")),
+                    Span::styled(
+                        short_oid(&plan.snapshot.environment_tip),
+                        Palette::warning(),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Reviewed tip    ", Palette::muted()),
+                    Span::raw(format!("{target} @ ")),
+                    Span::styled(short_oid(&plan.preview_commit), Palette::primary().bold()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Rewrite scope   ", Palette::muted()),
+                    Span::raw(format!(
+                        "rebuild {target} from {retained} retained {retained_label} · {removed} omitted · {}",
+                        resolution_summary(plan),
+                    )),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Remote guard    ", Palette::muted()),
+                    Span::raw(format!(
+                        "publish stops if {target} changed since review (exact lease)"
+                    )),
+                ]),
+            ];
+            if removed > 0 {
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    "Omitted from the reviewed result",
+                    Palette::warning().bold(),
+                ));
+                lines.extend(
+                    plan.selection
+                        .removed
+                        .iter()
+                        .take(OMITTED_BRANCH_LIMIT)
+                        .map(|branch| {
+                            Line::styled(
+                                format!(
+                                    "  –  {} @ {}",
+                                    escape(&branch.name),
+                                    short_oid(&branch.tip)
+                                ),
+                                Palette::warning(),
+                            )
+                        }),
+                );
+                if removed > OMITTED_BRANCH_LIMIT {
+                    lines.push(Line::styled(
+                        format!(
+                            "  … and {} more; press Esc to review every omission",
+                            removed.saturating_sub(OMITTED_BRANCH_LIMIT)
+                        ),
+                        Palette::muted(),
+                    ));
+                }
+            }
+            lines.extend([
+                Line::from(""),
+                Line::styled(
+                    format!(
+                        "This rewrites {target} history; collaborators tracking it must resync after publish."
+                    ),
+                    Palette::warning(),
+                ),
+                Line::styled(
+                    "Feature branches and local work remain unchanged.",
+                    Palette::muted(),
+                ),
+                Line::from(""),
+                Line::styled(
+                    format!("Press Ctrl+Y to replace {target} with this reviewed result."),
+                    Palette::warning().bold(),
+                ),
+                Line::styled(
+                    "Esc returns to Review; q abandons this plan without changing refs.",
+                    Palette::muted(),
+                ),
+            ]);
+            Text::from(lines)
         },
-    );
+    )
+}
+
+fn render_footer(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    stage: RestackInteractionStage,
+    view: &RestackViewState,
+) {
+    if stage == RestackInteractionStage::Selection && view.filtering {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Filter: ", Palette::primary().bold()),
+                Span::styled(format!("{}▏", escape(&view.filter)), Palette::text()),
+            ])),
+            area,
+        );
+        return;
+    }
+    let mut controls = Vec::new();
+    match stage {
+        RestackInteractionStage::Selection => {
+            controls.extend(control("Enter", "Review", true));
+            controls.extend(control("Space", "Toggle", false));
+            controls.extend(control("/", "Filter", false));
+            controls.extend(control(
+                "?",
+                if view.show_shortcuts {
+                    "Hide shortcuts"
+                } else {
+                    "Shortcuts"
+                },
+                false,
+            ));
+            controls.extend(control("Esc", "Cancel", false));
+        }
+        RestackInteractionStage::Review => {
+            controls.extend(control("Enter", "Confirm publish", true));
+            if view.scrollable {
+                controls.extend(control("PgUp/Dn Home/End", "Scroll", false));
+            }
+            controls.extend(control("d", "Details", false));
+            controls.extend(control("Esc", "Revise", false));
+            controls.extend(control("q", "Cancel", false));
+        }
+        RestackInteractionStage::Confirmation => {
+            controls.extend(control("Ctrl+Y", "Publish", true));
+            controls.extend(control("Esc", "Review details", false));
+            controls.extend(control("q", "Abandon plan", false));
+        }
+    }
     frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Palette::warning())
-                    .title(" CONFIRM REMOTE REWRITE "),
-            )
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(Line::from(controls)).wrap(Wrap { trim: true }),
         area,
     );
 }
 
-fn render_footer(frame: &mut Frame<'_>, area: Rect, stage: RestackInteractionStage) {
-    let controls = match stage {
-        RestackInteractionStage::Selection => {
-            " ↑/↓ move   Space retain/remove   Enter review   Esc cancel "
-        }
-        RestackInteractionStage::Review => " ↑/↓ scroll   Enter confirm   Esc revise   q cancel ",
-        RestackInteractionStage::Confirmation => {
-            " Ctrl+Y publish   Esc review details   q abandon plan "
-        }
+const fn footer_height(stage: RestackInteractionStage, width: u16) -> u16 {
+    match stage {
+        RestackInteractionStage::Selection if width < 90 => 2,
+        RestackInteractionStage::Selection => 1,
+        RestackInteractionStage::Review if width < 72 => 3,
+        RestackInteractionStage::Review if width < 96 => 2,
+        RestackInteractionStage::Review | RestackInteractionStage::Confirmation => 1,
+    }
+}
+
+fn control(key: &'static str, label: &'static str, primary: bool) -> Vec<Span<'static>> {
+    let key_style = if primary {
+        Palette::primary().bold()
+    } else {
+        Palette::text().bold()
     };
-    frame.render_widget(
-        Paragraph::new(Line::styled(controls, Palette::muted())),
-        area,
-    );
+    vec![
+        Span::styled(key, key_style),
+        Span::styled(format!(" {label}  "), Palette::muted()),
+    ]
+}
+
+fn truncate_text(value: &str, width: usize) -> String {
+    if Line::raw(value).width() <= width {
+        return value.to_owned();
+    }
+    let visible = width.saturating_sub(1);
+    let mut truncated = String::new();
+    for character in value.chars() {
+        let mut candidate = truncated.clone();
+        candidate.push(character);
+        if Line::raw(&candidate).width() > visible {
+            break;
+        }
+        truncated.push(character);
+    }
+    format!("{truncated}…")
+}
+
+fn pad_text(value: &str, width: usize) -> String {
+    let padding = width.saturating_sub(Line::raw(value).width());
+    format!("{value}{}", " ".repeat(padding))
 }
 
 fn selection_error_message(error: &SelectionError) -> String {
@@ -513,9 +1279,21 @@ mod tests {
         let interaction = RestackInteraction::new(snapshot());
         let rendered = rendered(&interaction, None, None)?;
 
-        assert!(rendered.contains("1.  feature/PROJ-12-one  aaaaaaa  PROJ-12"));
-        assert!(rendered.contains("rerere history available"));
-        assert!(rendered.contains("2.  feature/two  bbbbbbb  —  rerere unavailable"));
+        assert!(rendered.contains("SELECT FEATURES"));
+        assert!(rendered.contains("● 1 Select › ○ 2 Review › ○ 3 Publish"));
+        assert!(!rendered.contains("Filter:"));
+        assert!(rendered.contains("feature/PROJ-12-one"));
+        assert!(rendered.contains("aaaaaaa"));
+        assert!(rendered.contains("PROJ-12"));
+        assert!(rendered.contains("available"));
+        assert!(rendered.contains("feature/two"));
+        assert!(rendered.contains("2 retained · 0 removed"));
+        assert!(rendered.contains("◆ Required by feature/two"));
+        let footer_row = rendered
+            .lines()
+            .position(|line| line.contains("Enter Review"))
+            .ok_or("selection footer was not rendered")?;
+        assert!(footer_row >= 36);
         Ok(())
     }
 
@@ -532,7 +1310,214 @@ mod tests {
         assert!(rendered.contains("Cannot remove feature/PROJ-12-one"));
         assert!(rendered.contains("feature/two"));
         assert!(interaction.is_retained(0));
+        let compact = rendered_at(&interaction, None, Some(&rejection), 56, 24)?;
+        assert!(compact.contains("feature/two"));
         Ok(())
+    }
+
+    #[test]
+    fn checklist_updates_the_impact_summary_after_a_toggle(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut snapshot = snapshot();
+        snapshot.attributed_commits.clear();
+        let mut interaction = RestackInteraction::new(snapshot);
+        let _ = interaction.update(RestackInteractionAction::Toggle);
+
+        let rendered = rendered(&interaction, None, None)?;
+
+        assert!(rendered.contains("1 retained · 1 removed"));
+        assert!(rendered.contains("Space Toggle"));
+        Ok(())
+    }
+
+    #[test]
+    fn checklist_preserves_list_viewport_while_the_cursor_moves(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut snapshot = snapshot();
+        snapshot.features = (1..=10)
+            .map(|index| ExplicitFeature {
+                name: format!("feature/{index}"),
+                tip: format!("{index:040}"),
+                historical_merges: Vec::new(),
+            })
+            .collect();
+        snapshot.attributed_commits.clear();
+        let mut interaction = RestackInteraction::new(snapshot);
+        for _ in 0..9 {
+            let _ = interaction.update(RestackInteractionAction::MoveDown);
+        }
+        let mut view = RestackViewState::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 18))?;
+
+        terminal.draw(|frame| render(frame, &interaction, None, None, &mut view))?;
+        let scrolled_offset = view.feature_list.offset();
+        assert!(scrolled_offset > 0);
+        let _ = interaction.update(RestackInteractionAction::MoveUp);
+        terminal.draw(|frame| render(frame, &interaction, None, None, &mut view))?;
+
+        assert_eq!(view.feature_list.selected(), Some(interaction.cursor()));
+        assert_eq!(view.feature_list.offset(), scrolled_offset);
+        Ok(())
+    }
+
+    #[test]
+    fn compact_checklist_reflows_issue_and_history_instead_of_hiding_them(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let interaction = RestackInteraction::new(snapshot());
+        let rendered = rendered_at(&interaction, None, None, 80, 24)?;
+
+        assert!(!rendered.contains("Filter:"));
+        assert!(rendered.contains("PROJ-12"));
+        assert!(rendered.contains("available"));
+        assert!(rendered.contains("/ Filter"));
+        assert!(rendered.contains("? Shortcuts"));
+        assert!(rendered.contains("◆ Required by feature/two"));
+        assert!(!rendered.contains("a keep all"));
+        Ok(())
+    }
+
+    #[test]
+    fn checklist_reveals_secondary_shortcuts_on_request() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut snapshot = snapshot();
+        snapshot.attributed_commits.clear();
+        let mut interaction = RestackInteraction::new(snapshot);
+        let _ = interaction.update(RestackInteractionAction::MoveDown);
+        let mut view = RestackViewState::default();
+
+        assert_eq!(
+            selection_action_for_key(
+                &interaction,
+                &mut view,
+                KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+            ),
+            None
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        terminal.draw(|frame| render(frame, &interaction, None, None, &mut view))?;
+        let rendered = terminal.backend().to_string();
+
+        assert!(rendered.contains("a keep all · x remove all"));
+        assert!(rendered.contains("Home/End first/last"));
+        assert!(rendered.contains("? Hide shortcuts"));
+        Ok(())
+    }
+
+    #[test]
+    fn wide_checklist_collapses_each_feature_to_one_evidence_row(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let interaction = RestackInteraction::new(snapshot());
+        let rendered = rendered_at(&interaction, None, None, 100, 24)?;
+        let feature_line = rendered
+            .lines()
+            .find(|line| line.contains("feature/PROJ-12-one"))
+            .ok_or("wide feature row was not rendered")?;
+
+        assert!(feature_line.contains("aaaaaaa"));
+        assert!(feature_line.contains("PROJ-12"));
+        assert!(feature_line.contains("history: available"));
+        Ok(())
+    }
+
+    #[test]
+    fn checklist_filter_narrows_rows_and_keeps_selection_on_a_visible_branch(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut snapshot = snapshot();
+        snapshot.attributed_commits.clear();
+        let mut interaction = RestackInteraction::new(snapshot);
+        let mut view = RestackViewState::default();
+        assert_eq!(
+            selection_action_for_key(
+                &interaction,
+                &mut view,
+                KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            ),
+            None
+        );
+        for character in ['t', 'w', 'o'] {
+            if let Some(action) = selection_action_for_key(
+                &interaction,
+                &mut view,
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            ) {
+                let _ = interaction.update(action);
+            }
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        terminal.draw(|frame| render(frame, &interaction, None, None, &mut view))?;
+        let rendered = terminal.backend().to_string();
+
+        assert_eq!(view.filter, "two");
+        assert_eq!(interaction.cursor(), 1);
+        assert!(rendered.contains("feature/two"));
+        assert!(!rendered.contains("feature/PROJ-12-one"));
+        assert!(rendered.contains("1/2"));
+        assert!(rendered.contains("Filter: two▏"));
+        assert!(!rendered.contains("Enter Review"));
+        Ok(())
+    }
+
+    #[test]
+    fn checklist_explains_an_empty_filter_result() -> Result<(), Box<dyn std::error::Error>> {
+        let interaction = RestackInteraction::new(snapshot());
+        let mut view = RestackViewState {
+            filter: "missing".to_owned(),
+            ..RestackViewState::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+
+        terminal.draw(|frame| render(frame, &interaction, None, None, &mut view))?;
+        let rendered = terminal.backend().to_string();
+
+        assert!(rendered.contains("No branches match “missing”"));
+        assert!(rendered.contains("0/2"));
+        Ok(())
+    }
+
+    #[test]
+    fn undersized_terminal_replaces_the_workflow_with_resize_guidance(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let interaction = RestackInteraction::new(snapshot());
+        let rendered = rendered_at(&interaction, None, None, 55, 11)?;
+
+        assert!(rendered.contains("Terminal too small for a safe restack review"));
+        assert!(rendered.contains("56 columns × 18 rows"));
+        assert!(!rendered.contains("SELECT FEATURES"));
+        Ok(())
+    }
+
+    #[test]
+    fn undersized_review_allows_escape_but_blocks_progression_and_publication(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let plan = plan()?;
+        let mut interaction = RestackInteraction::new(snapshot());
+        interaction.review_ready();
+        let mut view = RestackViewState::default();
+        let mut terminal = Terminal::new(TestBackend::new(55, 11))?;
+
+        terminal.draw(|frame| render(frame, &interaction, Some(&plan), None, &mut view))?;
+
+        assert!(view.undersized);
+        assert!(!action_allowed_when_undersized(
+            RestackInteractionAction::Continue
+        ));
+        assert!(!action_allowed_when_undersized(
+            RestackInteractionAction::Confirm
+        ));
+        assert!(action_allowed_when_undersized(
+            RestackInteractionAction::Back
+        ));
+        assert!(action_allowed_when_undersized(
+            RestackInteractionAction::Cancel
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn wrapped_height_uses_paragraph_word_boundaries() {
+        let text = Text::from("aaaa aaaa aaaa");
+
+        assert_eq!(wrapped_text_height(&text, 8), 3);
     }
 
     #[test]
@@ -543,34 +1528,226 @@ mod tests {
         interaction.review_ready();
         let review = rendered(&interaction, Some(&plan), None)?;
 
-        assert!(review.contains("refs/remotes/origin/main @ main-tip"));
-        assert!(review.contains("refs/heads/qa"));
-        assert!(review.contains("Pat <pat@example.com>"));
-        assert!(review.contains("sha256:ffffffff"));
+        assert!(review.contains("RESTACK REVIEW"));
+        assert!(review.contains("Remote rewrite"));
+        assert!(review.contains("environ"));
+        assert!(review.contains("preview"));
+        assert!(
+            review.contains("1 retained · 1 omitted from the rebuilt environment · 1 clean merge")
+        );
+        assert!(review.contains("publish stops if origin/qa changed since this review"));
+        assert!(!review.contains("Unchanged"));
+        assert!(!review.contains("Target          origin/qa"));
+        assert!(!review.contains("Commit signing"));
+        assert!(!review.contains("Starts from"));
+        assert!(!review.contains("Builds"));
         assert!(review.contains("Retained merge order"));
-        assert!(review.contains("(clean)"));
-        assert!(review.contains("unsigned canonical merge commits"));
-        assert!(review.contains("0 exact phase marker(s)"));
+        assert!(review.contains("Selected feature tips are rebuilt in this order"));
+        assert!(review.contains("✓ clean"));
+        let retained_header = review
+            .lines()
+            .find(|line| line.contains("BRANCH") && line.contains("OUTCOME"))
+            .ok_or("retained header was not rendered")?;
+        let retained_row = review
+            .lines()
+            .find(|line| line.contains("feature/PROJ-12-one"))
+            .ok_or("retained row was not rendered")?;
+        assert_eq!(retained_header.find('#'), retained_row.find('1'));
+        assert_eq!(
+            retained_header.find("BRANCH"),
+            retained_row.find("feature/PROJ-12-one")
+        );
+        assert!(review.contains("Omitted from origin/qa"));
+        assert!(review.contains("remote branches are not changed or deleted; press Esc to revise"));
+        assert!(review.contains("omitted by your selection"));
+        assert!(review.contains("Plan details  ·  d show refs, identities, endpoints, and signing"));
+        assert!(!review.contains("sha256:ffffffff"));
+        assert!(review.contains("Enter Confirm publish"));
+        assert!(!review.contains("↑/↓ Scroll"));
+        let footer_row = review
+            .lines()
+            .position(|line| line.contains("Enter Confirm publish"))
+            .ok_or("review footer was not rendered")?;
+        assert!(footer_row >= 36);
+
+        let _ = interaction.update(RestackInteractionAction::ToggleDetails);
+        let details = rendered(&interaction, Some(&plan), None)?;
+        assert!(details.contains("refs/remotes/origin/main @ main-tip"));
+        assert!(details.contains("Pat <pat@example.com>"));
+        assert!(details.contains("sha256:ffffffff"));
+        assert!(details.contains("unsigned canonical merge commits"));
+        assert!(details.contains("0 exact phase marker(s)"));
+        for _ in 0..20 {
+            let _ = interaction.update(RestackInteractionAction::MoveDown);
+        }
+        let identities = rendered(&interaction, Some(&plan), None)?;
+        assert!(identities.contains("Exact feature identities"));
+        assert!(identities.contains("retained  feature/PROJ-12-one @ aaaaaaaaaa"));
+        assert!(identities.contains("removed   feature/two @ bbbbbbbbbb"));
 
         let _ = interaction.update(RestackInteractionAction::Continue);
         let confirmation = rendered(&interaction, Some(&plan), None)?;
-        assert!(confirmation.contains("Current tip    environment-tip"));
-        assert!(confirmation.contains("Reviewed tip   preview"));
-        assert!(confirmation.contains("1 retained feature · 1 omitted"));
-        assert!(confirmation.contains("Publish stops if origin/qa changed since review"));
+        assert!(confirmation.contains("publish stops if origin/qa changed since review"));
         assert!(confirmation.contains("(exact lease)"));
+        assert!(confirmation.contains("Current tip     origin/qa @ environ"));
+        assert!(confirmation.contains("Reviewed tip    origin/qa @ preview"));
+        assert!(confirmation.contains("rebuild origin/qa from 1 retained feature"));
+        assert!(confirmation.contains("1 omitted · 1 clean merge"));
+        assert!(confirmation.contains("Omitted from the reviewed result"));
+        assert!(confirmation.contains("feature/two @ bbbbbbb"));
         assert!(confirmation.contains("collaborators tracking it must resync after publish"));
-        assert!(confirmation.contains("source checkout, local refs, hooks"));
-        assert!(confirmation.contains("Press Ctrl+Y to publish"));
+        assert!(confirmation.contains("Feature branches and local work remain unchanged"));
+        assert!(confirmation.contains("Press Ctrl+Y to replace origin/qa"));
         assert!(confirmation.contains("q abandons this plan without changing refs"));
-        assert!(confirmation.contains("Ctrl+Y publish"));
-        assert!(confirmation.contains("Esc review details"));
-        assert!(confirmation.contains("q abandon plan"));
+        assert!(confirmation.contains("Ctrl+Y Publish"));
+        assert!(confirmation.contains("Esc Review details"));
+        assert!(confirmation.contains("q Abandon plan"));
+        assert!(!confirmation.contains("unsigned"));
+        let compact_confirmation = rendered_at(&interaction, Some(&plan), None, 80, 24)?;
+        assert!(compact_confirmation.contains("rebuild origin/qa from 1 retained feature"));
+        assert!(compact_confirmation.contains("publish stops if origin/qa changed since review"));
+        assert!(compact_confirmation.contains("collaborators tracking it must resync"));
+        assert!(compact_confirmation.contains("Press Ctrl+Y to replace origin/qa"));
+        assert!(compact_confirmation.contains("Ctrl+Y Publish"));
+        Ok(())
+    }
 
-        let compact = rendered_at(&interaction, Some(&plan), None, 80, 24)?;
-        assert!(compact.contains("Publish stops if origin/qa changed since review"));
-        assert!(compact.contains("Press Ctrl+Y to publish"));
-        assert!(compact.contains("Ctrl+Y publish"));
+    #[test]
+    fn short_confirmation_requires_enough_height_for_the_publish_warning(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let plan = plan()?;
+        let mut interaction = RestackInteraction::new(snapshot());
+        interaction.review_ready();
+        let _ = interaction.update(RestackInteractionAction::Continue);
+        let minimum_height = confirmation_minimum_height(Some(&plan), 56);
+
+        let rendered = rendered_at(
+            &interaction,
+            Some(&plan),
+            None,
+            56,
+            minimum_height.saturating_sub(1),
+        )?;
+
+        assert!(rendered.contains("Terminal too small for a safe restack review"));
+        assert!(rendered.contains(&format!("56 columns × {minimum_height} rows")));
+        assert!(!rendered.contains("PUBLISH REMOTE REWRITE"));
+
+        let boundary = rendered_at(&interaction, Some(&plan), None, 56, minimum_height)?;
+        assert!(boundary.contains("Feature branches and local work"));
+        assert!(boundary.contains("Press Ctrl+Y to replace origin/qa"));
+        Ok(())
+    }
+
+    #[test]
+    fn confirmation_bounds_large_omission_lists_and_points_back_to_review(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut plan = plan()?;
+        plan.selection.removed = (1..=5)
+            .map(|index| BranchIdentity {
+                name: format!("feature/removed-{index}"),
+                tip: format!("{index:040}"),
+            })
+            .collect();
+        let mut interaction = RestackInteraction::new(snapshot());
+        interaction.review_ready();
+        let _ = interaction.update(RestackInteractionAction::Continue);
+
+        let confirmation = rendered_at(&interaction, Some(&plan), None, 115, 38)?;
+
+        assert!(confirmation.contains("5 omitted"));
+        assert!(confirmation.contains("feature/removed-1"));
+        assert!(confirmation.contains("feature/removed-3"));
+        assert!(!confirmation.contains("feature/removed-4"));
+        assert!(confirmation.contains("and 2 more; press Esc to review every omission"));
+        Ok(())
+    }
+
+    #[test]
+    fn checklist_truncates_wide_unicode_by_terminal_columns() {
+        let value = "feature/界界界界界界界界界界";
+        let truncated = truncate_text(value, 16);
+        let padded = pad_text(&truncated, 16);
+
+        assert!(Line::raw(&truncated).width() <= 16);
+        assert_eq!(Line::raw(&padded).width(), 16);
+        assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn compact_review_keeps_every_action_visible() -> Result<(), Box<dyn std::error::Error>> {
+        let plan = plan()?;
+        let mut interaction = RestackInteraction::new(snapshot());
+        interaction.review_ready();
+        let _ = interaction.update(RestackInteractionAction::ToggleDetails);
+        let mut terminal = Terminal::new(TestBackend::new(60, 24))?;
+        let mut view = RestackViewState::default();
+
+        terminal.draw(|frame| render(frame, &interaction, Some(&plan), None, &mut view))?;
+        let rendered = terminal.backend().to_string();
+
+        assert!(view.scrollable);
+        assert!(rendered.contains("Omitted from origin/qa"));
+        assert!(rendered.contains("feature/two"));
+        assert!(rendered.contains("to revise."));
+        assert!(rendered.contains("PgUp/Dn Home/End Scroll"));
+        assert!(rendered.contains("Enter Confirm publish"));
+        assert!(rendered.contains("Esc Revise"));
+        assert!(rendered.contains("d Details"));
+        assert!(rendered.contains("q Cancel"));
+        Ok(())
+    }
+
+    #[test]
+    fn review_navigates_hundreds_of_retained_features_and_keeps_details_near_the_top(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut plan = plan()?;
+        plan.selection.removed.clear();
+        plan.selection.retained = (1..=250)
+            .map(|index| BranchIdentity {
+                name: format!("feature/{index:03}"),
+                tip: format!("{index:040}"),
+            })
+            .collect();
+        plan.merges = plan
+            .selection
+            .retained
+            .iter()
+            .map(|branch| MergeOutcome {
+                branch: branch.name.clone(),
+                tip: branch.tip.clone(),
+                commit: format!("merge-{}", branch.name),
+                tree: format!("tree-{}", branch.name),
+                resolution: MergeResolution::Clean,
+            })
+            .collect();
+        let mut interaction = RestackInteraction::new(snapshot());
+        interaction.review_ready();
+        let mut view = RestackViewState::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+
+        terminal.draw(|frame| render(frame, &interaction, Some(&plan), None, &mut view))?;
+        let first_page = terminal.backend().to_string();
+        assert!(view.scrollable);
+        assert!(first_page.contains("250 retained"));
+        assert!(first_page.contains("Plan details"));
+        assert!(first_page.contains("Home/End Scroll"));
+
+        let _ = interaction.update(RestackInteractionAction::MoveLast);
+        terminal.draw(|frame| render(frame, &interaction, Some(&plan), None, &mut view))?;
+        let last_page = terminal.backend().to_string();
+        assert!(last_page.contains("feature/250"));
+
+        let _ = interaction.update(RestackInteractionAction::MoveUp);
+        terminal.draw(|frame| render(frame, &interaction, Some(&plan), None, &mut view))?;
+        let above_last_page = terminal.backend().to_string();
+        assert!(!above_last_page.contains("feature/250"));
+
+        let _ = interaction.update(RestackInteractionAction::MoveFirst);
+        terminal.draw(|frame| render(frame, &interaction, Some(&plan), None, &mut view))?;
+        let returned = terminal.backend().to_string();
+        assert!(returned.contains("RESTACK REVIEW"));
+        assert!(returned.contains("Plan details"));
         Ok(())
     }
 
@@ -607,9 +1784,51 @@ mod tests {
         assert_eq!(
             action_for_key(
                 RestackInteractionStage::Confirmation,
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+            ),
+            Some(RestackInteractionAction::Back)
+        );
+        assert_eq!(
+            action_for_key(
+                RestackInteractionStage::Confirmation,
                 KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)
             ),
             None
+        );
+        assert_eq!(
+            action_for_key(
+                RestackInteractionStage::Review,
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)
+            ),
+            Some(RestackInteractionAction::ToggleDetails)
+        );
+        assert_eq!(
+            action_for_key(
+                RestackInteractionStage::Review,
+                KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)
+            ),
+            Some(RestackInteractionAction::MoveFirst)
+        );
+        assert_eq!(
+            action_for_key(
+                RestackInteractionStage::Review,
+                KeyEvent::new(KeyCode::End, KeyModifiers::NONE)
+            ),
+            Some(RestackInteractionAction::MoveLast)
+        );
+        assert_eq!(
+            action_for_key(
+                RestackInteractionStage::Selection,
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)
+            ),
+            Some(RestackInteractionAction::MovePageDown)
+        );
+        assert_eq!(
+            action_for_key(
+                RestackInteractionStage::Selection,
+                KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)
+            ),
+            Some(RestackInteractionAction::KeepAll)
         );
     }
 
@@ -619,6 +1838,8 @@ mod tests {
         let plan = plan()?;
         let success = success_text(&plan);
         assert!(success.contains("Restacked origin/qa"));
+        assert!(success.contains("1 retained, 1 omitted from the environment"));
+        assert!(!success.contains("1 removed"));
 
         let paths = vec!["src/file\nname.rs".to_owned()];
         let handoff = conflict_text(&ConflictHandoff {
@@ -630,7 +1851,11 @@ mod tests {
         });
         assert!(handoff.contains("src/file\\nname.rs"));
         assert!(handoff.contains("Work area: /tmp/work\\narea"));
-        assert!(handoff.contains("gd restack qa --resume v1.safe.token"));
+        assert!(handoff.contains("1. Edit the unresolved files in the work area"));
+        assert!(handoff.contains("2. Stage every resolution there"));
+        assert!(handoff.contains("3. Resume with: gd restack qa --resume v1.safe.token"));
+        assert!(handoff.contains("Do not commit; Graduate creates the canonical merge commit"));
+        assert!(handoff.contains("expires after 24 hours of inactivity"));
         Ok(())
     }
 
@@ -650,7 +1875,8 @@ mod tests {
         height: u16,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let mut terminal = Terminal::new(TestBackend::new(width, height))?;
-        terminal.draw(|frame| render(frame, interaction, plan, rejection))?;
+        let mut view = RestackViewState::default();
+        terminal.draw(|frame| render(frame, interaction, plan, rejection, &mut view))?;
         Ok(terminal.backend().to_string())
     }
 

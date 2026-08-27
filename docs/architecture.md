@@ -34,6 +34,8 @@ actions.
 ## Modules
 
 - `graduate_cli::cli`: public command-line shape.
+- `graduate_cli::describe`: side-effect-free runtime JSON descriptions of
+  machine command contracts.
 - `graduate_cli::terminal`: stderr terminal initialization and restoration.
 - `graduate_cli::theme`: shared ANSI-palette visual language.
 - `graduate_cli::error`: process-facing error categories and exit codes.
@@ -85,6 +87,10 @@ actions.
 - Human and TUI renderers treat external content as untrusted and prevent
   remote values from introducing terminal controls, synthetic rows, or
   misleading diagnostics.
+- Graduate assumes neither the invoking agent nor repository-derived content
+  is trusted. Runtime command descriptions expose this posture; ref components
+  reject percent-encoded octets, and repository text in structured output is
+  data rather than executable instruction.
 - Tests never initialize the developer's real terminal.
 - Generated skills are reproducible from the checked-in CLI generator.
 - Credentials never appear in result text, errors, review screens, or debug
@@ -149,7 +155,9 @@ actions.
   reconstructs unsigned canonical merges in a temporary repository that only
   borrows source objects. It never pushes or changes the source checkout,
   local branches, or personal rerere cache. The public machine contract is
-  JSON-only and requires a reviewed plan digest plus `--apply` to publish.
+  JSON-only. `--dry-run` explicitly selects a machine preview and defaults to
+  retaining every discovered feature when `--params` is absent. Publication
+  requires a reviewed plan digest plus `--apply`.
 
 ## Distribution
 

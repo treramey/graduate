@@ -191,7 +191,15 @@ pub enum RestackInteractionStage {
 pub enum RestackInteractionAction {
     MoveUp,
     MoveDown,
+    MovePageUp,
+    MovePageDown,
+    MoveFirst,
+    MoveLast,
+    MoveTo(usize),
     Toggle,
+    KeepAll,
+    RemoveAll,
+    ToggleDetails,
     Continue,
     Back,
     Confirm,
@@ -216,6 +224,7 @@ pub struct RestackInteraction {
     retained: Vec<bool>,
     cursor: usize,
     review_scroll: usize,
+    review_details: bool,
     stage: RestackInteractionStage,
 }
 
@@ -228,6 +237,7 @@ impl RestackInteraction {
             snapshot,
             cursor: 0,
             review_scroll: 0,
+            review_details: false,
             stage: RestackInteractionStage::Selection,
         }
     }
@@ -248,8 +258,38 @@ impl RestackInteraction {
     }
 
     #[must_use]
+    pub const fn review_details(&self) -> bool {
+        self.review_details
+    }
+
+    #[must_use]
     pub fn is_retained(&self, index: usize) -> bool {
         self.retained.get(index).copied().unwrap_or(false)
+    }
+
+    /// Return retained features that prevent removing the feature at `index`.
+    #[must_use]
+    pub fn retained_dependents(&self, index: usize) -> Vec<String> {
+        let Some(feature) = self.snapshot.features.get(index) else {
+            return Vec::new();
+        };
+        self.snapshot
+            .attributed_commits
+            .iter()
+            .filter(|commit| commit.branches.iter().any(|owner| owner == &feature.name))
+            .flat_map(|commit| commit.branches.iter())
+            .filter(|owner| owner.as_str() != feature.name)
+            .filter(|owner| {
+                self.snapshot
+                    .features
+                    .iter()
+                    .position(|candidate| candidate.name == **owner)
+                    .is_some_and(|dependent| self.is_retained(dependent))
+            })
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     #[must_use]
@@ -281,6 +321,39 @@ impl RestackInteraction {
                     .min(self.snapshot.features.len().saturating_sub(1));
                 RestackInteractionEffect::None
             }
+            RestackInteractionAction::MovePageUp
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                self.cursor = self.cursor.saturating_sub(10);
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::MovePageDown
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                self.cursor = self
+                    .cursor
+                    .saturating_add(10)
+                    .min(self.snapshot.features.len().saturating_sub(1));
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::MoveFirst
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                self.cursor = 0;
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::MoveLast
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                self.cursor = self.snapshot.features.len().saturating_sub(1);
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::MoveTo(index)
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                self.cursor = index.min(self.snapshot.features.len().saturating_sub(1));
+                RestackInteractionEffect::None
+            }
             RestackInteractionAction::MoveUp if self.stage == RestackInteractionStage::Review => {
                 self.review_scroll = self.review_scroll.saturating_sub(1);
                 RestackInteractionEffect::None
@@ -289,10 +362,51 @@ impl RestackInteraction {
                 self.review_scroll = self.review_scroll.saturating_add(1);
                 RestackInteractionEffect::None
             }
+            RestackInteractionAction::MovePageUp
+                if self.stage == RestackInteractionStage::Review =>
+            {
+                self.review_scroll = self.review_scroll.saturating_sub(10);
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::MovePageDown
+                if self.stage == RestackInteractionStage::Review =>
+            {
+                self.review_scroll = self.review_scroll.saturating_add(10);
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::MoveFirst
+                if self.stage == RestackInteractionStage::Review =>
+            {
+                self.review_scroll = 0;
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::MoveLast if self.stage == RestackInteractionStage::Review => {
+                self.review_scroll = usize::MAX;
+                RestackInteractionEffect::None
+            }
             RestackInteractionAction::Toggle
                 if self.stage == RestackInteractionStage::Selection =>
             {
                 self.toggle_current()
+            }
+            RestackInteractionAction::KeepAll
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                self.retained.fill(true);
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::RemoveAll
+                if self.stage == RestackInteractionStage::Selection =>
+            {
+                self.retained.fill(false);
+                RestackInteractionEffect::None
+            }
+            RestackInteractionAction::ToggleDetails
+                if self.stage == RestackInteractionStage::Review =>
+            {
+                self.review_details = !self.review_details;
+                self.review_scroll = 0;
+                RestackInteractionEffect::None
             }
             RestackInteractionAction::Continue
                 if self.stage == RestackInteractionStage::Selection =>
@@ -323,7 +437,15 @@ impl RestackInteraction {
             }
             RestackInteractionAction::MoveUp
             | RestackInteractionAction::MoveDown
+            | RestackInteractionAction::MovePageUp
+            | RestackInteractionAction::MovePageDown
+            | RestackInteractionAction::MoveFirst
+            | RestackInteractionAction::MoveLast
+            | RestackInteractionAction::MoveTo(_)
             | RestackInteractionAction::Toggle
+            | RestackInteractionAction::KeepAll
+            | RestackInteractionAction::RemoveAll
+            | RestackInteractionAction::ToggleDetails
             | RestackInteractionAction::Continue
             | RestackInteractionAction::Back
             | RestackInteractionAction::Confirm => RestackInteractionEffect::None,
@@ -1216,6 +1338,10 @@ mod tests {
     fn interaction_rejects_a_removal_that_a_retained_branch_still_carries() {
         let mut interaction = RestackInteraction::new(planning_snapshot());
 
+        assert_eq!(
+            interaction.retained_dependents(0),
+            vec!["feature/b".to_owned()]
+        );
         let effect = interaction.update(RestackInteractionAction::Toggle);
 
         assert_eq!(
@@ -1229,6 +1355,30 @@ mod tests {
     }
 
     #[test]
+    fn interaction_supports_batch_selection_and_inventory_navigation() {
+        let mut interaction = RestackInteraction::new(planning_snapshot());
+
+        let _ = interaction.update(RestackInteractionAction::RemoveAll);
+        assert!(!interaction.is_retained(0));
+        assert!(!interaction.is_retained(1));
+
+        let _ = interaction.update(RestackInteractionAction::KeepAll);
+        assert!(interaction.is_retained(0));
+        assert!(interaction.is_retained(1));
+
+        let _ = interaction.update(RestackInteractionAction::MoveLast);
+        assert_eq!(interaction.cursor(), 1);
+        let _ = interaction.update(RestackInteractionAction::MoveFirst);
+        assert_eq!(interaction.cursor(), 0);
+        let _ = interaction.update(RestackInteractionAction::MovePageDown);
+        assert_eq!(interaction.cursor(), 1);
+        let _ = interaction.update(RestackInteractionAction::MovePageUp);
+        assert_eq!(interaction.cursor(), 0);
+        let _ = interaction.update(RestackInteractionAction::MoveTo(1));
+        assert_eq!(interaction.cursor(), 1);
+    }
+
+    #[test]
     fn interaction_requires_review_then_explicit_confirmation() {
         let mut interaction = RestackInteraction::new(planning_snapshot());
         let _ = interaction.update(RestackInteractionAction::MoveDown);
@@ -1237,9 +1387,17 @@ mod tests {
         assert_eq!(interaction.cursor(), 0);
         interaction.review_ready();
 
+        assert!(!interaction.review_details());
+        let _ = interaction.update(RestackInteractionAction::ToggleDetails);
+        assert!(interaction.review_details());
+
         let _ = interaction.update(RestackInteractionAction::MoveDown);
         assert_eq!(interaction.review_scroll(), 1);
         let _ = interaction.update(RestackInteractionAction::MoveUp);
+        assert_eq!(interaction.review_scroll(), 0);
+        let _ = interaction.update(RestackInteractionAction::MoveLast);
+        assert_eq!(interaction.review_scroll(), usize::MAX);
+        let _ = interaction.update(RestackInteractionAction::MoveFirst);
         assert_eq!(interaction.review_scroll(), 0);
 
         assert_eq!(
