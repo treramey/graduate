@@ -17,7 +17,10 @@ pub struct GraphCommit {
     pub message: String,
 }
 
-/// One remote feature ref and the commits reachable from its captured tip.
+/// One remote feature ref and the environment-only commits reachable from its captured tip.
+///
+/// `ancestors` holds the reachable commits that the environment contains but main does not;
+/// commits already on main are never consulted and may be omitted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FeatureRef {
     pub name: String,

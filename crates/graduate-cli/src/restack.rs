@@ -127,6 +127,9 @@ fn run_interactive(args: RestackArgs) -> Result<(), CliError> {
     finish_interactive(outcome, || terminal.restore(), write_interactive_outcome)
 }
 
+/// Object cache shared by the environment, main, and feature history walks.
+const INSPECTION_OBJECT_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
 fn finish_interactive(
     outcome: Result<InteractiveOutcome, CliError>,
     restore: impl FnOnce() -> std::io::Result<()>,
@@ -215,13 +218,14 @@ fn discover_interactive(
             json!({"remote": remote_name}),
         )
     })?;
-    let repository = gix::discover(source).map_err(|_| {
+    let mut repository = gix::discover(source).map_err(|_| {
         machine_failure(
             "repository_not_found",
             "the current directory is not inside a Git repository",
             json!({}),
         )
     })?;
+    repository.object_cache_size_if_unset(INSPECTION_OBJECT_CACHE_BYTES);
     let inspection = inspect_environment(
         &repository,
         remote_name,
@@ -345,7 +349,7 @@ fn publish_interactive(
 
 fn interactive_error(error: CliError) -> CliError {
     match error {
-        CliError::Machine(error) => CliError::Restack(error.human_message()),
+        CliError::Machine(error) => CliError::Restack(error.detailed_message()),
         error => error,
     }
 }
@@ -370,13 +374,14 @@ fn preview(args: &RestackArgs, source: &Path, sessions: &SessionStore) -> Result
         )
     })?;
 
-    let repository = gix::discover(source).map_err(|_| {
+    let mut repository = gix::discover(source).map_err(|_| {
         machine_failure(
             "repository_not_found",
             "the current directory is not inside a Git repository",
             json!({}),
         )
     })?;
+    repository.object_cache_size_if_unset(INSPECTION_OBJECT_CACHE_BYTES);
     let inspection =
         inspect_environment(&repository, remote, &args.environment, args.main.as_deref()).map_err(
             |_| {
@@ -2144,9 +2149,22 @@ mod tests {
             },
         );
 
-        assert!(matches!(result, Err(CliError::Restack("fetch failed"))));
+        assert!(matches!(result, Err(CliError::Restack(message)) if message == "fetch failed"));
         assert!(*restored.borrow());
         assert!(!*wrote.borrow());
         Ok(())
+    }
+
+    #[test]
+    fn interactive_error_keeps_structured_details() {
+        let error = interactive_error(machine_failure(
+            "unsupported_history",
+            "the environment history cannot be reconstructed without guessing",
+            json!({"kind": "ambiguousFeatureRefs", "mergeCommit": "886faef"}),
+        ));
+        assert_eq!(
+            error.to_string(),
+            "restack failed: the environment history cannot be reconstructed without guessing ({\"kind\":\"ambiguousFeatureRefs\",\"mergeCommit\":\"886faef\"})"
+        );
     }
 }

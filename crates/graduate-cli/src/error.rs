@@ -57,8 +57,12 @@ impl MachineError {
         self.exit_code
     }
 
-    pub(crate) const fn human_message(&self) -> &'static str {
-        self.message
+    /// Human message followed by the structured details when there are any.
+    pub(crate) fn detailed_message(&self) -> String {
+        if self.details.as_object().is_some_and(|map| map.is_empty()) {
+            return self.message.to_owned();
+        }
+        format!("{} ({})", self.message, self.details)
     }
 }
 
@@ -103,7 +107,7 @@ pub(crate) enum CliError {
     #[error("{0}")]
     Git(String),
     #[error("restack failed: {0}")]
-    Restack(&'static str),
+    Restack(String),
     #[error(transparent)]
     Machine(#[from] MachineError),
     #[error("promotion report was cancelled")]

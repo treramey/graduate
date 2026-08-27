@@ -133,11 +133,16 @@ pub(crate) fn restack_snapshot(
     repository: &gix::Repository,
     inspection: &EnvironmentInspection,
 ) -> Result<RestackSnapshot, RestackInspectionError> {
+    let unique = inspection
+        .environment_ancestors
+        .difference(&inspection.main_ancestors)
+        .copied()
+        .collect::<HashSet<_>>();
     let feature_refs = remote_feature_refs(repository, inspection)
         .map_err(|error| RestackInspectionError::Git(error.to_string()))?
         .into_iter()
         .map(|(name, tip)| {
-            let ancestors = ancestors(repository, tip)
+            let ancestors = unique_ancestors(repository, tip, &inspection.main_ancestors, &unique)
                 .map_err(|error| RestackInspectionError::Git(error.to_string()))?
                 .into_iter()
                 .map(|id| id.to_string())
@@ -149,11 +154,7 @@ pub(crate) fn restack_snapshot(
             })
         })
         .collect::<Result<Vec<_>, RestackInspectionError>>()?;
-    let commits = inspection
-        .environment_ancestors
-        .iter()
-        .map(|id| graph_commit(repository, *id))
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let commits = classified_commits(repository, &unique)?;
     let graph = RestackGraph {
         remote: inspection.remote.clone(),
         environment: inspection.environment.clone(),
@@ -168,6 +169,57 @@ pub(crate) fn restack_snapshot(
         commits,
     };
     build_snapshot(&graph).map_err(RestackInspectionError::from)
+}
+
+/// Commits reachable from `start` that the environment holds but main does not.
+///
+/// Every commit reachable from main is pruned together with its whole history,
+/// so the walk only visits the commits a feature adds on top of main.
+fn unique_ancestors(
+    repository: &gix::Repository,
+    start: gix::ObjectId,
+    main_ancestors: &HashSet<gix::ObjectId>,
+    unique: &HashSet<gix::ObjectId>,
+) -> Result<HashSet<gix::ObjectId>, CliError> {
+    let mut visited = HashSet::new();
+    let mut found = HashSet::new();
+    let mut pending = VecDeque::from([start]);
+    while let Some(id) = pending.pop_front() {
+        if main_ancestors.contains(&id) || !visited.insert(id) {
+            continue;
+        }
+        if unique.contains(&id) {
+            found.insert(id);
+        }
+        let commit = repository.find_commit(id).map_err(gitoxide_error)?;
+        pending.extend(commit.parent_ids().map(|parent| parent.detach()));
+    }
+    Ok(found)
+}
+
+/// Load the commits `build_snapshot` reads: every environment-only commit plus
+/// the parents it compares trees against.
+fn classified_commits(
+    repository: &gix::Repository,
+    unique: &HashSet<gix::ObjectId>,
+) -> Result<BTreeMap<String, GraphCommit>, RestackInspectionError> {
+    let mut commits = BTreeMap::new();
+    let mut parents = Vec::new();
+    for id in unique {
+        let (key, commit) = graph_commit(repository, *id)?;
+        parents.extend(commit.parents.iter().cloned());
+        commits.insert(key, commit);
+    }
+    for parent in parents {
+        if commits.contains_key(&parent) {
+            continue;
+        }
+        let id = gix::ObjectId::from_hex(parent.as_bytes())
+            .map_err(|error| RestackInspectionError::Git(error.to_string()))?;
+        let (key, commit) = graph_commit(repository, id)?;
+        commits.insert(key, commit);
+    }
+    Ok(commits)
 }
 
 fn graph_commit(
