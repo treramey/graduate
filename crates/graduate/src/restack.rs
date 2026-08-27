@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const RESTACK_SCHEMA_VERSION: u8 = 1;
+pub const RESTACK_SCHEMA_VERSION: u8 = 2;
 
 /// One commit needed to classify an environment history.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +88,46 @@ pub struct AttributedCommit {
     pub branches: Vec<String>,
 }
 
+/// How the feature inventory of a snapshot was discovered.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InventoryMode {
+    /// Explicit first-parent merges proved every commit's owner.
+    History,
+    /// History was unreadable; membership comes from remote tip reachability.
+    Reachability,
+}
+
+/// Why history mode was unavailable, kept verbatim from the failed proof.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnsupportedHistory {
+    pub kind: String,
+    pub commit: Option<String>,
+    pub feature_parent: Option<String>,
+    pub branches: Vec<String>,
+    pub parents: Option<usize>,
+}
+
+/// A branch whose tip another top-level feature already contains.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CarriedFeature {
+    pub name: String,
+    pub tip: String,
+    pub carriers: Vec<String>,
+}
+
+/// A commit the rebuilt environment will not contain.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OrphanedCommit {
+    pub commit: String,
+    pub subject: String,
+    pub author: String,
+    pub date: String,
+}
+
 /// A complete, ordered proof that an environment can be reconstructed.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,6 +144,9 @@ pub struct RestackSnapshot {
     pub indirect_features: Vec<BranchIdentity>,
     pub dropped_markers: Vec<DroppedMarker>,
     pub attributed_commits: Vec<AttributedCommit>,
+    pub inventory_mode: InventoryMode,
+    pub unsupported_history: Option<UnsupportedHistory>,
+    pub carried_features: Vec<CarriedFeature>,
 }
 
 /// The configured identity used for every reconstructed merge commit.
@@ -150,6 +193,14 @@ pub struct MergeOutcome {
     pub resolution: MergeResolution,
 }
 
+/// The validated output of one isolated reconstruction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reconstruction {
+    pub merges: Vec<MergeOutcome>,
+    pub final_tree: String,
+    pub preview_commit: String,
+}
+
 /// An immutable clean-preview plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestackPlan {
@@ -160,6 +211,7 @@ pub struct RestackPlan {
     pub merges: Vec<MergeOutcome>,
     pub final_tree: String,
     pub preview_commit: String,
+    pub orphaned_commits: Vec<OrphanedCommit>,
     pub digest: String,
 }
 
@@ -711,6 +763,9 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
         indirect_features,
         dropped_markers,
         attributed_commits,
+        inventory_mode: InventoryMode::History,
+        unsupported_history: None,
+        carried_features: Vec::new(),
     })
 }
 
@@ -792,10 +847,14 @@ pub fn build_plan(
     remote_endpoints: RemoteEndpointIdentity,
     author: RestackAuthor,
     selection: RestackSelection,
-    merges: Vec<MergeOutcome>,
-    final_tree: String,
-    preview_commit: String,
+    reconstruction: Reconstruction,
+    orphaned_commits: Vec<OrphanedCommit>,
 ) -> Result<RestackPlan, PlanError> {
+    let Reconstruction {
+        merges,
+        final_tree,
+        preview_commit,
+    } = reconstruction;
     if merges.len() != selection.retained.len() {
         return Err(PlanError::MergeCount {
             expected: selection.retained.len(),
@@ -825,6 +884,7 @@ pub fn build_plan(
         merges,
         final_tree,
         preview_commit,
+        orphaned_commits,
         digest,
     })
 }
@@ -1109,9 +1169,12 @@ mod tests {
             endpoints.clone(),
             author.clone(),
             selection.clone(),
-            outcomes.clone(),
-            "final-tree".to_owned(),
-            "preview-one".to_owned(),
+            Reconstruction {
+                merges: outcomes.clone(),
+                final_tree: "final-tree".to_owned(),
+                preview_commit: "preview-one".to_owned(),
+            },
+            Vec::new(),
         )?;
         let mut regenerated = outcomes;
         regenerated[0].commit = "preview-two".to_owned();
@@ -1120,9 +1183,12 @@ mod tests {
             endpoints.clone(),
             author.clone(),
             selection.clone(),
-            regenerated.clone(),
-            "final-tree".to_owned(),
-            "preview-two".to_owned(),
+            Reconstruction {
+                merges: regenerated.clone(),
+                final_tree: "final-tree".to_owned(),
+                preview_commit: "preview-two".to_owned(),
+            },
+            Vec::new(),
         )?;
         let changed_author = build_plan(
             snapshot.clone(),
@@ -1132,24 +1198,30 @@ mod tests {
                 email: author.email.clone(),
             },
             selection.clone(),
-            regenerated,
-            "final-tree".to_owned(),
-            "preview-two".to_owned(),
+            Reconstruction {
+                merges: regenerated,
+                final_tree: "final-tree".to_owned(),
+                preview_commit: "preview-two".to_owned(),
+            },
+            Vec::new(),
         )?;
         let changed_tree = build_plan(
             snapshot.clone(),
             endpoints.clone(),
             author.clone(),
             selection.clone(),
-            vec![MergeOutcome {
-                branch: "feature/a".to_owned(),
-                tip: "a".to_owned(),
-                commit: "preview-three".to_owned(),
-                tree: "tree-a".to_owned(),
-                resolution: MergeResolution::Clean,
-            }],
-            "other-tree".to_owned(),
-            "preview-three".to_owned(),
+            Reconstruction {
+                merges: vec![MergeOutcome {
+                    branch: "feature/a".to_owned(),
+                    tip: "a".to_owned(),
+                    commit: "preview-three".to_owned(),
+                    tree: "tree-a".to_owned(),
+                    resolution: MergeResolution::Clean,
+                }],
+                final_tree: "other-tree".to_owned(),
+                preview_commit: "preview-three".to_owned(),
+            },
+            Vec::new(),
         )?;
         let changed_endpoint = build_plan(
             snapshot,
@@ -1159,21 +1231,24 @@ mod tests {
             },
             author,
             selection,
-            vec![MergeOutcome {
-                branch: "feature/a".to_owned(),
-                tip: "a".to_owned(),
-                commit: "preview-four".to_owned(),
-                tree: "tree-a".to_owned(),
-                resolution: MergeResolution::Clean,
-            }],
-            "final-tree".to_owned(),
-            "preview-four".to_owned(),
+            Reconstruction {
+                merges: vec![MergeOutcome {
+                    branch: "feature/a".to_owned(),
+                    tip: "a".to_owned(),
+                    commit: "preview-four".to_owned(),
+                    tree: "tree-a".to_owned(),
+                    resolution: MergeResolution::Clean,
+                }],
+                final_tree: "final-tree".to_owned(),
+                preview_commit: "preview-four".to_owned(),
+            },
+            Vec::new(),
         )?;
 
         assert_eq!(first.digest, second.digest);
         assert_eq!(
             first.digest,
-            "8463eab275c4a4eff5210685e598b0239f829d2543fdbd5dd02e800ec8e029cb"
+            "fe7b5663e26430357291f2c1053d315a7497be6ddb52e2772aaf71c6a1b450c9"
         );
         assert_ne!(first.digest, changed_author.digest);
         assert_ne!(first.digest, changed_tree.digest);
@@ -1494,7 +1569,103 @@ mod tests {
                 commit: "shared".to_owned(),
                 branches: vec!["feature/a".to_owned(), "feature/b".to_owned()],
             }],
+            inventory_mode: InventoryMode::History,
+            unsupported_history: None,
+            carried_features: Vec::new(),
         }
+    }
+
+    #[test]
+    fn history_snapshot_reports_history_mode_without_fallback_evidence(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = build_snapshot(&simple_graph())?;
+        assert_eq!(snapshot.inventory_mode, InventoryMode::History);
+        assert_eq!(snapshot.unsupported_history, None);
+        assert!(snapshot.carried_features.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn plan_and_snapshot_round_trip_every_inventory_field() -> Result<(), Box<dyn std::error::Error>>
+    {
+        assert_eq!(RESTACK_SCHEMA_VERSION, 2);
+        let mut snapshot = build_snapshot(&simple_graph())?;
+        snapshot.inventory_mode = InventoryMode::Reachability;
+        snapshot.unsupported_history = Some(UnsupportedHistory {
+            kind: "ambiguousFeatureRefs".to_owned(),
+            commit: Some("merge".to_owned()),
+            feature_parent: Some("feature".to_owned()),
+            branches: vec!["feature/a".to_owned(), "feature/b".to_owned()],
+            parents: None,
+        });
+        snapshot.carried_features = vec![CarriedFeature {
+            name: "feature/b".to_owned(),
+            tip: "feature".to_owned(),
+            carriers: vec!["feature/a".to_owned()],
+        }];
+        let encoded = serde_json::to_string(&snapshot)?;
+        let decoded: RestackSnapshot = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded, snapshot);
+
+        let orphan = OrphanedCommit {
+            commit: "lost".to_owned(),
+            subject: "lost work".to_owned(),
+            author: "Pat".to_owned(),
+            date: "2026-01-02".to_owned(),
+        };
+        let encoded = serde_json::to_string(&orphan)?;
+        assert_eq!(
+            encoded,
+            r#"{"commit":"lost","subject":"lost work","author":"Pat","date":"2026-01-02"}"#
+        );
+        let selection = select_features(&snapshot, &[])?;
+        let plan = build_plan(
+            snapshot.clone(),
+            RemoteEndpointIdentity {
+                fetch_sha256: "f".repeat(64),
+                push_sha256: "p".repeat(64),
+            },
+            RestackAuthor {
+                name: "Pat".to_owned(),
+                email: "pat@example.com".to_owned(),
+            },
+            selection.clone(),
+            Reconstruction {
+                merges: vec![MergeOutcome {
+                    branch: "feature/a".to_owned(),
+                    tip: "feature".to_owned(),
+                    commit: "preview".to_owned(),
+                    tree: "tree".to_owned(),
+                    resolution: MergeResolution::Clean,
+                }],
+                final_tree: "tree".to_owned(),
+                preview_commit: "preview".to_owned(),
+            },
+            vec![orphan.clone()],
+        )?;
+        assert_eq!(plan.orphaned_commits, vec![orphan]);
+        Ok(())
+    }
+
+    /// main: base; environment: base -> merge(feature/a at `feature`).
+    fn simple_graph() -> RestackGraph {
+        let mut graph = RestackGraph {
+            remote: "origin".to_owned(),
+            environment: "qa".to_owned(),
+            environment_ref: "refs/remotes/origin/qa".to_owned(),
+            environment_tip: "merge".to_owned(),
+            main: "main".to_owned(),
+            main_ref: "refs/remotes/origin/main".to_owned(),
+            main_tip: "base".to_owned(),
+            environment_ancestors: ids(&["base", "feature", "merge"]),
+            main_ancestors: ids(&["base"]),
+            feature_refs: vec![feature("feature/a", "feature", &["feature"])],
+            commits: BTreeMap::new(),
+        };
+        add_commit(&mut graph, "base", "tb", &[], "base");
+        add_commit(&mut graph, "feature", "tf", &["base"], "feature work");
+        add_commit(&mut graph, "merge", "tm", &["base", "feature"], "merge");
+        graph
     }
 
     fn add_commit(graph: &mut RestackGraph, id: &str, tree: &str, parents: &[&str], message: &str) {

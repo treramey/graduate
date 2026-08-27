@@ -1266,7 +1266,8 @@ fn short_oid(oid: &str) -> String {
 mod tests {
     use graduate::restack::{
         build_plan, AttributedCommit, BranchIdentity, ExplicitFeature, HistoricalMerge,
-        MergeOutcome, MergeResolution, RemoteEndpointIdentity, RestackAuthor, RestackSnapshot,
+        InventoryMode, MergeOutcome, MergeResolution, Reconstruction, RemoteEndpointIdentity,
+        RestackAuthor, RestackSnapshot,
     };
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1901,15 +1902,18 @@ mod tests {
                     tip: "b".repeat(40),
                 }],
             },
-            vec![MergeOutcome {
-                branch: "feature/PROJ-12-one".to_owned(),
-                tip: "a".repeat(40),
-                commit: "preview".to_owned(),
-                tree: "tree-tip".to_owned(),
-                resolution: MergeResolution::Clean,
-            }],
-            "tree-tip".to_owned(),
-            "preview".to_owned(),
+            Reconstruction {
+                merges: vec![MergeOutcome {
+                    branch: "feature/PROJ-12-one".to_owned(),
+                    tip: "a".repeat(40),
+                    commit: "preview".to_owned(),
+                    tree: "tree-tip".to_owned(),
+                    resolution: MergeResolution::Clean,
+                }],
+                final_tree: "tree-tip".to_owned(),
+                preview_commit: "preview".to_owned(),
+            },
+            Vec::new(),
         )?)
     }
 
@@ -1946,6 +1950,9 @@ mod tests {
                 commit: "shared".to_owned(),
                 branches: vec!["feature/PROJ-12-one".to_owned(), "feature/two".to_owned()],
             }],
+            inventory_mode: InventoryMode::History,
+            unsupported_history: None,
+            carried_features: Vec::new(),
         }
     }
 }

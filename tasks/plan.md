@@ -52,7 +52,7 @@ T1 domain types + schema bump
 
 ### Phase 1: Domain foundation (pure, no I/O)
 
-- [ ] Task 1: Add inventory types and bump the schema version
+- [x] Task 1: Add inventory types and bump the schema version
 - [ ] Task 2: Build a reachability snapshot from a failed history proof
 - [ ] Task 3: Compute orphaned commits and bind them into the plan digest
 - [ ] Task 4: Add the `UnsupportedHistory` interaction stage
@@ -73,7 +73,7 @@ T1 domain types + schema bump
 - [ ] Task 8: Review orphan section, merge-order note, and confirmation line
 
 ### Checkpoint: Interactive flow
-- [ ] `cargo test --locked` passes; clippy and fmt clean
+- [ ] `cargo test --workspace --locked` passes; clippy and fmt clean
 - [ ] TUI tests render every new screen at the minimum supported size
 
 ### Phase 4: Verification and delivery

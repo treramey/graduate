@@ -286,8 +286,8 @@ and transitions are unchanged.
 
 ```
 Build:   cargo build --locked
-Test:    cargo test --locked
-Lint:    cargo clippy --locked --all-targets
+Test:    cargo test --workspace --locked
+Lint:    cargo clippy --workspace --locked --all-targets
 Format:  cargo fmt --all --check
 Skills:  cargo run --locked -- generate-skills --force
 Perf:    cd <large repo> && time gd restack QA   (interactive; inspection phase)
@@ -387,7 +387,7 @@ a few seconds.
 ## Boundaries
 
 - Always: run `cargo fmt --all --check`, `cargo clippy --locked
-  --all-targets`, `cargo test --locked` before each commit; keep TUI tests on
+  --all-targets`, `cargo test --workspace --locked` before each commit; keep TUI tests on
   `TestBackend`; keep terminal restoration on every exit path; add a `minor`
   changeset; update `docs/gd-restack.md`, `README.md`, and `CHANGELOG.md`;
   regenerate skills after changing the CLI contract.

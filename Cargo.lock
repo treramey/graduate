@@ -1557,6 +1557,7 @@ name = "graduate"
 version = "1.4.1"
 dependencies = [
  "serde",
+ "serde_json",
  "sha2",
  "thiserror",
  "url",

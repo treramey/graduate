@@ -432,7 +432,7 @@ fn restack_preview_is_isolated_and_emits_canonical_machine_json() -> Result<(), 
     );
     let plan: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(plan["kind"], "restackPlan");
-    assert_eq!(plan["schemaVersion"], 1);
+    assert_eq!(plan["schemaVersion"], 2);
     assert_eq!(plan["author"]["name"], "Global Fixture Author");
     assert_eq!(plan["author"]["email"], "global-fixture@example.com");
     assert_eq!(plan["retainedBranches"][0]["name"], "feature/a");
@@ -1010,7 +1010,7 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
     assert_eq!(invalid.status.code(), Some(2));
     let invalid_error: serde_json::Value = serde_json::from_slice(&invalid.stderr)?;
     assert_eq!(invalid_error["kind"], "restackError");
-    assert_eq!(invalid_error["schemaVersion"], 1);
+    assert_eq!(invalid_error["schemaVersion"], 2);
     assert_eq!(invalid_error["code"], "invalid_params");
 
     let non_terminal = gd_command()?

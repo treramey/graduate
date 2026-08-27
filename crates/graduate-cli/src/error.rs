@@ -1,6 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
+use graduate::restack::RESTACK_SCHEMA_VERSION;
 use serde::Serialize;
 use thiserror::Error;
 
@@ -45,7 +46,7 @@ impl MachineError {
     ) -> Self {
         Self {
             kind: "restackError",
-            schema_version: 1,
+            schema_version: RESTACK_SCHEMA_VERSION,
             code,
             message,
             details,
@@ -71,7 +72,7 @@ impl std::fmt::Display for MachineError {
         match serde_json::to_string(self) {
             Ok(json) => formatter.write_str(&json),
             Err(_) => formatter.write_str(
-                r#"{"kind":"restackError","schemaVersion":1,"code":"serialization_failed","message":"could not serialize the structured error","details":{}}"#,
+                r#"{"kind":"restackError","schemaVersion":2,"code":"serialization_failed","message":"could not serialize the structured error","details":{}}"#,
             ),
         }
     }

@@ -8,9 +8,9 @@ use std::process::{Command, Output, Stdio};
 
 use graduate::restack::{
     build_plan, canonical_merge_message, select_features, BranchIdentity, InventoryError,
-    MergeOutcome, MergeResolution, PlanError, RemoteEndpointIdentity, RestackAuthor,
-    RestackInteraction, RestackPlan, RestackSelection, RestackSnapshot, SelectionError,
-    RESTACK_SCHEMA_VERSION,
+    MergeOutcome, MergeResolution, PlanError, Reconstruction, RemoteEndpointIdentity,
+    RestackAuthor, RestackInteraction, RestackPlan, RestackSelection, RestackSnapshot,
+    SelectionError, RESTACK_SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -271,9 +271,8 @@ fn prepare_interactive(
                 discovery.remote.identity(),
                 discovery.author.clone(),
                 selection,
-                reconstruction.merges,
-                reconstruction.final_tree,
-                reconstruction.preview_commit,
+                reconstruction,
+                Vec::new(),
             )
             .map_err(plan_error)?;
             Ok(InteractivePreparation::Complete(Box::new(
@@ -441,9 +440,8 @@ fn finish_or_preserve(
                 fresh.remote_endpoints,
                 fresh.author,
                 fresh.selection,
-                reconstruction.merges,
-                reconstruction.final_tree,
-                reconstruction.preview_commit,
+                reconstruction,
+                Vec::new(),
             )
             .map_err(plan_error)?;
             if let Some(digest) = fresh.apply_digest {
@@ -566,9 +564,8 @@ fn resume_preview(
                 session.metadata.remote_endpoints.clone(),
                 session.metadata.author.clone(),
                 session.metadata.selection.clone(),
-                reconstruction.merges,
-                reconstruction.final_tree,
-                reconstruction.preview_commit,
+                reconstruction,
+                Vec::new(),
             )
             .map_err(plan_error)?;
             session.metadata.merges.clone_from(&plan.merges);
@@ -740,9 +737,12 @@ fn sealed_session_plan(metadata: &SessionMetadata) -> Result<RestackPlan, CliErr
         metadata.remote_endpoints.clone(),
         metadata.author.clone(),
         metadata.selection.clone(),
-        metadata.merges.clone(),
-        final_tree,
-        preview_commit,
+        Reconstruction {
+            merges: metadata.merges.clone(),
+            final_tree,
+            preview_commit,
+        },
+        Vec::new(),
     )
     .map_err(plan_error)?;
     if plan.digest != saved_digest {
@@ -985,12 +985,6 @@ fn source_git(source: &Path) -> Command {
     clear_repository_location_environment(&mut command);
     command.current_dir(source);
     command
-}
-
-struct Reconstruction {
-    merges: Vec<MergeOutcome>,
-    final_tree: String,
-    preview_commit: String,
 }
 
 struct ReconstructionConflict {

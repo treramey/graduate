@@ -3,7 +3,7 @@
 Spec: `docs/specs/restack-inventory-fallback.md` · Plan: `tasks/plan.md`
 
 Standing bar for every task: `cargo fmt --all --check`, `cargo clippy --locked
---all-targets`, `cargo test --locked` clean; no `unwrap`/`expect`/`panic`/
+--all-targets`, `cargo test --workspace --locked` clean; no `unwrap`/`expect`/`panic`/
 `todo`/`dbg!`; TUI tests on `TestBackend` only; terminal restoration preserved.
 
 ---
@@ -14,19 +14,19 @@ Standing bar for every task: `cargo fmt --all --check`, `cargo clippy --locked
 history mode its defaults so nothing else changes behaviour yet.
 
 **Acceptance criteria:**
-- [ ] `InventoryMode { History, Reachability }`, `UnsupportedHistory`,
+- [x] `InventoryMode { History, Reachability }`, `UnsupportedHistory`,
       `OrphanedCommit`, `CarriedFeature` exist with camelCase serde and
       `deny_unknown_fields` (enum excepted), matching the spec.
-- [ ] `RestackSnapshot` has `inventory_mode`, `unsupported_history`,
+- [x] `RestackSnapshot` has `inventory_mode`, `unsupported_history`,
       `carried_features`; `RestackPlan` has `orphaned_commits`.
       `build_snapshot` fills `History`, `None`, `[]`; `build_plan` accepts and
       stores `orphaned_commits`.
-- [ ] `RESTACK_SCHEMA_VERSION == 2`; a serde round-trip test covers
+- [x] `RESTACK_SCHEMA_VERSION == 2`; a serde round-trip test covers
       `RestackSnapshot` and a plan with every new field populated.
 
 **Verification:**
-- [ ] `cargo test --locked -p graduate`
-- [ ] `cargo test --locked` (CLI compiles against new fields; existing JSON
+- [x] `cargo test --locked -p graduate`
+- [x] `cargo test --workspace --locked` (CLI compiles against new fields; existing JSON
       assertions updated only for `schemaVersion`)
 
 **Dependencies:** None
@@ -121,7 +121,7 @@ to selection only by an explicit accept.
 ---
 
 ### Checkpoint: Foundation
-- [ ] `cargo test --locked` green, clippy and fmt clean
+- [ ] `cargo test --workspace --locked` green, clippy and fmt clean
 - [ ] Human review of the domain API before I/O wiring
 
 ---
@@ -238,7 +238,7 @@ from inventory or `Esc` to cancel.
 ---
 
 ### Checkpoint: Interactive flow
-- [ ] `cargo test --locked` green, clippy and fmt clean
+- [ ] `cargo test --workspace --locked` green, clippy and fmt clean
 - [ ] Every new screen has a `TestBackend` test at 60×24
 
 ---
@@ -261,7 +261,7 @@ the truth on the real repository.
       and you intend to rewrite QA.
 
 **Verification:**
-- [ ] `cargo test --locked --test cli restack`
+- [ ] `cargo test --workspace --locked --test cli restack`
 - [ ] Manual check recorded
 
 **Dependencies:** Tasks 5–8
@@ -286,7 +286,7 @@ the truth on the real repository.
       fallback.md` with `minor`.
 
 **Verification:**
-- [ ] `cargo test --locked`; `git diff --stat skills docs/skills.md` shows
+- [ ] `cargo test --workspace --locked`; `git diff --stat skills docs/skills.md` shows
       only generated changes
 
 **Dependencies:** Task 5 (JSON shape final)
