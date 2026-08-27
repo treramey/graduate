@@ -26,12 +26,7 @@ fn gd_command() -> Result<Command, Box<dyn Error>> {
 
 fn isolate_gd_storage(command: &mut Command, root: &Path) {
     // `dirs::cache_dir` uses HOME on macOS rather than XDG_CACHE_HOME.
-    command
-        .env("HOME", root)
-        .env("XDG_CACHE_HOME", root)
-        .env("LOCALAPPDATA", root)
-        .env("APPDATA", root)
-        .env("USERPROFILE", root);
+    command.env("HOME", root).env("XDG_CACHE_HOME", root);
 }
 
 #[test]
