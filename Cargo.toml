@@ -4,7 +4,7 @@ default-members = ["crates/graduate-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "1.4.1"
+version = "1.5.0"
 edition = "2021"
 license = "MIT"
 authors = ["Trevor Ramey", "Graduate contributors"]
