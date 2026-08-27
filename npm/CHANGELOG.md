@@ -1,5 +1,11 @@
 # @treramey/graduate
 
+## 1.4.1
+
+### Patch Changes
+
+- 43fdef0: Speed up restack inspection on large repositories by pruning feature history walks at commits already reachable from main, loading only the commits the reconstruction proof reads, and caching decoded objects. Interactive restack failures now include the structured details that name the blocking commit or branches.
+
 ## 1.4.0
 
 ### Minor Changes
