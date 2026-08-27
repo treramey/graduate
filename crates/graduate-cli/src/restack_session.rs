@@ -333,14 +333,15 @@ impl SessionDraft {
 
 impl Drop for SessionDraft {
     fn drop(&mut self) {
-        if self.preserved {
-            return;
-        }
+        // Release the lock explicitly so a preserved session can be resumed
+        // by this process without waiting on the file descriptor's close.
         if let Some(lock) = self.lock.take() {
             let _ = fs2::FileExt::unlock(&lock);
             drop(lock);
         }
-        let _ = fs::remove_dir_all(&self.directory);
+        if !self.preserved {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
     }
 }
 
