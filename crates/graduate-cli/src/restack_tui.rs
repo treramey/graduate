@@ -2439,6 +2439,77 @@ mod tests {
     }
 
     #[test]
+    fn inventory_checklist_lists_every_carried_branch_under_its_top_level_merge(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let ids = |values: &[&str]| -> std::collections::BTreeSet<String> {
+            values.iter().map(ToString::to_string).collect()
+        };
+        let mut commits = std::collections::BTreeMap::new();
+        for (id, parents) in [
+            ("base", vec![]),
+            ("a", vec!["base"]),
+            ("b", vec!["a"]),
+            ("c", vec!["b"]),
+        ] {
+            commits.insert(
+                id.to_owned(),
+                GraphCommit {
+                    id: id.to_owned(),
+                    tree: format!("tree-{id}"),
+                    parents: parents.into_iter().map(str::to_owned).collect(),
+                    message: id.to_owned(),
+                },
+            );
+        }
+        let graph = RestackGraph {
+            remote: "origin".to_owned(),
+            environment: "qa".to_owned(),
+            environment_ref: "refs/remotes/origin/qa".to_owned(),
+            environment_tip: "c".to_owned(),
+            main: "main".to_owned(),
+            main_ref: "refs/remotes/origin/main".to_owned(),
+            main_tip: "base".to_owned(),
+            environment_ancestors: ids(&["base", "a", "b", "c"]),
+            main_ancestors: ids(&["base"]),
+            feature_refs: vec![
+                FeatureRef {
+                    name: "feature/inner".to_owned(),
+                    tip: "a".to_owned(),
+                    ancestors: ids(&["a"]),
+                },
+                FeatureRef {
+                    name: "feature/middle".to_owned(),
+                    tip: "b".to_owned(),
+                    ancestors: ids(&["a", "b"]),
+                },
+                FeatureRef {
+                    name: "feature/outer".to_owned(),
+                    tip: "c".to_owned(),
+                    ancestors: ids(&["a", "b", "c"]),
+                },
+            ],
+            commits,
+        };
+        let snapshot = build_inventory_snapshot(
+            &graph,
+            UnsupportedHistory::from(InventoryError::DirectCommit {
+                commit: "c".to_owned(),
+            }),
+            &std::collections::BTreeMap::new(),
+        );
+        let mut interaction = RestackInteraction::from_inventory(snapshot);
+        let _ = interaction.update(RestackInteractionAction::AcceptInventoryFallback);
+
+        let rendered = rendered_at(&interaction, None, None, 100, 30)?;
+        assert!(rendered.contains("feature/outer"), "{rendered}");
+        assert!(rendered.contains("↳ carried  feature/inner"), "{rendered}");
+        assert!(rendered.contains("↳ carried  feature/middle"), "{rendered}");
+        assert!(!rendered.contains("also via"), "{rendered}");
+        assert_eq!(filtered_feature_indices(&interaction, "inner"), vec![0]);
+        Ok(())
+    }
+
+    #[test]
     fn inventory_filter_matches_carried_branches_through_their_carrier() {
         let mut interaction = RestackInteraction::from_inventory(inventory_snapshot(
             UnsupportedHistory::from(InventoryError::DirectCommit {

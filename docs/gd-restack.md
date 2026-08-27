@@ -126,7 +126,7 @@ can deliberately remove selected features from the reconstructed branch.
   resolution counts, and `pushed: true`. Conflict errors add the branch,
   unresolved paths, resume token, work-area path, and expiry. Jira payloads and
   raw rerere data are excluded. Abort emits a token-free `restackAbortResult`
-  containing schema version 1, the environment name, `aborted: true`, and
+  containing schema version 2, the environment name, `aborted: true`, and
   false `sourceCheckoutChanged`, `localRefsChanged`, `remoteRefsChanged`, and
   `personalRerereChanged` effects.
 - Restack treats its operator, agent, repository, refs, commit messages, paths,
@@ -427,7 +427,7 @@ contract.
    success/cancel, and conflict handoff views. Use stderr, the shared terminal
    guard/theme, deterministic actions, and `TestBackend`; restore the terminal
    before printing a preserved conflict path.
-4. Serialize the agreed schema-v1 (now v2) plan/result to stdout and machine errors to
+4. Serialize the agreed schema-v2 plan/result to stdout and machine errors to
    stderr. Return the opaque resume capability only in the documented machine
    conflict continuation field or the post-restoration interactive handoff
    command. Redact it from all other output. Always redact PATs, credential

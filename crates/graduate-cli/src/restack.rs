@@ -134,7 +134,8 @@ fn run_interactive(args: RestackArgs) -> Result<(), CliError> {
 /// `git diff --check` in the isolated repository must reject leftover conflict
 /// markers but not the whitespace habits of feature content, which a rebuild
 /// reproduces faithfully.
-const ISOLATED_WHITESPACE_POLICY: &str = "-trailing-space,-space-before-tab,-indent-with-non-tab,-tab-in-indent,-cr-at-eol,-blank-at-eof,-blank-at-eol";
+const ISOLATED_WHITESPACE_POLICY: &str =
+    "-trailing-space,-space-before-tab,-indent-with-non-tab,-tab-in-indent,-blank-at-eof,-blank-at-eol";
 
 /// Object cache shared by the environment, main, and feature history walks.
 const INSPECTION_OBJECT_CACHE_BYTES: usize = 64 * 1024 * 1024;
@@ -256,11 +257,11 @@ fn discover_interactive(
     let (snapshot, commit_rows) = match restack_snapshot(&repository, &inspection) {
         Ok(snapshot) => (snapshot, BTreeMap::new()),
         Err(RestackInspectionError::Unsupported { error, graph }) => {
-            let timestamps = tip_timestamps(&repository, &graph).map_err(|_| {
+            let timestamps = tip_timestamps(&repository, &graph).map_err(|error| {
                 machine_failure(
                     "inspection_failed",
                     "could not read the remote feature tips",
-                    json!({"stage": "tips"}),
+                    json!({"stage": "tips", "error": error.to_string()}),
                 )
             })?;
             let snapshot = build_inventory_snapshot(&graph, error.into(), &timestamps);
@@ -272,11 +273,11 @@ fn discover_interactive(
                     .map(|commit| &commit.commit)
                     .chain(&snapshot.unattributed_commits),
             )
-            .map_err(|_| {
+            .map_err(|error| {
                 machine_failure(
                     "inspection_failed",
                     "could not read the environment's unique commits",
-                    json!({"stage": "orphans"}),
+                    json!({"stage": "orphans", "error": error.to_string()}),
                 )
             })?;
             (snapshot, rows)
@@ -878,7 +879,7 @@ fn parse_params(params: Option<&str>, dry_run: bool) -> Result<MachineParams, Cl
     let parsed: MachineParams = serde_json::from_str(params).map_err(|_| {
         machine_usage(
             "invalid_params",
-            "--params must match the schema-v1 restack machine parameters",
+            "--params must match the schema-v2 restack machine parameters",
             json!({"expected": {"removeBranches": ["feature/BRANCH"], "planDigest": "apply only"}}),
         )
     })?;
@@ -1740,8 +1741,12 @@ fn plan_error(error: PlanError) -> CliError {
         PlanError::MergeIdentity { index, expected } => {
             json!({"stage": "mergeIdentity", "index": index, "expected": expected})
         }
-        PlanError::OrphanedCommits { expected, actual } => {
-            json!({"stage": "orphanedCommits", "expected": expected, "actual": actual})
+        PlanError::OrphanedCommits {
+            expected,
+            actual,
+            mismatch,
+        } => {
+            json!({"stage": "orphanedCommits", "expected": expected, "actual": actual, "mismatch": mismatch})
         }
     };
     machine_failure(

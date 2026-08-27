@@ -8,7 +8,7 @@ use thiserror::Error;
 pub(crate) const EXIT_FAILURE: u8 = 1;
 pub(crate) const EXIT_USAGE: u8 = 2;
 
-/// Stable schema-v1 failure emitted by hidden restack machine workflows.
+/// Stable schema-v2 failure emitted by hidden restack machine workflows.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MachineError {

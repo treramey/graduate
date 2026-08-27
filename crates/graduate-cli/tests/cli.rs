@@ -532,14 +532,7 @@ fn restack_reconstructs_features_whose_content_has_whitespace_errors() -> Result
     fixture.git(&fixture.source, &["add", "sloppy.cs"])?;
     fixture.git(
         &fixture.source,
-        &[
-            "-c",
-            "core.whitespace=-trailing-space,-blank-at-eof",
-            "commit",
-            "-q",
-            "-m",
-            "trailing whitespace",
-        ],
+        &["commit", "-q", "-m", "trailing whitespace"],
     )?;
     fixture.git(
         &fixture.source,
@@ -570,6 +563,33 @@ fn restack_reconstructs_features_whose_content_has_whitespace_errors() -> Result
     let plan: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(plan["merges"][1]["branch"], "feature/ws");
     assert_eq!(plan["merges"][1]["outcome"], "clean");
+    Ok(())
+}
+
+#[test]
+fn restack_resume_rejects_a_resolution_that_leaves_conflict_markers() -> Result<(), Box<dyn Error>>
+{
+    let fixture = ConflictRestackFixture::new()?;
+    fixture.advance_main()?;
+    let conflict = fixture.preview()?;
+    let error = structured_restack_error(conflict)?;
+    assert_eq!(error["code"], "reconstruction_conflict");
+    let token = error["details"]["resumeToken"]
+        .as_str()
+        .ok_or("resume token")?;
+    let work_area = PathBuf::from(error["details"]["workArea"].as_str().ok_or("work area")?);
+
+    std::fs::write(
+        work_area.join("conflict"),
+        "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature/conflict\n",
+    )?;
+    fixture.git(&work_area, &["add", "conflict"])?;
+    let output = fixture.resume(token, "qa", &fixture.source)?;
+
+    assert!(output.stdout.is_empty());
+    let error = structured_restack_error(output)?;
+    assert_eq!(error["code"], "reconstruction_failed");
+    assert_eq!(error["details"]["stage"], "stagedDiffCheck");
     Ok(())
 }
 

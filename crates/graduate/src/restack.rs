@@ -598,8 +598,12 @@ pub enum PlanError {
     MergeCount { expected: usize, actual: usize },
     #[error("reconstruction outcome {index} does not match retained feature `{expected}`")]
     MergeIdentity { index: usize, expected: String },
-    #[error("plan lists {actual} orphaned commits but the retained selection orphans {expected}")]
-    OrphanedCommits { expected: usize, actual: usize },
+    #[error("plan lists {actual} orphaned commits but the retained selection orphans {expected}; first mismatch {mismatch}")]
+    OrphanedCommits {
+        expected: usize,
+        actual: usize,
+        mismatch: String,
+    },
 }
 
 /// Evidence that an environment history cannot be reconstructed safely.
@@ -931,6 +935,13 @@ pub fn build_inventory_snapshot(
             });
         }
     }
+    // A carrier that is itself carried never becomes a merge, so it cannot be
+    // what brings a branch in; keep only the top-level merges as carriers.
+    for carried in &mut carried_features {
+        carried
+            .carriers
+            .retain(|carrier| top_level.iter().any(|feature| feature.name == *carrier));
+    }
     top_level.sort_by(|left, right| {
         let left_time = tip_timestamps.get(&left.tip);
         let right_time = tip_timestamps.get(&right.tip);
@@ -1162,9 +1173,20 @@ pub fn build_plan(
         .collect::<Vec<_>>();
     listed_orphans.sort();
     if listed_orphans != expected_orphans {
+        let mismatch = expected_orphans
+            .iter()
+            .find(|id| !listed_orphans.contains(id))
+            .or_else(|| {
+                listed_orphans
+                    .iter()
+                    .find(|id| !expected_orphans.contains(id))
+            })
+            .cloned()
+            .unwrap_or_default();
         return Err(PlanError::OrphanedCommits {
             expected: expected_orphans.len(),
             actual: listed_orphans.len(),
+            mismatch,
         });
     }
     let digest = plan_digest(
@@ -2042,7 +2064,7 @@ mod tests {
     }
 
     #[test]
-    fn inventory_chain_keeps_only_the_outermost_tip_and_lists_every_carrier() {
+    fn inventory_chain_keeps_only_the_outermost_tip_as_the_single_carrier() {
         let mut graph = empty_graph("c");
         for id in ["base", "a", "b", "c"] {
             add_commit(&mut graph, id, id, &[], id);
@@ -2063,10 +2085,7 @@ mod tests {
                 .map(|carried| (carried.name.as_str(), carried.carriers.clone()))
                 .collect::<Vec<_>>(),
             [
-                (
-                    "feature/a",
-                    vec!["feature/b".to_owned(), "feature/c".to_owned()]
-                ),
+                ("feature/a", vec!["feature/c".to_owned()]),
                 ("feature/b", vec!["feature/c".to_owned()]),
             ]
         );
@@ -2257,7 +2276,8 @@ mod tests {
             .map(|plan| plan.digest),
             Err(PlanError::OrphanedCommits {
                 expected: 1,
-                actual: 0
+                actual: 0,
+                mismatch: "stray".to_owned(),
             })
         );
         let plan = build_plan(
