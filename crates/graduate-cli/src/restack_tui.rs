@@ -208,11 +208,10 @@ fn action_for_key(
         (RestackInteractionStage::Review | RestackInteractionStage::Confirmation, KeyCode::Esc) => {
             Some(RestackInteractionAction::Back)
         }
-        (RestackInteractionStage::Confirmation, KeyCode::Char('y' | 'Y')) => {
+        (RestackInteractionStage::Confirmation, KeyCode::Char('y' | 'Y'))
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             Some(RestackInteractionAction::Confirm)
-        }
-        (RestackInteractionStage::Confirmation, KeyCode::Char('n' | 'N')) => {
-            Some(RestackInteractionAction::Back)
         }
         _ => None,
     }
@@ -429,10 +428,16 @@ fn render_confirmation(frame: &mut Frame<'_>, area: Rect, plan: Option<&RestackP
     let text = plan.map_or_else(
         || "The reviewed plan is unavailable.".to_owned(),
         |plan| {
-            format!(
-                "Replace {}/refs/heads/{} under an exact lease?\n\n{} -> {}\n\nThis is the only remote ref Graduate will change. The source checkout, local refs, hooks, and personal rerere cache stay untouched. Merge commits are unsigned.\n\nPress y to publish this reviewed in-memory plan.",
+            let retained = plan.selection.retained.len();
+            let removed = plan.selection.removed.len();
+            let retained_label = if retained == 1 { "feature" } else { "features" };
+            let target = format!(
+                "{}/{}",
                 escape(&plan.snapshot.remote),
-                escape(&plan.snapshot.environment),
+                escape(&plan.snapshot.environment)
+            );
+            format!(
+                "Replace {target} with the reviewed result?\n\nCurrent tip    {}\nReviewed tip   {}\nRewrite scope  {retained} retained {retained_label} · {removed} omitted\n\nPublish stops if {target} changed since review (exact lease).\nThis rewrites {target} history; collaborators tracking it must resync after publish.\n\nFeature branches, the source checkout, local refs, hooks, and personal rerere stay unchanged. Merge commits are unsigned.\n\nPress Ctrl+Y to publish. Esc returns to Review; q abandons this plan without changing refs.",
                 escape(&plan.snapshot.environment_tip),
                 escape(&plan.preview_commit),
             )
@@ -457,7 +462,9 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, stage: RestackInteractionSta
             " ↑/↓ move   Space retain/remove   Enter review   Esc cancel "
         }
         RestackInteractionStage::Review => " ↑/↓ scroll   Enter confirm   Esc revise   q cancel ",
-        RestackInteractionStage::Confirmation => " y publish   n/Esc back   q cancel ",
+        RestackInteractionStage::Confirmation => {
+            " Ctrl+Y publish   Esc review details   q abandon plan "
+        }
     };
     frame.render_widget(
         Paragraph::new(Line::styled(controls, Palette::muted())),
@@ -547,10 +554,23 @@ mod tests {
 
         let _ = interaction.update(RestackInteractionAction::Continue);
         let confirmation = rendered(&interaction, Some(&plan), None)?;
-        assert!(confirmation.contains("exact lease"));
-        assert!(confirmation.contains("environment-tip -> preview"));
+        assert!(confirmation.contains("Current tip    environment-tip"));
+        assert!(confirmation.contains("Reviewed tip   preview"));
+        assert!(confirmation.contains("1 retained feature · 1 omitted"));
+        assert!(confirmation.contains("Publish stops if origin/qa changed since review"));
+        assert!(confirmation.contains("(exact lease)"));
+        assert!(confirmation.contains("collaborators tracking it must resync after publish"));
         assert!(confirmation.contains("source checkout, local refs, hooks"));
-        assert!(confirmation.contains("Press y to publish"));
+        assert!(confirmation.contains("Press Ctrl+Y to publish"));
+        assert!(confirmation.contains("q abandons this plan without changing refs"));
+        assert!(confirmation.contains("Ctrl+Y publish"));
+        assert!(confirmation.contains("Esc review details"));
+        assert!(confirmation.contains("q abandon plan"));
+
+        let compact = rendered_at(&interaction, Some(&plan), None, 80, 24)?;
+        assert!(compact.contains("Publish stops if origin/qa changed since review"));
+        assert!(compact.contains("Press Ctrl+Y to publish"));
+        assert!(compact.contains("Ctrl+Y publish"));
         Ok(())
     }
 
@@ -568,6 +588,13 @@ mod tests {
                 RestackInteractionStage::Confirmation,
                 KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)
             ),
+            None
+        );
+        assert_eq!(
+            action_for_key(
+                RestackInteractionStage::Confirmation,
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)
+            ),
             Some(RestackInteractionAction::Confirm)
         );
         assert_eq!(
@@ -576,6 +603,13 @@ mod tests {
                 KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
             ),
             Some(RestackInteractionAction::Cancel)
+        );
+        assert_eq!(
+            action_for_key(
+                RestackInteractionStage::Confirmation,
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)
+            ),
+            None
         );
     }
 
@@ -605,7 +639,17 @@ mod tests {
         plan: Option<&RestackPlan>,
         rejection: Option<&str>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let mut terminal = Terminal::new(TestBackend::new(115, 38))?;
+        rendered_at(interaction, plan, rejection, 115, 38)
+    }
+
+    fn rendered_at(
+        interaction: &RestackInteraction,
+        plan: Option<&RestackPlan>,
+        rejection: Option<&str>,
+        width: u16,
+        height: u16,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height))?;
         terminal.draw(|frame| render(frame, interaction, plan, rejection))?;
         Ok(terminal.backend().to_string())
     }

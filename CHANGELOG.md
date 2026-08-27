@@ -26,6 +26,10 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Made the final restack checkpoint harder to trigger accidentally: publication
+  now requires `Ctrl+Y`, rewrite scope and collaborator impact are explicit,
+  lease protection leads with its plain-language outcome, and Review versus
+  Abandon labels state what each exit preserves.
 - Flagged environment merges that an environment rebuild or pull-style
   self-merge moved off the environment branch's first-parent line, so stale
   feature branches carrying older environment history keep their

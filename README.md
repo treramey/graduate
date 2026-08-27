@@ -55,7 +55,10 @@ work, and selects every ungraduated feature by default. Uncheck a feature to
 remove it from the rebuilt environment. Graduate reconstructs the selection in
 an isolated work area and shows the exact refs, merge order, removals, final
 tree, unsigned-commit policy, and environment lease. It pushes only after you
-confirm that review.
+confirm that review with `Ctrl+Y`. The final checkpoint states the retained and
+omitted scope, explains that publication stops if the remote changed, and warns
+collaborators tracking the rewritten environment to resync afterward. `Esc`
+returns to Review details; `q` abandons the plan without changing refs.
 
 Agents use the JSON-only preview and apply flow. Preview first and retain the
 returned `planDigest`:
