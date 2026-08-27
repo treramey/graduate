@@ -170,5 +170,19 @@ workspace is available as a Nix flake with locked inputs.
 
 Put deterministic services and state transitions in `graduate`. Keep
 terminal, filesystem, process, prompt, and network behavior in
-`graduate-cli`. For a larger feature, place workflow in `<feature>.rs` and
-rendering and terminal events in `<feature>_tui.rs`.
+`graduate-cli`. For a larger feature, place workflow in `<feature>/mod.rs` and
+rendering and terminal events in `<feature>_tui/mod.rs`.
+
+## Module layout
+
+Every feature is a directory module. `mod.rs` owns the public surface: it
+declares the submodules, re-exports the items other modules use, and keeps the
+top-level workflow or data model. Each submodule holds one concept
+(`restack/isolated_merge.rs`, `diff_tui/inspector.rs`) and stays around 300
+lines; a cohesive file may run longer rather than splitting a single
+responsibility across files. Unit tests live in `<feature>/tests.rs`, or in
+`<feature>/tests/mod.rs` (shared fixtures) with `<feature>/tests/<topic>_tests.rs`
+siblings once one file is not enough. Integration tests follow the same shape
+under `crates/graduate-cli/tests/cli/`: `main.rs` declares `common.rs`, `git.rs`,
+and the repository fixtures, and each `<topic>_test.rs` exercises one command
+surface.
