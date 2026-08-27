@@ -183,9 +183,11 @@ can deliberately remove selected features from the reconstructed branch.
   plan JSON (`inventory.reason`). Schema version 2 adds `inventory`,
   `carriedBranches`, `orphanedCommits`, and `effects.reusedResolutions` to
   `restackPlan`; persisted schema-1 sessions are rejected as mismatched.
-- Reconstruction validation is Git-only: resolved index, no conflict markers
-  or diff-check failures, canonical merge parents/order/messages, reviewed
-  final tree, and unchanged remote inputs. Graduate runs no repository build or
+- Reconstruction validation is Git-only: resolved index, no leftover conflict
+  markers, canonical merge parents/order/messages, reviewed final tree, and
+  unchanged remote inputs. `git diff --check` runs with every whitespace class
+  disabled so it rejects only conflict markers; a feature's trailing whitespace
+  is its own business and a rebuild reproduces it unchanged. Graduate runs no repository build or
   test commands; agents and CI own project-specific validation.
 - An unresolved conflict turns the isolated work area into a persisted,
   resumable session. Output includes an opaque local `resumeToken` and the work

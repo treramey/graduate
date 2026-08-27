@@ -518,6 +518,62 @@ fn restack_dry_run_defaults_to_retaining_every_feature() -> Result<(), Box<dyn E
 }
 
 #[test]
+fn restack_reconstructs_features_whose_content_has_whitespace_errors() -> Result<(), Box<dyn Error>>
+{
+    let fixture = RestackFixture::new()?;
+    fixture.git(
+        &fixture.source,
+        &["checkout", "-q", "-b", "feature/ws", "main"],
+    )?;
+    std::fs::write(
+        fixture.source.join("sloppy.cs"),
+        "class Sloppy {   \n\tint x;  \n}\n\n\n",
+    )?;
+    fixture.git(&fixture.source, &["add", "sloppy.cs"])?;
+    fixture.git(
+        &fixture.source,
+        &[
+            "-c",
+            "core.whitespace=-trailing-space,-blank-at-eof",
+            "commit",
+            "-q",
+            "-m",
+            "trailing whitespace",
+        ],
+    )?;
+    fixture.git(
+        &fixture.source,
+        &["push", "-q", "-u", "origin", "feature/ws"],
+    )?;
+    fixture.git(&fixture.source, &["checkout", "-q", "qa"])?;
+    fixture.git(
+        &fixture.source,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "feature/ws",
+            "-m",
+            "accepted feature ws",
+        ],
+    )?;
+    fixture.git(&fixture.source, &["push", "-q", "origin", "qa"])?;
+    fixture.git(&fixture.source, &["checkout", "-q", "main"])?;
+
+    let output = fixture.preview(&[])?;
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(plan["merges"][1]["branch"], "feature/ws");
+    assert_eq!(plan["merges"][1]["outcome"], "clean");
+    Ok(())
+}
+
+#[test]
 fn restack_machine_preview_never_falls_back_to_the_reachability_inventory(
 ) -> Result<(), Box<dyn Error>> {
     let fixture = RestackFixture::new()?;

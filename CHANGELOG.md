@@ -41,6 +41,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- `gd restack` no longer fails reconstruction with `stagedDiffCheck` when a
+  feature branch contains trailing whitespace or similar whitespace errors.
+  The isolated `git diff --check` now rejects only leftover conflict markers.
 - `gd restack` inspection no longer walks every remote branch's full history
   back to the root. Feature walks stop at commits already reachable from main
   and only the commits the reconstruction proof reads are loaded, taking a

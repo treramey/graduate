@@ -131,6 +131,11 @@ fn run_interactive(args: RestackArgs) -> Result<(), CliError> {
     finish_interactive(outcome, || terminal.restore(), write_interactive_outcome)
 }
 
+/// `git diff --check` in the isolated repository must reject leftover conflict
+/// markers but not the whitespace habits of feature content, which a rebuild
+/// reproduces faithfully.
+const ISOLATED_WHITESPACE_POLICY: &str = "-trailing-space,-space-before-tab,-indent-with-non-tab,-tab-in-indent,-cr-at-eol,-blank-at-eof,-blank-at-eol";
+
 /// Object cache shared by the environment, main, and feature history walks.
 const INSPECTION_OBJECT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -1586,7 +1591,7 @@ impl IsolatedRepository {
             .current_dir(&self.root)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", &self.global_config)
-            .env("GIT_CONFIG_COUNT", "7")
+            .env("GIT_CONFIG_COUNT", "8")
             .env("GIT_CONFIG_KEY_0", "core.hooksPath")
             .env("GIT_CONFIG_VALUE_0", &self.hooks)
             .env("GIT_CONFIG_KEY_1", "core.fsmonitor")
@@ -1601,6 +1606,8 @@ impl IsolatedRepository {
             .env("GIT_CONFIG_VALUE_5", "false")
             .env("GIT_CONFIG_KEY_6", "core.autocrlf")
             .env("GIT_CONFIG_VALUE_6", "false")
+            .env("GIT_CONFIG_KEY_7", "core.whitespace")
+            .env("GIT_CONFIG_VALUE_7", ISOLATED_WHITESPACE_POLICY)
             .env("GIT_MERGE_AUTOEDIT", "no")
             .env("GIT_TERMINAL_PROMPT", "0");
         command

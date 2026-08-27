@@ -144,7 +144,7 @@ consume it. A rejected push keeps a sealed session available for a validated
 retry.
 
 Restack validates Git state, not project behavior. It checks the resolved
-index, conflict markers, whitespace errors, canonical merge parents and
+index, leftover conflict markers, canonical merge parents and
 messages, the final tree, configured Git identity, remote endpoints, and every
 reviewed ref. It does not run repository tests or builds. Every generated merge
 commit is unsigned. A remote that requires signed commits rejects the push
