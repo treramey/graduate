@@ -142,24 +142,28 @@ compute orphan rows and tip timestamps in `graduate-cli`, and emit the new
 plan fields.
 
 **Acceptance criteria:**
-- [ ] `restack_snapshot` returns `Err(Unsupported { error, graph })` so the
+- [x] `restack_snapshot` returns `Err(Unsupported { error, graph })` so the
       graph survives the failure; `discover_interactive` turns that into an
       `InteractiveDiscovery` variant carrying graph + evidence + tip
       timestamps (author seconds of each candidate tip, read with `gix`).
       `preview` (machine path) still fails with `unsupported_history`.
-- [ ] `prepare_interactive` computes orphan ids for the selection, loads
+- [x] `prepare_interactive` computes orphan ids for the selection, loads
       subject/author/date for each (reuse the formatting in
       `non_merge_commits_excluding`), and passes `Vec<OrphanedCommit>` to
       `build_plan`. History mode passes `[]`.
-- [ ] `plan_json` emits `inventory {mode, reason}`, `carriedBranches`,
+- [x] `plan_json` emits `inventory {mode, reason}`, `carriedBranches`,
       `orphanedCommits`, `effects.reusedResolutions` (false in reachability
       mode, true in history mode) per the spec.
-- [ ] Tests: `environment_git` temp repo whose environment spine contains a
+- [x] Tests: `environment_git` temp repo whose environment spine contains a
       feature-internal merge returns `Unsupported` with a graph that has the
       expected candidates; `plan_json` snapshot test for both modes.
 
 **Verification:**
-- [ ] `cargo test --locked -p graduate-cli`
+- [x] `cargo test --locked -p graduate-cli`
+
+**Deviation:** orphan rows for every candidate commit are captured once at
+discovery (`InteractiveDiscovery.commit_rows`) and persisted in
+`SessionMetadata.orphaned_commits` so conflict resume rebuilds the same plan.
 
 **Dependencies:** Tasks 1–4
 **Files:** `crates/graduate-cli/src/environment_git.rs`,

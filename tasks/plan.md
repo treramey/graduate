@@ -64,7 +64,7 @@ T1 domain types + schema bump
 
 ### Phase 2: CLI wiring
 
-- [ ] Task 5: Hand the graph and evidence to the interactive flow and emit the new plan JSON fields
+- [x] Task 5: Hand the graph and evidence to the interactive flow and emit the new plan JSON fields
 
 ### Phase 3: TUI
 

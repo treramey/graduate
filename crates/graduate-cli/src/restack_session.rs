@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use graduate::restack::{
-    MergeOutcome, RemoteEndpointIdentity, RestackAuthor, RestackSelection, RestackSnapshot,
-    RESTACK_SCHEMA_VERSION,
+    MergeOutcome, OrphanedCommit, RemoteEndpointIdentity, RestackAuthor, RestackSelection,
+    RestackSnapshot, RESTACK_SCHEMA_VERSION,
 };
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,7 @@ pub(crate) struct SessionMetadata {
     pub(crate) remote_endpoints: RemoteEndpointIdentity,
     pub(crate) author: RestackAuthor,
     pub(crate) selection: RestackSelection,
+    pub(crate) orphaned_commits: Vec<OrphanedCommit>,
     pub(crate) merges: Vec<MergeOutcome>,
     pub(crate) next_feature: usize,
     pub(crate) expected_head: String,
@@ -69,6 +70,7 @@ impl SessionMetadata {
         remote_endpoints: RemoteEndpointIdentity,
         author: RestackAuthor,
         selection: RestackSelection,
+        orphaned_commits: Vec<OrphanedCommit>,
         conflict: SessionConflict,
     ) -> Result<Self, SessionError> {
         let now = now()?;
@@ -79,6 +81,7 @@ impl SessionMetadata {
             remote_endpoints,
             author,
             selection,
+            orphaned_commits,
             merges: conflict.merges,
             next_feature: conflict.next_feature,
             expected_head: conflict.expected_head,
