@@ -8,8 +8,8 @@ use crate::common::{
 };
 use crate::conflict_fixture::ConflictRestackFixture;
 #[cfg(unix)]
-use crate::git::{find_git_executable, make_executable};
-use crate::git::{path_text, run_git};
+use crate::git::find_git_executable;
+use crate::git::{make_executable, path_text, run_git};
 
 #[test]
 fn restack_resume_apply_rejects_endpoint_retargeting_without_consuming_the_session(

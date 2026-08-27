@@ -10,7 +10,9 @@ use hmac::Mac;
 use sha2::{Digest, Sha256};
 
 use super::handles::SessionEnvelope;
-use super::restricted_fs::{restrict_file, restricted_file_metadata, sync_directory};
+#[cfg(not(windows))]
+use super::restricted_fs::restrict_file;
+use super::restricted_fs::{restricted_file_metadata, sync_directory};
 use super::{
     HmacSha256, SessionError, SessionMetadata, MAX_METADATA_BYTES, SESSION_FILE,
     SESSION_TTL_SECONDS,
