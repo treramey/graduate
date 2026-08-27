@@ -314,9 +314,13 @@ fn action_for_key(
     }
     match (stage, key.code) {
         (_, KeyCode::Char('q')) => Some(RestackInteractionAction::Cancel),
-        (RestackInteractionStage::Selection, KeyCode::Esc) => {
-            Some(RestackInteractionAction::Cancel)
+        (RestackInteractionStage::UnsupportedHistory, KeyCode::Char('r')) => {
+            Some(RestackInteractionAction::AcceptInventoryFallback)
         }
+        (
+            RestackInteractionStage::UnsupportedHistory | RestackInteractionStage::Selection,
+            KeyCode::Esc,
+        ) => Some(RestackInteractionAction::Cancel),
         (RestackInteractionStage::Selection, KeyCode::Up | KeyCode::Char('k')) => {
             Some(RestackInteractionAction::MoveUp)
         }
@@ -391,7 +395,7 @@ fn render(
     let minimum_height = match interaction.stage() {
         RestackInteractionStage::Confirmation => confirmation_minimum_height(plan, content_width),
         RestackInteractionStage::Selection => 18,
-        RestackInteractionStage::Review => 12,
+        RestackInteractionStage::UnsupportedHistory | RestackInteractionStage::Review => 12,
     };
     if frame.area().width < 56 || frame.area().height < minimum_height {
         view.scrollable = false;
@@ -413,6 +417,9 @@ fn render(
     .split(area);
     render_workflow_header(frame, rows[0], interaction.stage());
     view.scrollable = match interaction.stage() {
+        RestackInteractionStage::UnsupportedHistory => {
+            render_unsupported_history(frame, rows[2], interaction)
+        }
         RestackInteractionStage::Selection => {
             render_selection(frame, rows[2], interaction, rejection, view)
         }
@@ -456,7 +463,7 @@ fn render_too_small(frame: &mut Frame<'_>, area: Rect, minimum_height: u16) {
 
 fn render_workflow_header(frame: &mut Frame<'_>, area: Rect, stage: RestackInteractionStage) {
     let current = match stage {
-        RestackInteractionStage::Selection => 0,
+        RestackInteractionStage::UnsupportedHistory | RestackInteractionStage::Selection => 0,
         RestackInteractionStage::Review => 1,
         RestackInteractionStage::Confirmation => 2,
     };
@@ -496,6 +503,28 @@ fn render_workflow_header(frame: &mut Frame<'_>, area: Rect, stage: RestackInter
         Paragraph::new(Line::from(spans)),
         Rect::new(area.x, area.y.saturating_add(2), area.width, 1),
     );
+}
+
+fn render_unsupported_history(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    interaction: &RestackInteraction,
+) -> bool {
+    let mut lines = vec![Line::from(Span::styled(
+        "This environment's history cannot be read.",
+        Palette::primary().bold(),
+    ))];
+    if let Some(reason) = interaction.unsupported_history() {
+        lines.push(Line::from(Span::styled(
+            format!("Reason: {}", escape(&reason.kind)),
+            Palette::text(),
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true }),
+        area,
+    );
+    false
 }
 
 fn render_selection(
@@ -1158,6 +1187,10 @@ fn render_footer(
     }
     let mut controls = Vec::new();
     match stage {
+        RestackInteractionStage::UnsupportedHistory => {
+            controls.extend(control("r", "Rebuild from inventory", true));
+            controls.extend(control("Esc", "Cancel", false));
+        }
         RestackInteractionStage::Selection => {
             controls.extend(control("Enter", "Review", true));
             controls.extend(control("Space", "Toggle", false));
@@ -1200,7 +1233,9 @@ const fn footer_height(stage: RestackInteractionStage, width: u16) -> u16 {
         RestackInteractionStage::Selection => 1,
         RestackInteractionStage::Review if width < 72 => 3,
         RestackInteractionStage::Review if width < 96 => 2,
-        RestackInteractionStage::Review | RestackInteractionStage::Confirmation => 1,
+        RestackInteractionStage::UnsupportedHistory
+        | RestackInteractionStage::Review
+        | RestackInteractionStage::Confirmation => 1,
     }
 }
 

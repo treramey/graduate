@@ -239,6 +239,7 @@ pub enum SelectionError {
 /// One screen in the deterministic interactive restack review flow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RestackInteractionStage {
+    UnsupportedHistory,
     Selection,
     Review,
     Confirmation,
@@ -258,6 +259,7 @@ pub enum RestackInteractionAction {
     KeepAll,
     RemoveAll,
     ToggleDetails,
+    AcceptInventoryFallback,
     Continue,
     Back,
     Confirm,
@@ -300,9 +302,52 @@ impl RestackInteraction {
         }
     }
 
+    /// Start on the unsupported-history screen with a reachability inventory.
+    ///
+    /// Every top-level feature is retained; the checklist is reached only by
+    /// an explicit `AcceptInventoryFallback`.
+    #[must_use]
+    pub fn from_inventory(snapshot: RestackSnapshot) -> Self {
+        Self {
+            stage: RestackInteractionStage::UnsupportedHistory,
+            ..Self::new(snapshot)
+        }
+    }
+
     #[must_use]
     pub const fn stage(&self) -> RestackInteractionStage {
         self.stage
+    }
+
+    #[must_use]
+    pub const fn inventory_mode(&self) -> InventoryMode {
+        self.snapshot.inventory_mode
+    }
+
+    #[must_use]
+    pub const fn unsupported_history(&self) -> Option<&UnsupportedHistory> {
+        self.snapshot.unsupported_history.as_ref()
+    }
+
+    #[must_use]
+    pub fn carried_features(&self) -> &[CarriedFeature] {
+        &self.snapshot.carried_features
+    }
+
+    /// Commits the rebuild would drop for the current retained set.
+    #[must_use]
+    pub fn orphaned_commit_count(&self) -> usize {
+        orphaned_commit_ids(&self.snapshot, &self.retained_identities()).len()
+    }
+
+    fn retained_identities(&self) -> Vec<BranchIdentity> {
+        self.snapshot
+            .features
+            .iter()
+            .zip(&self.retained)
+            .filter(|(_, retained)| **retained)
+            .map(|(feature, _)| branch_identity_of(feature))
+            .collect()
     }
 
     #[must_use]
@@ -466,6 +511,12 @@ impl RestackInteraction {
                 self.review_scroll = 0;
                 RestackInteractionEffect::None
             }
+            RestackInteractionAction::AcceptInventoryFallback
+                if self.stage == RestackInteractionStage::UnsupportedHistory =>
+            {
+                self.stage = RestackInteractionStage::Selection;
+                RestackInteractionEffect::None
+            }
             RestackInteractionAction::Continue
                 if self.stage == RestackInteractionStage::Selection =>
             {
@@ -504,6 +555,7 @@ impl RestackInteraction {
             | RestackInteractionAction::KeepAll
             | RestackInteractionAction::RemoveAll
             | RestackInteractionAction::ToggleDetails
+            | RestackInteractionAction::AcceptInventoryFallback
             | RestackInteractionAction::Continue
             | RestackInteractionAction::Back
             | RestackInteractionAction::Confirm => RestackInteractionEffect::None,
@@ -1198,6 +1250,13 @@ fn digest_field(digest: &mut Sha256, label: &str, value: &str) {
     digest.update(label.as_bytes());
     digest.update((value.len() as u64).to_be_bytes());
     digest.update(value.as_bytes());
+}
+
+fn branch_identity_of(feature: &ExplicitFeature) -> BranchIdentity {
+    BranchIdentity {
+        name: feature.name.clone(),
+        tip: feature.tip.clone(),
+    }
 }
 
 fn branch_identity(feature: &FeatureRef) -> BranchIdentity {
@@ -2267,6 +2326,76 @@ mod tests {
             feature("feature/unmerged", "elsewhere", &[]),
         ];
         graph
+    }
+
+    #[test]
+    fn inventory_interaction_reaches_the_checklist_only_by_explicit_acceptance() {
+        let snapshot =
+            build_inventory_snapshot(&ambiguous_graph(), direct_reason(), &BTreeMap::new());
+        let mut interaction = RestackInteraction::from_inventory(snapshot);
+        assert_eq!(
+            interaction.stage(),
+            RestackInteractionStage::UnsupportedHistory
+        );
+        assert_eq!(interaction.inventory_mode(), InventoryMode::Reachability);
+        assert_eq!(
+            interaction
+                .unsupported_history()
+                .map(|reason| reason.kind.as_str()),
+            Some("directCommit")
+        );
+        assert_eq!(interaction.carried_features().len(), 1);
+        assert_eq!(interaction.orphaned_commit_count(), 1);
+
+        for action in [
+            RestackInteractionAction::Toggle,
+            RestackInteractionAction::Continue,
+            RestackInteractionAction::Confirm,
+            RestackInteractionAction::Back,
+            RestackInteractionAction::RemoveAll,
+        ] {
+            assert_eq!(interaction.update(action), RestackInteractionEffect::None);
+            assert_eq!(
+                interaction.stage(),
+                RestackInteractionStage::UnsupportedHistory
+            );
+        }
+        assert!(interaction.is_retained(0));
+        assert_eq!(
+            interaction.update(RestackInteractionAction::Cancel),
+            RestackInteractionEffect::Cancel
+        );
+
+        assert_eq!(
+            interaction.update(RestackInteractionAction::AcceptInventoryFallback),
+            RestackInteractionEffect::None
+        );
+        assert_eq!(interaction.stage(), RestackInteractionStage::Selection);
+        assert!(interaction.is_retained(0));
+        assert_eq!(
+            interaction.update(RestackInteractionAction::Toggle),
+            RestackInteractionEffect::None
+        );
+        assert_eq!(interaction.orphaned_commit_count(), 4);
+        assert_eq!(
+            interaction.update(RestackInteractionAction::AcceptInventoryFallback),
+            RestackInteractionEffect::None
+        );
+        assert_eq!(
+            interaction.update(RestackInteractionAction::Back),
+            RestackInteractionEffect::None
+        );
+        assert_eq!(interaction.stage(), RestackInteractionStage::Selection);
+    }
+
+    #[test]
+    fn history_interaction_never_visits_the_unsupported_stage(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let interaction = RestackInteraction::new(build_snapshot(&simple_graph())?);
+        assert_eq!(interaction.stage(), RestackInteractionStage::Selection);
+        assert_eq!(interaction.inventory_mode(), InventoryMode::History);
+        assert_eq!(interaction.orphaned_commit_count(), 0);
+        Ok(())
     }
 
     fn direct_reason() -> UnsupportedHistory {

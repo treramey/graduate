@@ -103,21 +103,25 @@ time), and `build_plan` verifies the orphan rows it receives against
 to selection only by an explicit accept.
 
 **Acceptance criteria:**
-- [ ] `RestackInteractionStage::UnsupportedHistory` exists.
+- [x] `RestackInteractionStage::UnsupportedHistory` exists.
       `RestackInteraction::from_unsupported(graph, reason, tip_timestamps)`
       starts there holding the evidence; `new(snapshot)` is unchanged.
-- [ ] Actions `AcceptInventoryFallback` (→ builds the inventory snapshot, all
+- [x] Actions `AcceptInventoryFallback` (→ builds the inventory snapshot, all
       retained, stage `Selection`) and `Cancel` are the only ones handled in
       that stage; every other action is a no-op there.
-- [ ] Interaction exposes `orphaned_commit_count()` for the current retained
+- [x] Interaction exposes `orphaned_commit_count()` for the current retained
       set and `inventory_mode()`, `unsupported_history()`, `carried_features()`
       accessors for rendering.
-- [ ] Tests: accept moves to selection with every top-level feature retained;
+- [x] Tests: accept moves to selection with every top-level feature retained;
       cancel exits; toggling in the checklist never re-enters the stage; count
       updates after a toggle.
 
 **Verification:**
-- [ ] `cargo test --locked -p graduate restack::tests::interaction`
+- [x] `cargo test --locked -p graduate restack::tests::interaction`
+
+**Deviation:** the constructor is `RestackInteraction::from_inventory(snapshot)`;
+the CLI builds the snapshot with `build_inventory_snapshot` so the interaction
+never holds a `RestackGraph`.
 
 **Dependencies:** Tasks 2, 3
 **Files:** `crates/graduate/src/restack.rs`
@@ -126,8 +130,8 @@ to selection only by an explicit accept.
 ---
 
 ### Checkpoint: Foundation
-- [ ] `cargo test --workspace --locked` green, clippy and fmt clean
-- [ ] Human review of the domain API before I/O wiring
+- [x] `cargo test --workspace --locked` green, clippy and fmt clean
+- [x] Human review of the domain API before I/O wiring
 
 ---
 

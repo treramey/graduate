@@ -55,7 +55,7 @@ T1 domain types + schema bump
 - [x] Task 1: Add inventory types and bump the schema version
 - [x] Task 2: Build a reachability snapshot from a failed history proof
 - [x] Task 3: Compute orphaned commits and bind them into the plan digest
-- [ ] Task 4: Add the `UnsupportedHistory` interaction stage
+- [x] Task 4: Add the `UnsupportedHistory` interaction stage
 
 ### Checkpoint: Foundation
 - [ ] `cargo test --locked -p graduate` passes with new tests
