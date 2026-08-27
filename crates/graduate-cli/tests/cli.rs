@@ -907,6 +907,11 @@ fn restack_apply_exact_lease_rejects_an_environment_race_before_publication(
 ) -> Result<(), Box<dyn Error>> {
     let fixture = RestackFixture::new()?;
     let preview = fixture.preview(&[])?;
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
     let plan: serde_json::Value = serde_json::from_slice(&preview.stdout)?;
     let digest = plan["planDigest"].as_str().ok_or("plan digest")?;
     let old_oid = fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa"])?;
