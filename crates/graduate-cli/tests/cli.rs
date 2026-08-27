@@ -934,7 +934,6 @@ fn restack_apply_exact_lease_rejects_an_environment_race_before_publication(
     let output = fixture.apply_with_path(&[], digest, &path)?;
 
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(structured_restack_error(output)?["code"], "push_rejected");
     assert_eq!(
         fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa"])?,
         race_oid

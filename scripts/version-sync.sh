@@ -8,5 +8,5 @@ sed -i.bak -E "s/^version = \"[^\"]+\"/version = \"${VERSION}\"/" Cargo.toml
 sed -i.bak -E "s/(graduate = \{ version = \")[^\"]+/\1${VERSION}/" crates/graduate-cli/Cargo.toml
 rm -f Cargo.toml.bak crates/graduate-cli/Cargo.toml.bak
 
-cargo generate-lockfile
+cargo update --workspace
 git add package.json npm Cargo.toml crates/graduate-cli/Cargo.toml Cargo.lock CHANGELOG.md .changeset
