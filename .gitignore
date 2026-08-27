@@ -9,6 +9,8 @@ lcov.info
 /.pi/
 /VENT.md
 /skills-lock.json
+/tasks/
+/docs/specs/
 
 # IDE and editor files
 /.idea/
