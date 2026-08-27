@@ -79,7 +79,7 @@ T1 domain types + schema bump
 ### Phase 4: Verification and delivery
 
 - [x] Task 9: End-to-end guard tests and the Federated40 manual run
-- [ ] Task 10: Docs, `describe`/`schema`/skills regeneration, CHANGELOG, changeset
+- [x] Task 10: Docs, `describe`/`schema`/skills regeneration, CHANGELOG, changeset
 
 ### Checkpoint: Complete
 - [ ] All spec success criteria met

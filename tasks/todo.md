@@ -290,18 +290,18 @@ the truth on the real repository.
 **Description:** Keep the written contract truthful.
 
 **Acceptance criteria:**
-- [ ] `docs/gd-restack.md` Contract gains a paragraph on the inventory
+- [x] `docs/gd-restack.md` Contract gains a paragraph on the inventory
       fallback (trigger, explicit choice, membership rule, order rule, orphan
       disclosure, no rerere, schema 2) and the Delivery record gets a step.
-- [ ] `README.md` restack section mentions the fallback in two sentences.
-- [ ] `cargo run --locked -- generate-skills --force` regenerated; `describe
+- [x] `README.md` restack section mentions the fallback in two sentences.
+- [x] `cargo run --locked -- generate-skills --force` regenerated; `describe
       restack` / `schema restack` reflect the new plan fields; their tests
       updated.
-- [ ] `CHANGELOG.md` Unreleased → Added entry; `.changeset/restack-inventory-
+- [x] `CHANGELOG.md` Unreleased → Added entry; `.changeset/restack-inventory-
       fallback.md` with `minor`.
 
 **Verification:**
-- [ ] `cargo test --workspace --locked`; `git diff --stat skills docs/skills.md` shows
+- [x] `cargo test --workspace --locked`; `git diff --stat skills docs/skills.md` shows
       only generated changes
 
 **Dependencies:** Task 5 (JSON shape final)
@@ -312,5 +312,6 @@ the truth on the real repository.
 ---
 
 ### Checkpoint: Complete
-- [ ] Spec success criteria 1–6 checked off
-- [ ] PR opened on its own branch off `main`, linking the spec
+- [x] Spec success criteria 2–6 met; criterion 1 blocked at reconstruction by the
+      pre-existing whitespace check (see Task 9)
+- [x] PR opened on its own branch off `main`, linking the spec
