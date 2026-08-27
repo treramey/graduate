@@ -482,7 +482,7 @@ contract.
 3. Show the mode, carried branches, and live drop count in the checklist; list
    dropped commits in review and state the count in the confirmation.
 4. Keep `--dry-run` and `--params` failing with `unsupported_history`; the
-   machine mode is a follow-up. Spec: `docs/specs/restack-inventory-fallback.md`.
+   machine mode is a follow-up.
 
 ## Investigated context
 
