@@ -1953,6 +1953,7 @@ mod tests {
             inventory_mode: InventoryMode::History,
             unsupported_history: None,
             carried_features: Vec::new(),
+            unattributed_commits: Vec::new(),
         }
     }
 }

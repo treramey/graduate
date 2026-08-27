@@ -71,20 +71,25 @@ markers, and the evidence, without any new graph walks.
 the digest depend on inventory mode and the orphan set.
 
 **Acceptance criteria:**
-- [ ] Orphans = `environment_ancestors \ main_ancestors`, single-parent, not a
+- [x] Orphans = `environment_ancestors \ main_ancestors`, single-parent, not a
       dropped marker, not in any retained feature's `ancestors`. Sorted by id.
-- [ ] `plan_digest` adds `inventory_mode` and one `orphaned_commit` field per
+- [x] `plan_digest` adds `inventory_mode` and one `orphaned_commit` field per
       sorted id, after existing fields. History-mode digests change only by
       the new `schema` and `inventory_mode` values.
-- [ ] `select_features` rejects a carried-only name with
+- [x] `select_features` rejects a carried-only name with
       `SelectionError::IndirectOnly` (carried features are surfaced as
       indirect); `RetainedDependency` behaviour unchanged.
-- [ ] Tests: zero orphans when every unique commit is reached; correct set
+- [x] Tests: zero orphans when every unique commit is reached; correct set
       after removing a branch; merges and markers excluded; digest changes
       with mode and with orphan set, stable otherwise.
 
 **Verification:**
-- [ ] `cargo test --locked -p graduate restack::tests`
+- [x] `cargo test --locked -p graduate restack::tests`
+
+**Deviation:** orphans are computed from the snapshot alone via a new
+`RestackSnapshot.unattributed_commits` field (no `RestackGraph` needed at plan
+time), and `build_plan` verifies the orphan rows it receives against
+`orphaned_commit_ids` (`PlanError::OrphanedCommits`).
 
 **Dependencies:** Task 2
 **Files:** `crates/graduate/src/restack.rs`

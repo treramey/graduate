@@ -147,6 +147,9 @@ pub struct RestackSnapshot {
     pub inventory_mode: InventoryMode,
     pub unsupported_history: Option<UnsupportedHistory>,
     pub carried_features: Vec<CarriedFeature>,
+    /// Environment-only work that no top-level feature reaches. Always empty
+    /// in history mode, where the proof rejects such commits instead.
+    pub unattributed_commits: Vec<String>,
 }
 
 /// The configured identity used for every reconstructed merge commit.
@@ -543,6 +546,8 @@ pub enum PlanError {
     MergeCount { expected: usize, actual: usize },
     #[error("reconstruction outcome {index} does not match retained feature `{expected}`")]
     MergeIdentity { index: usize, expected: String },
+    #[error("plan lists {actual} orphaned commits but the retained selection orphans {expected}")]
+    OrphanedCommits { expected: usize, actual: usize },
 }
 
 /// Evidence that an environment history cannot be reconstructed safely.
@@ -766,6 +771,7 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
         inventory_mode: InventoryMode::History,
         unsupported_history: None,
         carried_features: Vec::new(),
+        unattributed_commits: Vec::new(),
     })
 }
 
@@ -904,7 +910,9 @@ pub fn build_inventory_snapshot(
             })
         })
         .collect::<Vec<_>>();
-    let attributed_commits = unique
+    let mut attributed_commits = Vec::new();
+    let mut unattributed_commits = Vec::new();
+    for id in unique
         .iter()
         .filter(|id| {
             graph
@@ -913,18 +921,21 @@ pub fn build_inventory_snapshot(
                 .is_some_and(|commit| commit.parents.len() == 1)
         })
         .filter(|id| dropped_markers.iter().all(|marker| marker.commit != ***id))
-        .filter_map(|id| {
-            let branches = top_level
-                .iter()
-                .filter(|feature| feature.ancestors.contains(*id))
-                .map(|feature| feature.name.clone())
-                .collect::<Vec<_>>();
-            (!branches.is_empty()).then(|| AttributedCommit {
+    {
+        let branches = top_level
+            .iter()
+            .filter(|feature| feature.ancestors.contains(*id))
+            .map(|feature| feature.name.clone())
+            .collect::<Vec<_>>();
+        if branches.is_empty() {
+            unattributed_commits.push((*id).clone());
+        } else {
+            attributed_commits.push(AttributedCommit {
                 commit: (*id).clone(),
                 branches,
-            })
-        })
-        .collect();
+            });
+        }
+    }
 
     RestackSnapshot {
         remote: graph.remote.clone(),
@@ -960,7 +971,36 @@ pub fn build_inventory_snapshot(
         inventory_mode: InventoryMode::Reachability,
         unsupported_history: Some(reason),
         carried_features,
+        unattributed_commits,
     }
+}
+
+/// Commits the rebuilt environment will drop for one retained set.
+///
+/// In history mode removals are explicit and the proof already attributed
+/// every commit, so nothing is orphaned. In reachability mode every
+/// environment-only commit that no retained top-level feature reaches is
+/// orphaned, whether nothing ever reached it or its only owners were removed.
+#[must_use]
+pub fn orphaned_commit_ids(snapshot: &RestackSnapshot, retained: &[BranchIdentity]) -> Vec<String> {
+    if snapshot.inventory_mode == InventoryMode::History {
+        return Vec::new();
+    }
+    let mut orphans = snapshot
+        .attributed_commits
+        .iter()
+        .filter(|commit| {
+            !commit
+                .branches
+                .iter()
+                .any(|owner| retained.iter().any(|kept| kept.name == *owner))
+        })
+        .map(|commit| commit.commit.clone())
+        .chain(snapshot.unattributed_commits.iter().cloned())
+        .collect::<Vec<_>>();
+    orphans.sort();
+    orphans.dedup();
+    orphans
 }
 
 /// Validate requested removals without silently changing their meaning.
@@ -1063,12 +1103,25 @@ pub fn build_plan(
             });
         }
     }
+    let expected_orphans = orphaned_commit_ids(&snapshot, &selection.retained);
+    let mut listed_orphans = orphaned_commits
+        .iter()
+        .map(|commit| commit.commit.clone())
+        .collect::<Vec<_>>();
+    listed_orphans.sort();
+    if listed_orphans != expected_orphans {
+        return Err(PlanError::OrphanedCommits {
+            expected: expected_orphans.len(),
+            actual: listed_orphans.len(),
+        });
+    }
     let digest = plan_digest(
         &snapshot,
         &remote_endpoints,
         &author,
         &selection,
         &final_tree,
+        &expected_orphans,
     );
     Ok(RestackPlan {
         snapshot,
@@ -1094,6 +1147,7 @@ fn plan_digest(
     author: &RestackAuthor,
     selection: &RestackSelection,
     final_tree: &str,
+    orphaned_commits: &[String],
 ) -> String {
     let mut digest = Sha256::new();
     digest_field(&mut digest, "schema", &RESTACK_SCHEMA_VERSION.to_string());
@@ -1125,6 +1179,17 @@ fn plan_digest(
         digest_field(&mut digest, "removed_tip", &feature.tip);
     }
     digest_field(&mut digest, "final_tree", final_tree);
+    digest_field(
+        &mut digest,
+        "inventory_mode",
+        match snapshot.inventory_mode {
+            InventoryMode::History => "history",
+            InventoryMode::Reachability => "reachability",
+        },
+    );
+    for commit in orphaned_commits {
+        digest_field(&mut digest, "orphaned_commit", commit);
+    }
     format!("{:x}", digest.finalize())
 }
 
@@ -1442,7 +1507,7 @@ mod tests {
         assert_eq!(first.digest, second.digest);
         assert_eq!(
             first.digest,
-            "fe7b5663e26430357291f2c1053d315a7497be6ddb52e2772aaf71c6a1b450c9"
+            "9077fbf6b660331cea97f2be2209570096b124619a0256774ddb6833c3891e4c"
         );
         assert_ne!(first.digest, changed_author.digest);
         assert_ne!(first.digest, changed_tree.digest);
@@ -1766,6 +1831,7 @@ mod tests {
             inventory_mode: InventoryMode::History,
             unsupported_history: None,
             carried_features: Vec::new(),
+            unattributed_commits: Vec::new(),
         }
     }
 
@@ -1797,6 +1863,7 @@ mod tests {
             tip: "feature".to_owned(),
             carriers: vec!["feature/a".to_owned()],
         }];
+        snapshot.unattributed_commits = vec!["lost".to_owned()];
         let encoded = serde_json::to_string(&snapshot)?;
         let decoded: RestackSnapshot = serde_json::from_str(&encoded)?;
         assert_eq!(decoded, snapshot);
@@ -1865,34 +1932,7 @@ mod tests {
     #[test]
     fn inventory_snapshot_splits_top_level_and_carried_and_attributes_reached_work(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        // main: base. feature/a: base -> a1 -> a2(pull-merge of a1 and a1b).
-        // feature/b branched from feature/a: a2 -> b1. Environment spine:
-        // base -> a1 -> a2 -> envm(merge b1) -> stray (direct work).
-        let mut graph = empty_graph("stray");
-        add_commit(&mut graph, "base", "tb", &[], "base");
-        add_commit(&mut graph, "a1", "ta1", &["base"], "a one");
-        add_commit(&mut graph, "a1b", "ta1b", &["base"], "a one b");
-        add_commit(
-            &mut graph,
-            "a2",
-            "ta2",
-            &["a1", "a1b"],
-            "Merge branch 'feature/a' into feature/a",
-        );
-        add_commit(&mut graph, "b1", "tb1", &["a2"], "b one");
-        add_commit(&mut graph, "envm", "tenv", &["a2", "b1"], "merge b");
-        add_commit(&mut graph, "stray", "tstray", &["envm"], "direct work");
-        add_commit(&mut graph, "marker", "tstray", &["stray"], "### Match 'qa'");
-        graph.environment_tip = "marker".to_owned();
-        graph.environment_ancestors =
-            ids(&["base", "a1", "a1b", "a2", "b1", "envm", "stray", "marker"]);
-        graph.main_ancestors = ids(&["base"]);
-        graph.feature_refs = vec![
-            feature("feature/a", "a2", &["a1", "a1b", "a2"]),
-            feature("feature/b", "b1", &["a1", "a1b", "a2", "b1"]),
-            feature("feature/gone", "base", &[]),
-            feature("feature/unmerged", "elsewhere", &[]),
-        ];
+        let graph = ambiguous_graph();
         let reason = UnsupportedHistory::from(InventoryError::AmbiguousFeatureRefs {
             merge_commit: "a2".to_owned(),
             feature_parent: "a1b".to_owned(),
@@ -2079,6 +2119,154 @@ mod tests {
             assert_eq!(evidence.branches, branches);
             assert_eq!(evidence.parents, parents);
         }
+    }
+
+    #[test]
+    fn inventory_snapshot_records_work_no_top_level_feature_reaches() {
+        let snapshot =
+            build_inventory_snapshot(&ambiguous_graph(), direct_reason(), &BTreeMap::new());
+        assert_eq!(snapshot.unattributed_commits, ["stray"]);
+    }
+
+    #[test]
+    fn orphans_follow_the_retained_set_and_never_include_merges_or_markers(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot =
+            build_inventory_snapshot(&ambiguous_graph(), direct_reason(), &BTreeMap::new());
+        let everything = select_features(&snapshot, &[])?;
+        assert_eq!(
+            orphaned_commit_ids(&snapshot, &everything.retained),
+            ["stray"]
+        );
+        let nothing = select_features(&snapshot, &["feature/b".to_owned()])?;
+        assert_eq!(
+            orphaned_commit_ids(&snapshot, &nothing.retained),
+            ["a1", "a1b", "b1", "stray"]
+        );
+        assert_eq!(
+            select_features(&snapshot, &["feature/a".to_owned()]),
+            Err(SelectionError::IndirectOnly {
+                branch: "feature/a".to_owned()
+            })
+        );
+        let history = build_snapshot(&simple_graph())?;
+        assert!(orphaned_commit_ids(&history, &[]).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn plan_requires_the_exact_orphan_rows_and_binds_mode_and_orphans_into_the_digest(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot =
+            build_inventory_snapshot(&ambiguous_graph(), direct_reason(), &BTreeMap::new());
+        let selection = select_features(&snapshot, &[])?;
+        let reconstruction = || Reconstruction {
+            merges: vec![MergeOutcome {
+                branch: "feature/b".to_owned(),
+                tip: "b1".to_owned(),
+                commit: "preview".to_owned(),
+                tree: "tree".to_owned(),
+                resolution: MergeResolution::Clean,
+            }],
+            final_tree: "tree".to_owned(),
+            preview_commit: "preview".to_owned(),
+        };
+        let author = RestackAuthor {
+            name: "Pat".to_owned(),
+            email: "pat@example.com".to_owned(),
+        };
+        let endpoints = RemoteEndpointIdentity {
+            fetch_sha256: "f".repeat(64),
+            push_sha256: "p".repeat(64),
+        };
+        let orphan = |commit: &str| OrphanedCommit {
+            commit: commit.to_owned(),
+            subject: "s".to_owned(),
+            author: "Pat".to_owned(),
+            date: "2026-01-01".to_owned(),
+        };
+
+        assert_eq!(
+            build_plan(
+                snapshot.clone(),
+                endpoints.clone(),
+                author.clone(),
+                selection.clone(),
+                reconstruction(),
+                Vec::new(),
+            )
+            .map(|plan| plan.digest),
+            Err(PlanError::OrphanedCommits {
+                expected: 1,
+                actual: 0
+            })
+        );
+        let plan = build_plan(
+            snapshot.clone(),
+            endpoints.clone(),
+            author.clone(),
+            selection.clone(),
+            reconstruction(),
+            vec![orphan("stray")],
+        )?;
+
+        let mut as_history = snapshot.clone();
+        as_history.inventory_mode = InventoryMode::History;
+        let history_plan = build_plan(
+            as_history,
+            endpoints.clone(),
+            author.clone(),
+            selection.clone(),
+            reconstruction(),
+            Vec::new(),
+        )?;
+        assert_ne!(plan.digest, history_plan.digest);
+
+        let mut extra_orphan = snapshot;
+        extra_orphan
+            .unattributed_commits
+            .push("stray-two".to_owned());
+        let more_orphans = build_plan(
+            extra_orphan,
+            endpoints,
+            author,
+            selection,
+            reconstruction(),
+            vec![orphan("stray"), orphan("stray-two")],
+        )?;
+        assert_ne!(plan.digest, more_orphans.digest);
+        Ok(())
+    }
+
+    /// main: base. feature/a: base -> a1 -> a2(pull-merge of a1 and a1b).
+    /// feature/b branched from feature/a: a2 -> b1. Environment spine:
+    /// base -> a1 -> a2 -> envm(merge b1) -> stray (direct work) -> marker.
+    fn ambiguous_graph() -> RestackGraph {
+        let mut graph = empty_graph("marker");
+        add_commit(&mut graph, "base", "tb", &[], "base");
+        add_commit(&mut graph, "a1", "ta1", &["base"], "a one");
+        add_commit(&mut graph, "a1b", "ta1b", &["base"], "a one b");
+        add_commit(
+            &mut graph,
+            "a2",
+            "ta2",
+            &["a1", "a1b"],
+            "Merge branch 'feature/a' into feature/a",
+        );
+        add_commit(&mut graph, "b1", "tb1", &["a2"], "b one");
+        add_commit(&mut graph, "envm", "tenv", &["a2", "b1"], "merge b");
+        add_commit(&mut graph, "stray", "tstray", &["envm"], "direct work");
+        add_commit(&mut graph, "marker", "tstray", &["stray"], "### Match 'qa'");
+        graph.environment_ancestors =
+            ids(&["base", "a1", "a1b", "a2", "b1", "envm", "stray", "marker"]);
+        graph.main_ancestors = ids(&["base"]);
+        graph.feature_refs = vec![
+            feature("feature/a", "a2", &["a1", "a1b", "a2"]),
+            feature("feature/b", "b1", &["a1", "a1b", "a2", "b1"]),
+            feature("feature/gone", "base", &[]),
+            feature("feature/unmerged", "elsewhere", &[]),
+        ];
+        graph
     }
 
     fn direct_reason() -> UnsupportedHistory {

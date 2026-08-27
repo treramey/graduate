@@ -1671,6 +1671,9 @@ fn plan_error(error: PlanError) -> CliError {
         PlanError::MergeIdentity { index, expected } => {
             json!({"stage": "mergeIdentity", "index": index, "expected": expected})
         }
+        PlanError::OrphanedCommits { expected, actual } => {
+            json!({"stage": "orphanedCommits", "expected": expected, "actual": actual})
+        }
     };
     machine_failure(
         "validation_failed",
