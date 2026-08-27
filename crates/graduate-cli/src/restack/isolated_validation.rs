@@ -10,7 +10,7 @@ use super::errors::{
 };
 use super::isolated::IsolatedRepository;
 use super::machine_output::machine_failure;
-use crate::error::CliError;
+use crate::shared::error::CliError;
 
 impl IsolatedRepository {
     pub(super) fn validate_index(&self) -> Result<(), CliError> {

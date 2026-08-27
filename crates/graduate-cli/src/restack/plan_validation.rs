@@ -8,8 +8,8 @@ use serde_json::json;
 
 use super::machine_output::machine_failure;
 use super::source::configured_author;
-use crate::error::CliError;
-use crate::git_process;
+use crate::shared::error::CliError;
+use crate::shared::git_process;
 
 pub(super) fn authorize_plan(
     plan: &RestackPlan,

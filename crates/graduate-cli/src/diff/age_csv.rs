@@ -5,7 +5,7 @@ use graduate::promotion::PromotionAgeReport;
 use super::report_csv::csv_row;
 use super::report_json::{age_bucket_reading, share_percent};
 use super::PromotionReport;
-use crate::error::CliError;
+use crate::shared::error::CliError;
 
 pub(super) fn format_age_csv(
     report: &PromotionReport,

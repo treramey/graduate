@@ -9,7 +9,7 @@ use graduate::restack::{
 
 use super::errors::{reconstruction_error, session_state_error, validation_error};
 use super::isolated::{IsolatedRepository, ReconstructionConflict, ReconstructionResult};
-use crate::error::CliError;
+use crate::shared::error::CliError;
 
 impl IsolatedRepository {
     pub(super) fn reconstruct(

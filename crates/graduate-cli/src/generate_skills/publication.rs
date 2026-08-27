@@ -14,7 +14,7 @@ use super::staging::{
     mark_committed, write_manifest, AppliedArtifact, PublicationManifest, RecoveryArtifact,
     StagedArtifact,
 };
-use crate::error::CliError;
+use crate::shared::error::CliError;
 
 pub(super) fn replace_artifacts(
     current: &Path,

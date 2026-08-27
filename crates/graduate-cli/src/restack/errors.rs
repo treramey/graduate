@@ -7,9 +7,9 @@ use graduate::restack::{InventoryError, PlanError, SelectionError};
 use serde_json::json;
 
 use super::machine_output::{machine_failure, machine_usage};
-use crate::environment_git::RestackInspectionError;
-use crate::error::CliError;
-use crate::restack_session::SessionError;
+use crate::restack::session::SessionError;
+use crate::shared::environment_git::RestackInspectionError;
+use crate::shared::error::CliError;
 
 pub(super) fn inspection_error(error: RestackInspectionError) -> CliError {
     match error {

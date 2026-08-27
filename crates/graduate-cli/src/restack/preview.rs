@@ -12,10 +12,10 @@ use super::plan_validation::{authorize_plan, remote_environment_ref, revalidate_
 use super::source::{configured_author, source_object_directory, source_repository_identity};
 use super::{parse_params, validate_apply_params, INSPECTION_OBJECT_CACHE_BYTES};
 use crate::cli::RestackArgs;
-use crate::environment_git::{inspect_environment, restack_snapshot};
-use crate::error::CliError;
-use crate::git_process;
-use crate::restack_session::{SessionConflict, SessionDraft, SessionMetadata, SessionStore};
+use crate::restack::session::{SessionConflict, SessionDraft, SessionMetadata, SessionStore};
+use crate::shared::environment_git::{inspect_environment, restack_snapshot};
+use crate::shared::error::CliError;
+use crate::shared::git_process;
 
 pub(super) fn preview(
     args: &RestackArgs,

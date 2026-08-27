@@ -2,8 +2,8 @@
 
 use serde::Deserialize;
 
-use crate::environment_git::validate_ref_component;
-use crate::error::CliError;
+use crate::shared::environment_git::validate_ref_component;
+use crate::shared::error::CliError;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

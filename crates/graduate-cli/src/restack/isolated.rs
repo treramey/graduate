@@ -13,8 +13,8 @@ use sha2::{Digest, Sha256};
 use super::errors::{isolated_setup_error, reconstruction_error, validation_error};
 use super::source::{clear_isolated_environment, read_success_text};
 use super::ISOLATED_WHITESPACE_POLICY;
-use crate::error::CliError;
-use crate::git_process;
+use crate::shared::error::CliError;
+use crate::shared::git_process;
 
 pub(super) struct ReconstructionConflict {
     pub(super) merges: Vec<MergeOutcome>,

@@ -2,7 +2,7 @@
 
 - Keep deterministic state and transitions in `crates/graduate`.
 - Keep terminal, filesystem, process, and other I/O in `crates/graduate-cli`.
-- Keep feature workflow in `<feature>/mod.rs` and terminal rendering and events in a flat `<feature>_tui/mod.rs` sibling.
+- Organize `crates/graduate-cli` as vertical slices: each feature directory (`diff/`, `restack/`, `jira_auth/`) owns its workflow in `mod.rs`, its terminal rendering and events in `tui/`, and any feature-private state such as `restack/session/`. Cross-cutting terminal, Git, Jira, configuration, and error code lives in `shared/`.
 - Split a feature into one-concept files under its directory (`<feature>/<concept>.rs`); keep files reasonably small (roughly 300 lines) without fragmenting cohesive logic.
 - Put unit tests in `<feature>/tests.rs`, or in `<feature>/tests/mod.rs` (shared fixtures) plus `<feature>/tests/<topic>_tests.rs` when they outgrow one file.
 - Read `CONTEXT.md` and `docs/architecture.md` before changing behavior.

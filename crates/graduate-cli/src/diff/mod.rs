@@ -9,16 +9,15 @@ use graduate::promotion::{
 };
 use tokio::sync::mpsc;
 
-use crate::browser::SystemBrowserLauncher;
 use crate::cli::{DiffArgs, DiffReport, ReportFormat};
-use crate::config::Config;
-use crate::diff_tui;
-use crate::environment_git::{
+use crate::shared::browser::SystemBrowserLauncher;
+use crate::shared::config::Config;
+use crate::shared::environment_git::{
     gitoxide_error, inspect_environment, promotion_candidates, promotion_inventory,
     validate_ref_component, KNOWN_ENVIRONMENTS,
 };
-use crate::error::CliError;
-use crate::git_process::fetch_remote as fetch_remote_name;
+use crate::shared::error::CliError;
+use crate::shared::git_process::fetch_remote as fetch_remote_name;
 use branches::{
     environment_merge_markers, environment_subjects, measure_branch, recover_deleted_branch_tickets,
 };
@@ -36,6 +35,7 @@ mod report_table;
 mod scan_channel;
 #[cfg(test)]
 mod tests;
+pub(crate) mod tui;
 
 pub(crate) use output::current_report_date;
 pub(crate) use report_json::{age_bucket_label, age_bucket_reading, share_percent};
@@ -110,7 +110,7 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
     let coordinator = tokio::spawn(coordinate_scan(scan, credentials, updates_tx));
 
     let report_result = if interactive {
-        diff_tui::run(updates_rx, &SystemBrowserLauncher).await
+        tui::run(updates_rx, &SystemBrowserLauncher).await
     } else {
         collect_plain(updates_rx).await
     };

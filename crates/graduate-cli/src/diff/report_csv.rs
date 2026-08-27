@@ -5,7 +5,7 @@ use std::io::Write;
 use graduate::promotion::JiraIssueState;
 
 use super::PromotionReport;
-use crate::error::CliError;
+use crate::shared::error::CliError;
 
 pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
     let mut file = Vec::new();

@@ -15,11 +15,11 @@ use super::isolated::IsolatedRepository;
 use super::machine_output::{machine_failure, machine_usage};
 use super::validate_inputs;
 use crate::cli::RestackArgs;
-use crate::error::CliError;
-use crate::git_process;
-use crate::restack_session::{SessionDraft, SessionStore};
-use crate::restack_tui::{self, ConflictHandoff, ReviewDecision, SelectionDecision};
-use crate::terminal::StderrTerminal;
+use crate::restack::session::{SessionDraft, SessionStore};
+use crate::restack::tui::{ConflictHandoff, ReviewDecision, SelectionDecision};
+use crate::shared::error::CliError;
+use crate::shared::git_process;
+use crate::shared::terminal::StderrTerminal;
 
 pub(super) struct InteractiveDiscovery {
     pub(super) remote: git_process::RestackRemote,
@@ -97,9 +97,9 @@ pub(super) fn finish_interactive(
 
 fn write_interactive_outcome(outcome: InteractiveOutcome) -> Result<(), CliError> {
     match outcome {
-        InteractiveOutcome::Cancelled(environment) => restack_tui::write_cancelled(&environment),
-        InteractiveOutcome::Published(plan) => restack_tui::write_success(&plan),
-        InteractiveOutcome::Conflict(conflict) => restack_tui::write_conflict(&ConflictHandoff {
+        InteractiveOutcome::Cancelled(environment) => super::tui::write_cancelled(&environment),
+        InteractiveOutcome::Published(plan) => super::tui::write_success(&plan),
+        InteractiveOutcome::Conflict(conflict) => super::tui::write_conflict(&ConflictHandoff {
             environment: &conflict.environment,
             branch: &conflict.branch,
             unresolved_paths: &conflict.unresolved_paths,
@@ -115,7 +115,7 @@ fn interactive_workflow(
     sessions: &SessionStore,
     terminal: &mut StderrTerminal,
 ) -> Result<InteractiveOutcome, CliError> {
-    restack_tui::draw_loading(terminal, "Fetching and inspecting the environment…")?;
+    super::tui::draw_loading(terminal, "Fetching and inspecting the environment…")?;
     let discovery = discover_interactive(args, source)?;
     let mut interaction = match discovery.snapshot.inventory_mode {
         InventoryMode::History => RestackInteraction::new(discovery.snapshot.clone()),
@@ -124,20 +124,20 @@ fn interactive_workflow(
         }
     };
     loop {
-        let selection = match restack_tui::choose_features(terminal, &mut interaction)? {
+        let selection = match super::tui::choose_features(terminal, &mut interaction)? {
             SelectionDecision::Preview(selection) => selection,
             SelectionDecision::Cancel => {
                 return Ok(InteractiveOutcome::Cancelled(args.environment.clone()));
             }
         };
-        restack_tui::draw_loading(terminal, "Reconstructing the reviewed selection…")?;
+        super::tui::draw_loading(terminal, "Reconstructing the reviewed selection…")?;
         let prepared = match prepare_interactive(&discovery, selection, sessions)? {
             InteractivePreparation::Complete(prepared) => prepared,
             InteractivePreparation::Conflict(conflict) => {
                 return Ok(InteractiveOutcome::Conflict(conflict));
             }
         };
-        match restack_tui::review_plan(terminal, &mut interaction, &prepared.plan)? {
+        match super::tui::review_plan(terminal, &mut interaction, &prepared.plan)? {
             ReviewDecision::Revise => {
                 prepared.draft.discard().map_err(session_error)?;
             }
@@ -146,7 +146,7 @@ fn interactive_workflow(
                 return Ok(InteractiveOutcome::Cancelled(args.environment.clone()));
             }
             ReviewDecision::Publish => {
-                restack_tui::draw_loading(terminal, "Revalidating and publishing under lease…")?;
+                super::tui::draw_loading(terminal, "Revalidating and publishing under lease…")?;
                 publish_interactive(
                     source,
                     &discovery.remote,

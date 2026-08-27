@@ -11,7 +11,7 @@ use clap::CommandFactory;
 use fs2::FileExt;
 
 use crate::cli::{Cli, GenerateSkillsArgs};
-use crate::error::CliError;
+use crate::shared::error::CliError;
 use content::{INDEX, SKILL};
 use paths::{create_parents_without_symlinks, validate_destinations, validate_output_dir};
 use publication::replace_artifacts;

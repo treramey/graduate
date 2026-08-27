@@ -11,8 +11,8 @@ use super::report_json::{age_report_value, report_value};
 use super::report_table::{format_age_table, format_table};
 use super::PromotionReport;
 use crate::cli::{DiffReport, ReportFormat};
-use crate::environment_git::unix_date;
-use crate::error::CliError;
+use crate::shared::environment_git::unix_date;
+use crate::shared::error::CliError;
 
 pub(super) fn write_report(
     report: &PromotionReport,

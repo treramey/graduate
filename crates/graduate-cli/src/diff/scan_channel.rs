@@ -9,9 +9,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use super::{scan_repository, DiffUpdate, PromotionReport, ScanOptions};
-use crate::error::CliError;
-use crate::git_process::fetch_remote as fetch_remote_name;
-use crate::jira::JiraClient;
+use crate::shared::error::CliError;
+use crate::shared::git_process::fetch_remote as fetch_remote_name;
+use crate::shared::jira::JiraClient;
 
 pub(super) async fn coordinate_scan(
     options: ScanOptions,

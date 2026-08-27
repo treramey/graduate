@@ -5,7 +5,7 @@ use super::super::report_json::report_value;
 use super::super::report_table::format_table;
 use super::super::scan_channel::{collect_plain, jira_issue_state};
 use super::*;
-use crate::environment_git::unix_date;
+use crate::shared::environment_git::unix_date;
 
 #[test]
 fn interactive_fetch_does_not_print_a_status_message() {

@@ -19,12 +19,12 @@ use super::plan_validation::{remote_environment_ref, revalidate_plan};
 use super::source::{configured_author, source_object_directory, source_repository_identity};
 use super::INSPECTION_OBJECT_CACHE_BYTES;
 use crate::cli::RestackArgs;
-use crate::environment_git::{
+use crate::restack::session::{SessionConflict, SessionMetadata, SessionStore};
+use crate::shared::environment_git::{
     commit_rows, inspect_environment, restack_snapshot, tip_timestamps, RestackInspectionError,
 };
-use crate::error::CliError;
-use crate::git_process;
-use crate::restack_session::{SessionConflict, SessionMetadata, SessionStore};
+use crate::shared::error::CliError;
+use crate::shared::git_process;
 
 pub(super) fn discover_interactive(
     args: &RestackArgs,

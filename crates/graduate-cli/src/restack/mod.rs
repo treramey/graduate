@@ -4,9 +4,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::cli::RestackArgs;
-use crate::environment_git::validate_ref_component;
-use crate::error::CliError;
-use crate::restack_session::SessionStore;
+use crate::restack::session::SessionStore;
+use crate::shared::environment_git::validate_ref_component;
+use crate::shared::error::CliError;
 use errors::session_error;
 use interactive::run_interactive;
 use machine_output::{machine_failure, machine_usage};
@@ -23,9 +23,11 @@ mod machine_output;
 mod plan_validation;
 mod preview;
 mod resume;
+pub(crate) mod session;
 mod source;
 #[cfg(test)]
 mod tests;
+pub(crate) mod tui;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

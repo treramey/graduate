@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::paths::sync_directory;
 use super::{COMMITTED_NAME, MANIFEST_NAME, STAGING_SEQUENCE};
-use crate::error::CliError;
+use crate::shared::error::CliError;
 
 pub(super) struct StagingDirectory {
     pub(super) path: PathBuf,

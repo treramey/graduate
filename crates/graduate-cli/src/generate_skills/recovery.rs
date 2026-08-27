@@ -11,7 +11,7 @@ use super::paths::{
 };
 use super::staging::{AppliedArtifact, PublicationManifest};
 use super::{GeneratedFile, COMMITTED_NAME, MANIFEST_NAME, STAGING_PREFIX};
-use crate::error::CliError;
+use crate::shared::error::CliError;
 
 pub(super) fn recover_pending_publications(
     current: &Path,

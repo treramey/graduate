@@ -10,8 +10,10 @@ use super::super::errors::session_error;
 use super::super::interactive_steps::{inventory_fallback, orphan_rows};
 use super::super::resume::sealed_session_plan;
 use super::*;
-use crate::environment_git::{inspect_environment, restack_snapshot, RestackInspectionError};
-use crate::restack_session::{SessionConflict, SessionError, SessionMetadata, SessionStatus};
+use crate::restack::session::{SessionConflict, SessionError, SessionMetadata, SessionStatus};
+use crate::shared::environment_git::{
+    inspect_environment, restack_snapshot, RestackInspectionError,
+};
 
 #[test]
 fn inventory_fallback_on_a_real_repository_matches_git_rev_list(
@@ -19,7 +21,7 @@ fn inventory_fallback_on_a_real_repository_matches_git_rev_list(
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     let git = |arguments: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
-        let status = crate::environment_git::isolated_git_command()
+        let status = crate::shared::environment_git::isolated_git_command()
             .args(["-c", "core.fsmonitor=false"])
             .args(arguments)
             .current_dir(root)
@@ -31,7 +33,7 @@ fn inventory_fallback_on_a_real_repository_matches_git_rev_list(
         }
     };
     let git_lines = |arguments: &[&str]| -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
-        let output = crate::environment_git::isolated_git_command()
+        let output = crate::shared::environment_git::isolated_git_command()
             .args(arguments)
             .current_dir(root)
             .output()?;

@@ -9,7 +9,7 @@ use graduate::restack::{
 use serde_json::{json, Value};
 
 use super::plan_validation::remote_environment_ref;
-use crate::error::{CliError, MachineError};
+use crate::shared::error::{CliError, MachineError};
 
 pub(super) fn write_plan(plan: &RestackPlan) -> Result<(), CliError> {
     let value = plan_json(plan);

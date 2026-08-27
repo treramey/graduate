@@ -9,8 +9,8 @@ pub(super) fn format_table(report: &PromotionReport) -> String {
     let mut output = format!(
         "Branches in {} but not {}\n{} ahead of main; {} behind main.\n\
          {:<36} {:<10} {:<10} {:>5}  {:<12} {:<14} LAST AUTHOR\n",
-        crate::terminal_text::escape(&report.environment),
-        crate::terminal_text::escape(&report.main),
+        crate::shared::terminal_text::escape(&report.environment),
+        crate::shared::terminal_text::escape(&report.main),
         commit_count(report.inventory.ahead.len()),
         commit_count(report.inventory.behind_main.len()),
         "BRANCH",
@@ -26,7 +26,7 @@ pub(super) fn format_table(report: &PromotionReport) -> String {
     for row in &report.branches {
         // Only a Jira-validated ticket key may appear in the JIRA column.
         let key = match &row.jira {
-            JiraIssueState::Loaded(issue) => crate::terminal_text::escape(&issue.key),
+            JiraIssueState::Loaded(issue) => crate::shared::terminal_text::escape(&issue.key),
             _ => String::new(),
         };
         let status = match &row.jira {
@@ -38,13 +38,13 @@ pub(super) fn format_table(report: &PromotionReport) -> String {
         };
         output.push_str(&format!(
             "{:<36} {:<10} {:<10} {:>5}  {:<12} {:<14} {}\n",
-            crate::terminal_text::escape(&row.branch),
+            crate::shared::terminal_text::escape(&row.branch),
             row.started,
             row.last,
             row.ahead,
             key,
-            crate::terminal_text::escape(status),
-            crate::terminal_text::escape(&row.last_author)
+            crate::shared::terminal_text::escape(status),
+            crate::shared::terminal_text::escape(&row.last_author)
         ));
     }
     append_behind_commits_table(&mut output, report);
@@ -66,8 +66,8 @@ fn append_behind_commits_table(output: &mut String, report: &PromotionReport) {
     output.push_str(&format!(
         "\nCommits on {} missing from {}\n\
          {:<9} {:<10} {:<24} SUBJECT\n",
-        crate::terminal_text::escape(&report.main),
-        crate::terminal_text::escape(&report.environment),
+        crate::shared::terminal_text::escape(&report.main),
+        crate::shared::terminal_text::escape(&report.environment),
         "SHA",
         "DATE",
         "AUTHOR"
@@ -75,10 +75,10 @@ fn append_behind_commits_table(output: &mut String, report: &PromotionReport) {
     for commit in &report.inventory.behind_main {
         output.push_str(&format!(
             "{:<9} {:<10} {:<24} {}\n",
-            crate::terminal_text::escape(&commit.short_id),
+            crate::shared::terminal_text::escape(&commit.short_id),
             commit.date,
-            crate::terminal_text::escape(&commit.author),
-            crate::terminal_text::escape(&commit.subject)
+            crate::shared::terminal_text::escape(&commit.author),
+            crate::shared::terminal_text::escape(&commit.subject)
         ));
     }
 }
@@ -88,8 +88,8 @@ pub(super) fn format_age_table(report: &PromotionReport, age: &PromotionAgeRepor
         "Age of unshipped work in {} but not {} (as of {})\n\
          All {} unique environment commits; {} attribution rows.\n\
          {:<24} {:>10} {:>8}  READING\n",
-        crate::terminal_text::escape(&report.environment),
-        crate::terminal_text::escape(&report.main),
+        crate::shared::terminal_text::escape(&report.environment),
+        crate::shared::terminal_text::escape(&report.main),
         age.as_of,
         age.total_commits,
         report.branches.len(),
@@ -130,7 +130,7 @@ pub(super) fn format_age_table(report: &PromotionReport, age: &PromotionAgeRepor
         for branch in &age.oldest_branches {
             output.push_str(&format!(
                 "{:<36} {:>8}  {:<10}  {}\n",
-                crate::terminal_text::escape(&branch.branch),
+                crate::shared::terminal_text::escape(&branch.branch),
                 branch.commits,
                 branch.oldest,
                 branch.newest

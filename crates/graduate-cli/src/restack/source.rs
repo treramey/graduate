@@ -9,7 +9,7 @@ use serde_json::json;
 
 use super::errors::{reconstruction_error, validation_error};
 use super::machine_output::machine_failure;
-use crate::error::CliError;
+use crate::shared::error::CliError;
 
 pub(super) fn configured_author(source: &Path) -> Result<RestackAuthor, CliError> {
     let name = source_config(source, "user.name")?;

@@ -8,7 +8,7 @@ use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
 use super::GeneratedFile;
-use crate::error::CliError;
+use crate::shared::error::CliError;
 
 pub(super) fn validate_output_dir(current: &Path, output_dir: &Path) -> Result<PathBuf, CliError> {
     if output_dir.as_os_str().is_empty()

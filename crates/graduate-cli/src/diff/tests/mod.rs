@@ -1,8 +1,8 @@
 //! Shared fixtures and helpers.
 
 use super::*;
-use crate::environment_git::{excluded_branch, resolve_main_branch};
-use crate::git_process::fetch_status_message;
+use crate::shared::environment_git::{excluded_branch, resolve_main_branch};
+use crate::shared::git_process::fetch_status_message;
 
 mod age_tests;
 mod environment_merge_edge_cases_tests;
@@ -15,7 +15,7 @@ mod scan_tests;
 mod selection_tests;
 
 fn run_git(path: &Path, arguments: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-    let status = crate::environment_git::isolated_git_command()
+    let status = crate::shared::environment_git::isolated_git_command()
         .args(["-c", "core.fsmonitor=false"])
         .args(arguments)
         .current_dir(path)
@@ -28,7 +28,7 @@ fn run_git(path: &Path, arguments: &[&str]) -> Result<(), Box<dyn std::error::Er
 }
 
 fn commit(path: &Path, message: &str, date: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let status = crate::environment_git::isolated_git_command()
+    let status = crate::shared::environment_git::isolated_git_command()
         .args(["-c", "core.fsmonitor=false"])
         .args(["commit", "-q", "-m", message])
         .env("GIT_AUTHOR_DATE", date)

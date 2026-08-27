@@ -13,9 +13,9 @@ use super::machine_output::{machine_failure, write_abort_result, write_apply_res
 use super::plan_validation::{remote_environment_ref, revalidate_plan};
 use super::source::{source_object_directory, source_repository_identity};
 use crate::cli::RestackArgs;
-use crate::error::CliError;
-use crate::git_process;
-use crate::restack_session::{SessionHandle, SessionMetadata, SessionStatus, SessionStore};
+use crate::restack::session::{SessionHandle, SessionMetadata, SessionStatus, SessionStore};
+use crate::shared::error::CliError;
+use crate::shared::git_process;
 
 pub(super) fn resume_preview(
     args: &RestackArgs,

@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use gix::bstr::ByteSlice;
 use graduate::promotion::{jira_key_from_branch, JiraIssueState, PromotionBranch, PromotionCommit};
 
-use crate::environment_git::{gitoxide_error, reference_id, unix_date};
-use crate::error::CliError;
+use crate::shared::environment_git::{gitoxide_error, reference_id, unix_date};
+use crate::shared::error::CliError;
 
 /// Merge commits made on an environment branch's own first-parent line,
 /// keyed by commit id and valued by the environment branch name.
