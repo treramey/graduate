@@ -1,5 +1,11 @@
 # @treramey/graduate
 
+## 1.5.1
+
+### Patch Changes
+
+- fe36c88: Release a preserved restack session's lock as soon as the draft is dropped so the session can be resumed in the same process; fixes an intermittent `session_locked` failure.
+
 ## 1.5.0
 
 ### Minor Changes
