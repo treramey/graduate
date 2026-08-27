@@ -41,6 +41,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- `gd restack --resume` now reports a session saved by a different Graduate
+  release as `session_schema_mismatch` instead of an integrity failure.
 - `gd restack` no longer fails reconstruction with `stagedDiffCheck` when a
   feature branch contains trailing whitespace or similar whitespace errors.
   The isolated `git diff --check` now rejects only leftover conflict markers.
