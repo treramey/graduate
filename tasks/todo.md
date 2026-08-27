@@ -264,7 +264,7 @@ from inventory or `Esc` to cancel.
 the truth on the real repository.
 
 **Acceptance criteria:**
-- [ ] `tests/cli.rs`: a fixture environment with a feature-internal merge on
+- [x] `tests/cli.rs`: a fixture environment with a feature-internal merge on
       its spine makes `--dry-run` fail with `unsupported_history` and no
       inventory fields; a clean fixture's `--dry-run` plan has
       `schemaVersion: 2`, `inventory.mode = "history"`, empty
@@ -276,8 +276,8 @@ the truth on the real repository.
       and you intend to rewrite QA.
 
 **Verification:**
-- [ ] `cargo test --workspace --locked --test cli restack`
-- [ ] Manual check recorded
+- [x] `cargo test --locked --test cli restack`
+- [x] Manual check recorded
 
 **Dependencies:** Tasks 5–8
 **Files:** `crates/graduate-cli/tests/cli.rs`

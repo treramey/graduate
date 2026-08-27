@@ -503,9 +503,60 @@ fn restack_dry_run_defaults_to_retaining_every_feature() -> Result<(), Box<dyn E
     );
     let plan: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(plan["kind"], "restackPlan");
+    assert_eq!(plan["schemaVersion"], 2);
     assert_eq!(plan["retainedBranches"][0]["name"], "feature/a");
     assert_eq!(plan["removedBranches"], serde_json::json!([]));
+    assert_eq!(
+        plan["inventory"],
+        serde_json::json!({"mode": "history", "reason": null})
+    );
+    assert_eq!(plan["carriedBranches"], serde_json::json!([]));
+    assert_eq!(plan["orphanedCommits"], serde_json::json!([]));
+    assert_eq!(plan["effects"]["reusedResolutions"], true);
     assert_eq!(plan["effects"]["pushed"], false);
+    Ok(())
+}
+
+#[test]
+fn restack_machine_preview_never_falls_back_to_the_reachability_inventory(
+) -> Result<(), Box<dyn Error>> {
+    let fixture = RestackFixture::new()?;
+    fixture.git(&fixture.source, &["checkout", "-q", "qa"])?;
+    std::fs::write(fixture.source.join("hotfix"), "direct work\n")?;
+    fixture.git(&fixture.source, &["add", "hotfix"])?;
+    fixture.git(
+        &fixture.source,
+        &["commit", "-q", "-m", "direct hotfix on qa"],
+    )?;
+    fixture.git(&fixture.source, &["push", "-q", "origin", "qa"])?;
+    fixture.git(&fixture.source, &["checkout", "-q", "main"])?;
+
+    for arguments in [
+        vec!["restack", "qa", "--main", "main", "--dry-run"],
+        vec![
+            "restack",
+            "qa",
+            "--main",
+            "main",
+            "--params",
+            r#"{"removeBranches":[]}"#,
+        ],
+    ] {
+        let output = fixture
+            .command()?
+            .current_dir(&fixture.source)
+            .args(&arguments)
+            .env("GIT_CONFIG_GLOBAL", &fixture.global)
+            .output()?;
+        assert!(output.stdout.is_empty());
+        let error = structured_restack_error(output)?;
+        assert_eq!(error["kind"], "restackError");
+        assert_eq!(error["schemaVersion"], 2);
+        assert_eq!(error["code"], "unsupported_history");
+        assert_eq!(error["details"]["kind"], "directCommit");
+        assert!(error["details"].get("fallback").is_none());
+        assert!(error.get("inventory").is_none());
+    }
     Ok(())
 }
 

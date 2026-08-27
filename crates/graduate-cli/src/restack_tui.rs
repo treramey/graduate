@@ -230,6 +230,9 @@ fn selection_action_for_key(
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return Some(RestackInteractionAction::Cancel);
     }
+    if interaction.stage() == RestackInteractionStage::UnsupportedHistory {
+        return action_for_key(interaction.stage(), key);
+    }
     if view.filtering {
         match key.code {
             KeyCode::Esc => {
@@ -2343,6 +2346,33 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn unsupported_history_screen_routes_live_keys_by_stage() {
+        let interaction = RestackInteraction::from_inventory(inventory_snapshot(
+            UnsupportedHistory::from(InventoryError::DirectCommit {
+                commit: "stray".to_owned(),
+            }),
+        ));
+        let mut view = RestackViewState::default();
+        assert_eq!(
+            selection_action_for_key(&interaction, &mut view, KeyEvent::from(KeyCode::Char('r'))),
+            Some(RestackInteractionAction::AcceptInventoryFallback)
+        );
+        assert_eq!(
+            selection_action_for_key(&interaction, &mut view, KeyEvent::from(KeyCode::Char('/'))),
+            None
+        );
+        assert!(!view.filtering);
+        assert_eq!(
+            selection_action_for_key(&interaction, &mut view, KeyEvent::from(KeyCode::Char(' '))),
+            None
+        );
+        assert_eq!(
+            selection_action_for_key(&interaction, &mut view, KeyEvent::from(KeyCode::Esc)),
+            Some(RestackInteractionAction::Cancel)
+        );
     }
 
     #[test]
