@@ -203,7 +203,7 @@ pub(super) fn sync_directory(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> io::Result<()> {
+pub(super) fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 

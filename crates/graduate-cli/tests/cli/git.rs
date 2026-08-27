@@ -1,7 +1,9 @@
 //! Isolated Git subprocess helpers.
 
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 
 pub(crate) fn run_git(
@@ -91,6 +93,6 @@ pub(crate) fn make_executable(path: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(not(unix))]
-fn make_executable(_path: &Path) -> Result<(), Box<dyn Error>> {
+pub(crate) fn make_executable(_path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }

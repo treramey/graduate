@@ -4,7 +4,9 @@ use std::error::Error;
 
 use crate::common::{gd_command, isolate_gd_storage, structured_restack_error};
 use crate::fixture::RestackFixture;
-use crate::git::{find_git_executable, make_executable, path_text, run_git};
+#[cfg(unix)]
+use crate::git::{find_git_executable, make_executable};
+use crate::git::{path_text, run_git};
 
 #[cfg(unix)]
 #[test]

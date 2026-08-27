@@ -59,7 +59,7 @@ pub(super) fn canonical_session_root(root: PathBuf) -> Result<PathBuf, SessionEr
 }
 
 #[cfg(windows)]
-fn canonical_session_root(root: PathBuf) -> Result<PathBuf, SessionError> {
+pub(super) fn canonical_session_root(root: PathBuf) -> Result<PathBuf, SessionError> {
     Ok(root)
 }
 

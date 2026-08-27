@@ -38,7 +38,7 @@ pub(super) fn create_new_restricted_directory(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn create_new_restricted_directory(path: &Path) -> io::Result<()> {
+pub(super) fn create_new_restricted_directory(path: &Path) -> io::Result<()> {
     fs::create_dir(path)
 }
 
@@ -112,7 +112,7 @@ pub(super) fn restricted_file_metadata(metadata: &fs::Metadata) -> bool {
 }
 
 #[cfg(not(unix))]
-fn restricted_file_metadata(_metadata: &fs::Metadata) -> bool {
+pub(super) fn restricted_file_metadata(_metadata: &fs::Metadata) -> bool {
     true
 }
 
@@ -125,7 +125,7 @@ pub(super) fn restrict_directory(path: &Path) -> Result<(), SessionError> {
 }
 
 #[cfg(not(unix))]
-fn restrict_directory(_path: &Path) -> Result<(), SessionError> {
+pub(super) fn restrict_directory(_path: &Path) -> Result<(), SessionError> {
     Ok(())
 }
 
@@ -138,7 +138,7 @@ pub(super) fn restrict_file(file: &File) -> Result<(), SessionError> {
 }
 
 #[cfg(not(unix))]
-fn restrict_file(_file: &File) -> Result<(), SessionError> {
+pub(super) fn restrict_file(_file: &File) -> Result<(), SessionError> {
     Ok(())
 }
 
@@ -148,6 +148,6 @@ pub(super) fn sync_directory(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> io::Result<()> {
+pub(super) fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }

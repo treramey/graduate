@@ -7,7 +7,9 @@ use crate::common::{
     expire_session, session_token_secret, sign_session_envelope, structured_restack_error,
 };
 use crate::conflict_fixture::ConflictRestackFixture;
-use crate::git::{find_git_executable, make_executable, path_text, run_git};
+#[cfg(unix)]
+use crate::git::{find_git_executable, make_executable};
+use crate::git::{path_text, run_git};
 
 #[test]
 fn restack_resume_apply_rejects_endpoint_retargeting_without_consuming_the_session(
