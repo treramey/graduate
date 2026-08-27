@@ -51,7 +51,15 @@ gd restack qa
 ```
 
 Graduate fetches the remote, checks that it can attribute all environment-only
-work, and selects every ungraduated feature by default. Uncheck a feature to
+work, and selects every ungraduated feature by default. When the environment's
+history cannot be read (direct commits, deleted feature refs, merges that
+several branches could explain), Graduate shows the blocking commit and offers
+to rebuild from inventory instead: membership comes from remote tips reachable
+from the environment but not from main, features merge oldest tip first, past
+conflict resolutions are not reused, and every commit that no retained branch
+contains is listed as dropped before you can publish. That fallback is
+interactive only; `--dry-run` and `--params` still report
+`unsupported_history`. Uncheck a feature to
 remove it from the rebuilt environment. The checklist scrolls with the current
 selection when it is longer than the terminal, marks features required by
 another retained feature, names the blocking dependents under the selected row,
@@ -99,7 +107,7 @@ Use `gd restack qa --dry-run` without `--params` to preview the default
 selection, which retains every discovered feature. The existing `gd describe
 restack --json` spelling remains available for explicit contract discovery.
 
-After reviewing the schema-v1 `restackPlan`, pass the same removal selection
+After reviewing the schema-v2 `restackPlan`, pass the same removal selection
 and digest with the separate apply flag:
 
 ```bash
@@ -107,7 +115,7 @@ gd restack qa --params '{"removeBranches":["feature/PROJ-123"],"planDigest":"<PL
 ```
 
 Machine results go to stdout as JSON. Machine errors go to stderr as redacted
-schema-v1 `restackError` JSON. `--dry-run` and `--params` never authorize a push.
+schema-v2 `restackError` JSON. `--dry-run` and `--params` never authorize a push.
 Restack always fetches; it has no stale-ref, alternate-format, or output-file
 mode. Use `--main <branch>` or `--remote <remote>` to override discovery.
 Branch and remote inputs reject percent-encoded octets instead of interpreting
@@ -136,7 +144,7 @@ consume it. A rejected push keeps a sealed session available for a validated
 retry.
 
 Restack validates Git state, not project behavior. It checks the resolved
-index, conflict markers, whitespace errors, canonical merge parents and
+index, leftover conflict markers, canonical merge parents and
 messages, the final tree, configured Git identity, remote endpoints, and every
 reviewed ref. It does not run repository tests or builds. Every generated merge
 commit is unsigned. A remote that requires signed commits rejects the push

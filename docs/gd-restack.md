@@ -126,7 +126,7 @@ can deliberately remove selected features from the reconstructed branch.
   resolution counts, and `pushed: true`. Conflict errors add the branch,
   unresolved paths, resume token, work-area path, and expiry. Jira payloads and
   raw rerere data are excluded. Abort emits a token-free `restackAbortResult`
-  containing schema version 1, the environment name, `aborted: true`, and
+  containing schema version 2, the environment name, `aborted: true`, and
   false `sourceCheckoutChanged`, `localRefsChanged`, `remoteRefsChanged`, and
   `personalRerereChanged` effects.
 - Restack treats its operator, agent, repository, refs, commit messages, paths,
@@ -170,9 +170,24 @@ can deliberately remove selected features from the reconstructed branch.
   then performs the leased push. New committer timestamps can produce different
   merge commit OIDs during ordinary apply. Review instead binds the configured
   identity, canonical parent topology, merge order and messages, and final tree.
-- Reconstruction validation is Git-only: resolved index, no conflict markers
-  or diff-check failures, canonical merge parents/order/messages, reviewed
-  final tree, and unchanged remote inputs. Graduate runs no repository build or
+- When the history proof fails, the interactive flow offers an explicit
+  inventory fallback. It never engages on its own and the machine path does
+  not offer it. Membership is then every remote tip reachable from the
+  environment and not from main; a tip another candidate already reaches is
+  carried, not merged separately, and removing its carrier drops it too.
+  Top-level features merge oldest tip first, then by name. No historical
+  merges exist, so no conflict resolutions are reused. Every environment-only
+  non-merge commit that no retained feature reaches is listed as dropped in the
+  checklist, the review, and the confirmation, and its id is bound into the
+  plan digest. The failed proof's evidence travels with the snapshot and the
+  plan JSON (`inventory.reason`). Schema version 2 adds `inventory`,
+  `carriedBranches`, `orphanedCommits`, and `effects.reusedResolutions` to
+  `restackPlan`; persisted schema-1 sessions are rejected as mismatched.
+- Reconstruction validation is Git-only: resolved index, no leftover conflict
+  markers, canonical merge parents/order/messages, reviewed final tree, and
+  unchanged remote inputs. `git diff --check` runs with every whitespace class
+  disabled so it rejects only conflict markers; a feature's trailing whitespace
+  is its own business and a rebuild reproduces it unchanged. Graduate runs no repository build or
   test commands; agents and CI own project-specific validation.
 - An unresolved conflict turns the isolated work area into a persisted,
   resumable session. Output includes an opaque local `resumeToken` and the work
@@ -412,7 +427,7 @@ contract.
    success/cancel, and conflict handoff views. Use stderr, the shared terminal
    guard/theme, deterministic actions, and `TestBackend`; restore the terminal
    before printing a preserved conflict path.
-4. Serialize the agreed schema-v1 plan/result to stdout and machine errors to
+4. Serialize the agreed schema-v2 plan/result to stdout and machine errors to
    stderr. Return the opaque resume capability only in the documented machine
    conflict continuation field or the post-restoration interactive handoff
    command. Redact it from all other output. Always redact PATs, credential
@@ -454,6 +469,20 @@ contract.
    `skills/graduate/SKILL.md` and `docs/skills.md` changes.
 3. Add a minor changeset for `@treramey/graduate` because `restack` is a new
    user-visible command.
+
+### 9. Rebuild unreadable environments from inventory
+
+1. Add `InventoryMode`, `UnsupportedHistory`, `CarriedFeature`, and
+   `OrphanedCommit` to `graduate::restack`; keep the failed proof's graph and
+   build a reachability snapshot with `build_inventory_snapshot`; compute
+   dropped commits with `orphaned_commit_ids` and bind them and the mode into
+   the plan digest; bump the schema to 2.
+2. Start the interactive flow on an `UnsupportedHistory` stage that explains
+   the blocking commit in plain words and offers `r` to rebuild from inventory.
+3. Show the mode, carried branches, and live drop count in the checklist; list
+   dropped commits in review and state the count in the confirmation.
+4. Keep `--dry-run` and `--params` failing with `unsupported_history`; the
+   machine mode is a follow-up. Spec: `docs/specs/restack-inventory-fallback.md`.
 
 ## Investigated context
 

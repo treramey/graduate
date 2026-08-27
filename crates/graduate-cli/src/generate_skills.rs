@@ -95,7 +95,7 @@ gd restack qa --params '{"removeBranches":["feature/PROJ-123"]}' --dry-run
 Use `gd restack qa --dry-run` without `--params` to preview the default
 selection, which retains every discovered feature.
 
-Review the schema-v1 `restackPlan` from stdout, including all captured refs,
+Review the schema-v2 `restackPlan` from stdout, including all captured refs,
 retained and removed branches, merge outcomes, final tree, effects, and
 `planDigest`. Then repeat the exact removal selection and add the digest plus
 the separate apply flag:

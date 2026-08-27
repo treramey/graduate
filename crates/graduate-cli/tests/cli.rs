@@ -432,7 +432,7 @@ fn restack_preview_is_isolated_and_emits_canonical_machine_json() -> Result<(), 
     );
     let plan: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(plan["kind"], "restackPlan");
-    assert_eq!(plan["schemaVersion"], 1);
+    assert_eq!(plan["schemaVersion"], 2);
     assert_eq!(plan["author"]["name"], "Global Fixture Author");
     assert_eq!(plan["author"]["email"], "global-fixture@example.com");
     assert_eq!(plan["retainedBranches"][0]["name"], "feature/a");
@@ -503,9 +503,136 @@ fn restack_dry_run_defaults_to_retaining_every_feature() -> Result<(), Box<dyn E
     );
     let plan: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(plan["kind"], "restackPlan");
+    assert_eq!(plan["schemaVersion"], 2);
     assert_eq!(plan["retainedBranches"][0]["name"], "feature/a");
     assert_eq!(plan["removedBranches"], serde_json::json!([]));
+    assert_eq!(
+        plan["inventory"],
+        serde_json::json!({"mode": "history", "reason": null})
+    );
+    assert_eq!(plan["carriedBranches"], serde_json::json!([]));
+    assert_eq!(plan["orphanedCommits"], serde_json::json!([]));
+    assert_eq!(plan["effects"]["reusedResolutions"], true);
     assert_eq!(plan["effects"]["pushed"], false);
+    Ok(())
+}
+
+#[test]
+fn restack_reconstructs_features_whose_content_has_whitespace_errors() -> Result<(), Box<dyn Error>>
+{
+    let fixture = RestackFixture::new()?;
+    fixture.git(
+        &fixture.source,
+        &["checkout", "-q", "-b", "feature/ws", "main"],
+    )?;
+    std::fs::write(
+        fixture.source.join("sloppy.cs"),
+        "class Sloppy {   \n\tint x;  \n}\n\n\n",
+    )?;
+    fixture.git(&fixture.source, &["add", "sloppy.cs"])?;
+    fixture.git(
+        &fixture.source,
+        &["commit", "-q", "-m", "trailing whitespace"],
+    )?;
+    fixture.git(
+        &fixture.source,
+        &["push", "-q", "-u", "origin", "feature/ws"],
+    )?;
+    fixture.git(&fixture.source, &["checkout", "-q", "qa"])?;
+    fixture.git(
+        &fixture.source,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "feature/ws",
+            "-m",
+            "accepted feature ws",
+        ],
+    )?;
+    fixture.git(&fixture.source, &["push", "-q", "origin", "qa"])?;
+    fixture.git(&fixture.source, &["checkout", "-q", "main"])?;
+
+    let output = fixture.preview(&[])?;
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(plan["merges"][1]["branch"], "feature/ws");
+    assert_eq!(plan["merges"][1]["outcome"], "clean");
+    Ok(())
+}
+
+#[test]
+fn restack_resume_rejects_a_resolution_that_leaves_conflict_markers() -> Result<(), Box<dyn Error>>
+{
+    let fixture = ConflictRestackFixture::new()?;
+    fixture.advance_main()?;
+    let conflict = fixture.preview()?;
+    let error = structured_restack_error(conflict)?;
+    assert_eq!(error["code"], "reconstruction_conflict");
+    let token = error["details"]["resumeToken"]
+        .as_str()
+        .ok_or("resume token")?;
+    let work_area = PathBuf::from(error["details"]["workArea"].as_str().ok_or("work area")?);
+
+    std::fs::write(
+        work_area.join("conflict"),
+        "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature/conflict\n",
+    )?;
+    fixture.git(&work_area, &["add", "conflict"])?;
+    let output = fixture.resume(token, "qa", &fixture.source)?;
+
+    assert!(output.stdout.is_empty());
+    let error = structured_restack_error(output)?;
+    assert_eq!(error["code"], "reconstruction_failed");
+    assert_eq!(error["details"]["stage"], "stagedDiffCheck");
+    Ok(())
+}
+
+#[test]
+fn restack_machine_preview_never_falls_back_to_the_reachability_inventory(
+) -> Result<(), Box<dyn Error>> {
+    let fixture = RestackFixture::new()?;
+    fixture.git(&fixture.source, &["checkout", "-q", "qa"])?;
+    std::fs::write(fixture.source.join("hotfix"), "direct work\n")?;
+    fixture.git(&fixture.source, &["add", "hotfix"])?;
+    fixture.git(
+        &fixture.source,
+        &["commit", "-q", "-m", "direct hotfix on qa"],
+    )?;
+    fixture.git(&fixture.source, &["push", "-q", "origin", "qa"])?;
+    fixture.git(&fixture.source, &["checkout", "-q", "main"])?;
+
+    for arguments in [
+        vec!["restack", "qa", "--main", "main", "--dry-run"],
+        vec![
+            "restack",
+            "qa",
+            "--main",
+            "main",
+            "--params",
+            r#"{"removeBranches":[]}"#,
+        ],
+    ] {
+        let output = fixture
+            .command()?
+            .current_dir(&fixture.source)
+            .args(&arguments)
+            .env("GIT_CONFIG_GLOBAL", &fixture.global)
+            .output()?;
+        assert!(output.stdout.is_empty());
+        let error = structured_restack_error(output)?;
+        assert_eq!(error["kind"], "restackError");
+        assert_eq!(error["schemaVersion"], 2);
+        assert_eq!(error["code"], "unsupported_history");
+        assert_eq!(error["details"]["kind"], "directCommit");
+        assert!(error["details"].get("fallback").is_none());
+        assert!(error.get("inventory").is_none());
+    }
     Ok(())
 }
 
@@ -1010,7 +1137,7 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
     assert_eq!(invalid.status.code(), Some(2));
     let invalid_error: serde_json::Value = serde_json::from_slice(&invalid.stderr)?;
     assert_eq!(invalid_error["kind"], "restackError");
-    assert_eq!(invalid_error["schemaVersion"], 1);
+    assert_eq!(invalid_error["schemaVersion"], 2);
     assert_eq!(invalid_error["code"], "invalid_params");
 
     let non_terminal = gd_command()?

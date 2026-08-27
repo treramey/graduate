@@ -162,11 +162,11 @@ fn write_restack_schema() -> Result<(), CliError> {
             ],
             "results": {
                 "stdout": [
-                    {"kind": "restackPlan", "schemaVersion": 1},
-                    {"kind": "restackResult", "schemaVersion": 1},
-                    {"kind": "restackAbortResult", "schemaVersion": 1}
+                    {"kind": "restackPlan", "schemaVersion": 2},
+                    {"kind": "restackResult", "schemaVersion": 2},
+                    {"kind": "restackAbortResult", "schemaVersion": 2}
                 ],
-                "stderr": {"kind": "restackError", "schemaVersion": 1},
+                "stderr": {"kind": "restackError", "schemaVersion": 2},
                 "exitCodes": {"success": 0, "failure": 1, "usage": 2}
             },
             "validation": {

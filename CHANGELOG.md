@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `gd restack` can now rebuild an environment whose history cannot be read.
+  When the history proof fails, the interactive flow explains the blocking
+  commit and offers to rebuild from inventory: membership from remote tips
+  reachable from the environment but not main, oldest tip merged first, no
+  reused conflict resolutions, and every commit no retained branch contains
+  listed as dropped before publishing. The `restackPlan` schema is now version
+  2 with `inventory`, `carriedBranches`, `orphanedCommits`, and
+  `effects.reusedResolutions`; the machine path still reports
+  `unsupported_history`.
 - Added `gd schema restack` and an explicit `gd restack --dry-run` machine
   preview. A dry-run without `--params` safely retains every discovered
   feature, while `--params` can still select exact removals.
@@ -32,6 +41,11 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- `gd restack --resume` now reports a session saved by a different Graduate
+  release as `session_schema_mismatch` instead of an integrity failure.
+- `gd restack` no longer fails reconstruction with `stagedDiffCheck` when a
+  feature branch contains trailing whitespace or similar whitespace errors.
+  The isolated `git diff --check` now rejects only leftover conflict markers.
 - `gd restack` inspection no longer walks every remote branch's full history
   back to the root. Feature walks stop at commits already reachable from main
   and only the commits the reconstruction proof reads are loaded, taking a

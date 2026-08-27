@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use graduate::promotion::jira_key_from_branch;
 use graduate::restack::{
-    RestackInteraction, RestackInteractionAction, RestackInteractionEffect,
+    InventoryMode, RestackInteraction, RestackInteractionAction, RestackInteractionEffect,
     RestackInteractionStage, RestackPlan, RestackSelection, SelectionError,
 };
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -171,8 +171,15 @@ fn cancelled_text(environment: &str) -> String {
 }
 
 fn success_text(plan: &RestackPlan) -> String {
+    let inventory = match plan.snapshot.inventory_mode {
+        InventoryMode::History => String::new(),
+        InventoryMode::Reachability => format!(
+            " Rebuilt from inventory; {}.",
+            dropped_summary(plan.orphaned_commits.len())
+        ),
+    };
     format!(
-        "Restacked {}/{}: {} -> {} (tree {}); {} retained, {} omitted from the environment.",
+        "Restacked {}/{}: {} -> {} (tree {}); {} retained, {} omitted from the environment.{inventory}",
         escape(&plan.snapshot.remote),
         escape(&plan.snapshot.environment),
         short_oid(&plan.snapshot.environment_tip),
@@ -222,6 +229,9 @@ fn selection_action_for_key(
 ) -> Option<RestackInteractionAction> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return Some(RestackInteractionAction::Cancel);
+    }
+    if interaction.stage() == RestackInteractionStage::UnsupportedHistory {
+        return action_for_key(interaction.stage(), key);
     }
     if view.filtering {
         match key.code {
@@ -287,9 +297,30 @@ fn filtered_feature_indices(interaction: &RestackInteraction, filter: &str) -> V
         .features
         .iter()
         .enumerate()
-        .filter(|(_, feature)| filter.is_empty() || feature.name.to_lowercase().contains(&filter))
+        .filter(|(_, feature)| {
+            filter.is_empty()
+                || feature.name.to_lowercase().contains(&filter)
+                || carried_by(interaction, &feature.name)
+                    .any(|carried| carried.name.to_lowercase().contains(&filter))
+        })
         .map(|(index, _)| index)
         .collect()
+}
+
+/// Carried branches shown under `carrier`: the first listed carrier owns the row.
+fn carried_by<'a>(
+    interaction: &'a RestackInteraction,
+    carrier: &'a str,
+) -> impl Iterator<Item = &'a graduate::restack::CarriedFeature> + 'a {
+    interaction
+        .carried_features()
+        .iter()
+        .filter(move |carried| {
+            carried
+                .carriers
+                .first()
+                .is_some_and(|first| first == carrier)
+        })
 }
 
 fn next_action(
@@ -314,9 +345,13 @@ fn action_for_key(
     }
     match (stage, key.code) {
         (_, KeyCode::Char('q')) => Some(RestackInteractionAction::Cancel),
-        (RestackInteractionStage::Selection, KeyCode::Esc) => {
-            Some(RestackInteractionAction::Cancel)
+        (RestackInteractionStage::UnsupportedHistory, KeyCode::Char('r')) => {
+            Some(RestackInteractionAction::AcceptInventoryFallback)
         }
+        (
+            RestackInteractionStage::UnsupportedHistory | RestackInteractionStage::Selection,
+            KeyCode::Esc,
+        ) => Some(RestackInteractionAction::Cancel),
         (RestackInteractionStage::Selection, KeyCode::Up | KeyCode::Char('k')) => {
             Some(RestackInteractionAction::MoveUp)
         }
@@ -390,7 +425,7 @@ fn render(
     let content_width = frame.area().width.min(115);
     let minimum_height = match interaction.stage() {
         RestackInteractionStage::Confirmation => confirmation_minimum_height(plan, content_width),
-        RestackInteractionStage::Selection => 18,
+        RestackInteractionStage::UnsupportedHistory | RestackInteractionStage::Selection => 18,
         RestackInteractionStage::Review => 12,
     };
     if frame.area().width < 56 || frame.area().height < minimum_height {
@@ -413,6 +448,9 @@ fn render(
     .split(area);
     render_workflow_header(frame, rows[0], interaction.stage());
     view.scrollable = match interaction.stage() {
+        RestackInteractionStage::UnsupportedHistory => {
+            render_unsupported_history(frame, rows[2], interaction)
+        }
         RestackInteractionStage::Selection => {
             render_selection(frame, rows[2], interaction, rejection, view)
         }
@@ -456,7 +494,7 @@ fn render_too_small(frame: &mut Frame<'_>, area: Rect, minimum_height: u16) {
 
 fn render_workflow_header(frame: &mut Frame<'_>, area: Rect, stage: RestackInteractionStage) {
     let current = match stage {
-        RestackInteractionStage::Selection => 0,
+        RestackInteractionStage::UnsupportedHistory | RestackInteractionStage::Selection => 0,
         RestackInteractionStage::Review => 1,
         RestackInteractionStage::Confirmation => 2,
     };
@@ -496,6 +534,165 @@ fn render_workflow_header(frame: &mut Frame<'_>, area: Rect, stage: RestackInter
         Paragraph::new(Line::from(spans)),
         Rect::new(area.x, area.y.saturating_add(2), area.width, 1),
     );
+}
+
+fn render_unsupported_history(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    interaction: &RestackInteraction,
+) -> bool {
+    let text = unsupported_history_text(interaction);
+    let height = wrapped_text_height(&text, area.width);
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), area);
+    height > usize::from(area.height)
+}
+
+const EVIDENCE_LIMIT: usize = 3;
+
+fn unsupported_history_text(interaction: &RestackInteraction) -> Text<'static> {
+    let snapshot = interaction.snapshot();
+    let environment = escape(&snapshot.environment);
+    let main = escape(&snapshot.main);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("HISTORY CANNOT BE READ", Palette::warning().bold()),
+            Span::styled(
+                format!("  ·  {}/{environment}", escape(&snapshot.remote)),
+                Palette::muted(),
+            ),
+        ]),
+        Line::from(""),
+    ];
+    let Some(reason) = interaction.unsupported_history() else {
+        lines.push(Line::raw(
+            "The environment history could not be classified.",
+        ));
+        return Text::from(lines);
+    };
+    let commit = reason
+        .commit
+        .as_deref()
+        .map_or_else(|| "?".to_owned(), short_oid);
+    let feature_parent = reason
+        .feature_parent
+        .as_deref()
+        .map_or_else(|| "?".to_owned(), short_oid);
+    let (explanation, evidence_title): (Vec<String>, Option<&str>) = match reason.kind.as_str() {
+        "ambiguousFeatureRefs" => (
+            vec![
+                format!(
+                    "Merge {commit} on {environment}'s history brings in {feature_parent}, which {} branches contain.",
+                    reason.branches.len()
+                ),
+                "Restack cannot tell which one it meant.".to_owned(),
+            ],
+            Some("Branches containing that commit"),
+        ),
+        "deletedFeatureRef" => (
+            vec![
+                format!(
+                    "Merge {commit} on {environment}'s history brings in {feature_parent},"
+                ),
+                "but no remote branch contains it any more.".to_owned(),
+            ],
+            None,
+        ),
+        "directCommit" => (
+            vec![
+                format!("Commit {commit} was made directly on {environment}"),
+                "instead of being merged from a feature branch.".to_owned(),
+            ],
+            None,
+        ),
+        "fastForwardHistory" => (
+            vec![
+                format!("{environment} was fast-forwarded through {commit};"),
+                "there is no merge commit to attribute that work to.".to_owned(),
+            ],
+            Some("Branches containing that commit"),
+        ),
+        "octopusMerge" => (
+            vec![
+                format!(
+                    "Merge {commit} has {} parents;",
+                    reason.parents.unwrap_or_default()
+                ),
+                "restack only understands two-parent merges.".to_owned(),
+            ],
+            None,
+        ),
+        "missingCommit" => (
+            vec![format!(
+                "Commit {commit} is missing from the fetched history."
+            )],
+            None,
+        ),
+        other => (
+            vec![format!("The history proof failed with {}.", escape(other))],
+            None,
+        ),
+    };
+    lines.extend(
+        explanation
+            .into_iter()
+            .map(|sentence| Line::styled(sentence, Palette::text())),
+    );
+    if let Some(title) = evidence_title {
+        if !reason.branches.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::styled(title, Palette::muted().bold()));
+            lines.extend(
+                reason
+                    .branches
+                    .iter()
+                    .take(EVIDENCE_LIMIT)
+                    .map(|branch| Line::raw(format!("  •  {}", escape(branch)))),
+            );
+            if reason.branches.len() > EVIDENCE_LIMIT {
+                lines.push(Line::styled(
+                    format!(
+                        "  … and {} more",
+                        reason.branches.len().saturating_sub(EVIDENCE_LIMIT)
+                    ),
+                    Palette::muted(),
+                ));
+            }
+        }
+    }
+    let top_level = snapshot.features.len();
+    let carried = interaction.carried_features().len();
+    let dropped = interaction.orphaned_commit_count();
+    lines.extend([
+        Line::from(""),
+        Line::styled(
+            "Rebuilding from inventory instead",
+            Palette::primary().bold(),
+        ),
+        Line::raw(format!(
+            "  •  Membership: remote tips in {environment}, not in {main}. You pick."
+        )),
+        Line::raw("  •  Order: oldest branch tip first. No reused resolutions."),
+        Line::raw("  •  Commits on no kept branch are dropped; listed first."),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(format!(
+                "{top_level} top-level {} · {carried} carried · ",
+                if top_level == 1 { "branch" } else { "branches" }
+            )),
+            Span::styled(
+                format!(
+                    "{dropped} {} dropped",
+                    if dropped == 1 { "commit" } else { "commits" }
+                ),
+                if dropped == 0 {
+                    Palette::muted()
+                } else {
+                    Palette::warning()
+                },
+            ),
+        ]),
+    ]);
+    Text::from(lines)
 }
 
 fn render_selection(
@@ -546,6 +743,42 @@ fn render_selection(
         .alignment(Alignment::Right),
         Rect::new(area.x, area.y, area.width, 1),
     );
+    let inventory_mode = interaction.inventory_mode() == InventoryMode::Reachability;
+    if inventory_mode {
+        let dropped = interaction.orphaned_commit_count();
+        let dropped_text = match dropped {
+            0 => "no commits dropped".to_owned(),
+            1 => "1 commit will be dropped".to_owned(),
+            count => format!("{count} commits will be dropped"),
+        };
+        let banner = if area.width >= 100 {
+            "Inventory mode: reachability · oldest tip first · no reused resolutions"
+        } else {
+            "Inventory mode · no rerere"
+        };
+        let banner_row = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
+        let dropped_width = u16::try_from(dropped_text.chars().count()).unwrap_or(u16::MAX);
+        let banner_width = area.width.saturating_sub(dropped_width.saturating_add(2));
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                truncate_text(banner, usize::from(banner_width)),
+                Palette::primary(),
+            )),
+            Rect::new(banner_row.x, banner_row.y, banner_width, 1),
+        );
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                dropped_text,
+                if dropped == 0 {
+                    Palette::muted()
+                } else {
+                    Palette::warning()
+                },
+            ))
+            .alignment(Alignment::Right),
+            banner_row,
+        );
+    }
     let row_width = usize::from(area.width.saturating_sub(4));
     let wide_rows = area.width >= 96;
     let branch_width = if wide_rows {
@@ -553,87 +786,52 @@ fn render_selection(
     } else {
         row_width.saturating_sub(17).clamp(16, 46)
     };
-    let items = visible
+    let mut item_features = Vec::new();
+    let mut items = Vec::new();
+    for (index, feature) in visible.iter().filter_map(|index| {
+        snapshot
+            .features
+            .get(*index)
+            .map(|feature| (*index, feature))
+    }) {
+        item_features.push(Some(index));
+        items.push(feature_item(FeatureRow {
+            interaction,
+            index,
+            feature,
+            row_width,
+            wide_rows,
+            branch_width,
+        }));
+        for carried in carried_by(interaction, &feature.name) {
+            let also = carried
+                .carriers
+                .iter()
+                .skip(1)
+                .map(|carrier| escape(carrier))
+                .collect::<Vec<_>>();
+            let suffix = if also.is_empty() {
+                String::new()
+            } else {
+                format!("  (also via {})", also.join(", "))
+            };
+            item_features.push(None);
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled("      ↳ carried  ", Palette::muted()),
+                Span::styled(
+                    truncate_text(&escape(&carried.name), branch_width),
+                    Palette::muted(),
+                ),
+                Span::styled(
+                    format!("  {}{suffix}", short_oid(&carried.tip)),
+                    Palette::muted(),
+                ),
+            ])));
+        }
+    }
+    let selected = item_features
         .iter()
-        .filter_map(|index| {
-            snapshot
-                .features
-                .get(*index)
-                .map(|feature| (*index, feature))
-        })
-        .map(|(index, feature)| {
-            let retained = interaction.is_retained(index);
-            let locked = !interaction.retained_dependents(index).is_empty();
-            let keep = if retained { "✓" } else { "–" };
-            let lock = if locked { "◆" } else { " " };
-            let keep_style = if retained {
-                Palette::success()
-            } else {
-                Palette::warning()
-            };
-            let jira = jira_key_from_branch(&feature.name).unwrap_or_else(|| "—".to_owned());
-            let history = if feature.historical_merges.is_empty() {
-                "—"
-            } else {
-                "available"
-            };
-            let history_style = if feature.historical_merges.is_empty() {
-                Palette::muted()
-            } else {
-                Palette::success()
-            };
-            let branch = pad_text(
-                &truncate_text(&escape(&feature.name), branch_width),
-                branch_width,
-            );
-            let branch_style = if retained {
-                Palette::text().bold()
-            } else {
-                Palette::muted()
-            };
-            let left_meta = format!("    #{} · {}", index + 1, short_oid(&feature.tip));
-            let required = if locked { "  ◆ required" } else { "" };
-            let right_width =
-                "history: ".chars().count() + history.chars().count() + required.chars().count();
-            let gap = row_width
-                .saturating_sub(left_meta.chars().count() + right_width)
-                .max(1);
-            let first_line = Line::from(vec![
-                Span::styled(keep, keep_style.bold()),
-                Span::styled(lock, Palette::warning()),
-                Span::raw("  "),
-                Span::styled(branch.clone(), branch_style),
-                Span::styled(format!(" {jira:>12}"), Palette::muted()),
-            ]);
-            if wide_rows {
-                ListItem::new(Line::from(vec![
-                    Span::styled(keep, keep_style.bold()),
-                    Span::styled(lock, Palette::warning()),
-                    Span::raw(format!("  #{}  ", index + 1)),
-                    Span::styled(branch, branch_style),
-                    Span::styled(format!("  {}", short_oid(&feature.tip)), Palette::muted()),
-                    Span::styled(format!("  {jira:>12}"), Palette::muted()),
-                    Span::styled("  history: ", Palette::muted()),
-                    Span::styled(history, history_style),
-                    Span::styled(required, Palette::warning()),
-                ]))
-            } else {
-                ListItem::new(Text::from(vec![
-                    first_line,
-                    Line::from(vec![
-                        Span::styled(left_meta, Palette::muted()),
-                        Span::raw(" ".repeat(gap)),
-                        Span::styled("history: ", Palette::muted()),
-                        Span::styled(history, history_style),
-                        Span::styled(required, Palette::warning()),
-                    ]),
-                ]))
-            }
-        })
-        .collect::<Vec<_>>();
-    let selected = visible
-        .iter()
-        .position(|index| *index == interaction.cursor());
+        .position(|index| *index == Some(interaction.cursor()));
     view.feature_list.select(selected);
     let selected_context = selection_context(interaction, view.show_shortcuts);
     let context_height = rejection.map_or_else(
@@ -699,7 +897,100 @@ fn render_selection(
             context_height.min(area.bottom().saturating_sub(context_y)),
         ),
     );
-    visible.len().saturating_mul(if wide_rows { 1 } else { 2 }) > usize::from(list_height)
+    let carried_rows = item_features.iter().filter(|index| index.is_none()).count();
+    visible
+        .len()
+        .saturating_mul(if wide_rows { 1 } else { 2 })
+        .saturating_add(carried_rows)
+        > usize::from(list_height)
+}
+
+struct FeatureRow<'a> {
+    interaction: &'a RestackInteraction,
+    index: usize,
+    feature: &'a graduate::restack::ExplicitFeature,
+    row_width: usize,
+    wide_rows: bool,
+    branch_width: usize,
+}
+
+fn feature_item(row: FeatureRow<'_>) -> ListItem<'static> {
+    let FeatureRow {
+        interaction,
+        index,
+        feature,
+        row_width,
+        wide_rows,
+        branch_width,
+    } = row;
+
+    let retained = interaction.is_retained(index);
+    let locked = !interaction.retained_dependents(index).is_empty();
+    let keep = if retained { "✓" } else { "–" };
+    let lock = if locked { "◆" } else { " " };
+    let keep_style = if retained {
+        Palette::success()
+    } else {
+        Palette::warning()
+    };
+    let jira = jira_key_from_branch(&feature.name).unwrap_or_else(|| "—".to_owned());
+    let history = if feature.historical_merges.is_empty() {
+        "—"
+    } else {
+        "available"
+    };
+    let history_style = if feature.historical_merges.is_empty() {
+        Palette::muted()
+    } else {
+        Palette::success()
+    };
+    let branch = pad_text(
+        &truncate_text(&escape(&feature.name), branch_width),
+        branch_width,
+    );
+    let branch_style = if retained {
+        Palette::text().bold()
+    } else {
+        Palette::muted()
+    };
+    let left_meta = format!("    #{} · {}", index + 1, short_oid(&feature.tip));
+    let required = if locked { "  ◆ required" } else { "" };
+    let right_width =
+        "history: ".chars().count() + history.chars().count() + required.chars().count();
+    let gap = row_width
+        .saturating_sub(left_meta.chars().count() + right_width)
+        .max(1);
+    let first_line = Line::from(vec![
+        Span::styled(keep, keep_style.bold()),
+        Span::styled(lock, Palette::warning()),
+        Span::raw("  "),
+        Span::styled(branch.clone(), branch_style),
+        Span::styled(format!(" {jira:>12}"), Palette::muted()),
+    ]);
+    if wide_rows {
+        ListItem::new(Line::from(vec![
+            Span::styled(keep, keep_style.bold()),
+            Span::styled(lock, Palette::warning()),
+            Span::raw(format!("  #{}  ", index + 1)),
+            Span::styled(branch, branch_style),
+            Span::styled(format!("  {}", short_oid(&feature.tip)), Palette::muted()),
+            Span::styled(format!("  {jira:>12}"), Palette::muted()),
+            Span::styled("  history: ", Palette::muted()),
+            Span::styled(history, history_style),
+            Span::styled(required, Palette::warning()),
+        ]))
+    } else {
+        ListItem::new(Text::from(vec![
+            first_line,
+            Line::from(vec![
+                Span::styled(left_meta, Palette::muted()),
+                Span::raw(" ".repeat(gap)),
+                Span::styled("history: ", Palette::muted()),
+                Span::styled(history, history_style),
+                Span::styled(required, Palette::warning()),
+            ]),
+        ]))
+    }
 }
 
 fn selection_context(interaction: &RestackInteraction, show_shortcuts: bool) -> String {
@@ -717,6 +1008,9 @@ fn selection_context(interaction: &RestackInteraction, show_shortcuts: bool) -> 
     if show_shortcuts {
         return "Shortcuts: a keep all · x remove all · Home/End first/last · PgUp/PgDn page · q/Ctrl-C cancel"
             .to_owned();
+    }
+    if interaction.inventory_mode() == InventoryMode::Reachability {
+        return "✓ retained · – removed · ◆ dependency · ↳ carried".to_owned();
     }
     "✓ retained · – removed · ◆ retained dependency · history = reusable resolution".to_owned()
 }
@@ -790,6 +1084,18 @@ fn review_text(plan: &RestackPlan, show_details: bool) -> Text<'static> {
             )),
         ]),
     ];
+    if plan.snapshot.inventory_mode == InventoryMode::Reachability {
+        lines.push(Line::from(vec![
+            Span::styled("Inventory       ", Palette::muted()),
+            Span::styled(
+                format!(
+                    "reachability · oldest tip first · resolutions not reused · {}",
+                    dropped_summary(plan.orphaned_commits.len())
+                ),
+                Palette::warning(),
+            ),
+        ]));
+    }
     if !plan.selection.removed.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::styled(
@@ -847,7 +1153,11 @@ fn review_text(plan: &RestackPlan, show_details: bool) -> Text<'static> {
         Line::from(""),
         Line::styled("Retained merge order", Palette::primary().bold()),
         Line::styled(
-            "Selected feature tips are rebuilt in this order.",
+            if plan.snapshot.inventory_mode == InventoryMode::Reachability {
+                "Selected feature tips are rebuilt oldest tip first, then by name."
+            } else {
+                "Selected feature tips are rebuilt in this order."
+            },
             Palette::muted(),
         ),
         Line::styled(
@@ -891,6 +1201,37 @@ fn review_text(plan: &RestackPlan, show_details: bool) -> Text<'static> {
                     ])
                 }),
         );
+    }
+    if !plan.orphaned_commits.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!("Dropped commits ({})", plan.orphaned_commits.len()),
+            Palette::warning().bold(),
+        ));
+        lines.push(Line::styled(
+            "On no retained branch; they will not be in the rebuilt environment.",
+            Palette::muted(),
+        ));
+        lines.extend(plan.orphaned_commits.iter().map(|commit| {
+            Line::from(vec![
+                Span::styled(
+                    format!(
+                        "  {}  {}  ",
+                        short_oid(&commit.commit),
+                        escape(&commit.date)
+                    ),
+                    Palette::warning(),
+                ),
+                Span::styled(
+                    format!(
+                        "{}  ",
+                        pad_text(&truncate_text(&escape(&commit.author), 14), 14)
+                    ),
+                    Palette::muted(),
+                ),
+                Span::raw(truncate_text(&escape(&commit.subject), 48)),
+            ])
+        }));
     }
     if show_details {
         lines.push(Line::from(""));
@@ -978,7 +1319,36 @@ fn technical_detail_lines(plan: &RestackPlan) -> Vec<Line<'static>> {
                 plan.snapshot.dropped_markers.len()
             )),
         ]),
+        Line::from(vec![
+            Span::styled("Inventory       ", Palette::muted()),
+            Span::raw(match &plan.snapshot.unsupported_history {
+                None => "history proof; every commit attributed".to_owned(),
+                Some(reason) => format!(
+                    "reachability; history proof failed with {} at {}",
+                    escape(&reason.kind),
+                    reason
+                        .commit
+                        .as_deref()
+                        .map_or_else(|| "?".to_owned(), short_oid)
+                ),
+            }),
+        ]),
+        Line::from(vec![
+            Span::styled("Carried         ", Palette::muted()),
+            Span::raw(format!(
+                "{} branch(es) reached by a retained tip",
+                plan.snapshot.carried_features.len()
+            )),
+        ]),
     ]
+}
+
+fn dropped_summary(count: usize) -> String {
+    match count {
+        0 => "no commits dropped".to_owned(),
+        1 => "1 commit dropped".to_owned(),
+        count => format!("{count} commits dropped"),
+    }
 }
 
 fn resolution_summary(plan: &RestackPlan) -> String {
@@ -1081,6 +1451,17 @@ fn confirmation_text(plan: Option<&RestackPlan>) -> Text<'static> {
                     )),
                 ]),
             ];
+            let dropped = plan.orphaned_commits.len();
+            if dropped > 0 {
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    format!(
+                        "Drops {dropped} {} that no retained branch contains.",
+                        if dropped == 1 { "commit" } else { "commits" }
+                    ),
+                    Palette::warning().bold(),
+                ));
+            }
             if removed > 0 {
                 lines.push(Line::from(""));
                 lines.push(Line::styled(
@@ -1158,6 +1539,10 @@ fn render_footer(
     }
     let mut controls = Vec::new();
     match stage {
+        RestackInteractionStage::UnsupportedHistory => {
+            controls.extend(control("r", "Rebuild from inventory", true));
+            controls.extend(control("Esc", "Cancel", false));
+        }
         RestackInteractionStage::Selection => {
             controls.extend(control("Enter", "Review", true));
             controls.extend(control("Space", "Toggle", false));
@@ -1200,7 +1585,9 @@ const fn footer_height(stage: RestackInteractionStage, width: u16) -> u16 {
         RestackInteractionStage::Selection => 1,
         RestackInteractionStage::Review if width < 72 => 3,
         RestackInteractionStage::Review if width < 96 => 2,
-        RestackInteractionStage::Review | RestackInteractionStage::Confirmation => 1,
+        RestackInteractionStage::UnsupportedHistory
+        | RestackInteractionStage::Review
+        | RestackInteractionStage::Confirmation => 1,
     }
 }
 
@@ -1265,8 +1652,10 @@ fn short_oid(oid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use graduate::restack::{
-        build_plan, AttributedCommit, BranchIdentity, ExplicitFeature, HistoricalMerge,
-        MergeOutcome, MergeResolution, RemoteEndpointIdentity, RestackAuthor, RestackSnapshot,
+        build_inventory_snapshot, build_plan, AttributedCommit, BranchIdentity, ExplicitFeature,
+        FeatureRef, GraphCommit, HistoricalMerge, InventoryError, InventoryMode, MergeOutcome,
+        MergeResolution, OrphanedCommit, Reconstruction, RemoteEndpointIdentity, RestackAuthor,
+        RestackGraph, RestackSelection, RestackSnapshot, UnsupportedHistory,
     };
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1577,10 +1966,11 @@ mod tests {
         assert!(details.contains("sha256:ffffffff"));
         assert!(details.contains("unsigned canonical merge commits"));
         assert!(details.contains("0 exact phase marker(s)"));
-        for _ in 0..20 {
+        assert!(details.contains("history proof; every commit attributed"));
+        for _ in 0..22 {
             let _ = interaction.update(RestackInteractionAction::MoveDown);
         }
-        let identities = rendered(&interaction, Some(&plan), None)?;
+        let identities = rendered_at(&interaction, Some(&plan), None, 115, 40)?;
         assert!(identities.contains("Exact feature identities"));
         assert!(identities.contains("retained  feature/PROJ-12-one @ aaaaaaaaaa"));
         assert!(identities.contains("removed   feature/two @ bbbbbbbbbb"));
@@ -1880,6 +2270,436 @@ mod tests {
         Ok(terminal.backend().to_string())
     }
 
+    #[test]
+    fn unsupported_history_screen_explains_every_reason_and_fits_the_minimum_size(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let reasons = [
+            (
+                InventoryError::AmbiguousFeatureRefs {
+                    merge_commit: "886faef4b24230540b9a5d8ae057a233a7dd0126".to_owned(),
+                    feature_parent: "0bbff862c139d704a3c6431d9fa7f16c55c1aa5a".to_owned(),
+                    branches: (1..=17).map(|n| format!("HPM-{n}")).collect(),
+                },
+                vec![
+                    "brings in 0bbff86, which 17",
+                    "cannot tell which one it meant",
+                    "HPM-3",
+                    "and 14 more",
+                ],
+            ),
+            (
+                InventoryError::DeletedFeatureRef {
+                    merge_commit: "a".repeat(40),
+                    feature_parent: "b".repeat(40),
+                },
+                vec!["no remote branch contains it any more"],
+            ),
+            (
+                InventoryError::DirectCommit {
+                    commit: "c".repeat(40),
+                },
+                vec!["was made directly on qa"],
+            ),
+            (
+                InventoryError::FastForwardHistory {
+                    commit: "d".repeat(40),
+                    branches: vec!["feature/ff".to_owned()],
+                },
+                vec!["fast-forwarded through ddddddd", "feature/ff"],
+            ),
+            (
+                InventoryError::OctopusMerge {
+                    merge_commit: "e".repeat(40),
+                    parents: 3,
+                },
+                vec!["has 3 parents"],
+            ),
+            (
+                InventoryError::MissingCommit {
+                    commit: "f".repeat(40),
+                },
+                vec!["is missing from the fetched history"],
+            ),
+        ];
+        for (error, expectations) in reasons {
+            let interaction = RestackInteraction::from_inventory(inventory_snapshot(error.into()));
+            for (width, height) in [(60, 24), (100, 30)] {
+                let rendered = rendered_at(&interaction, None, None, width, height)?;
+                assert!(
+                    rendered.contains("HISTORY CANNOT BE READ"),
+                    "{width}x{height}: {rendered}"
+                );
+                for expectation in &expectations {
+                    assert!(
+                        rendered.contains(expectation),
+                        "{width}x{height} missing {expectation:?}:\n{rendered}"
+                    );
+                }
+                assert!(rendered.contains("Rebuilding from inventory instead"));
+                assert!(rendered.contains("Membership: remote tips in qa, not in main. You pick."));
+                assert!(rendered.contains("No reused resolutions"));
+                assert!(rendered.contains("dropped; listed first"));
+                assert!(rendered.contains("1 top-level branch · 1 carried · 1 commit dropped"));
+                assert!(rendered.contains("Rebuild from inventory"));
+                assert!(rendered.contains("Cancel"));
+                assert!(!rendered.contains("SELECT FEATURES"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_history_screen_routes_live_keys_by_stage() {
+        let interaction = RestackInteraction::from_inventory(inventory_snapshot(
+            UnsupportedHistory::from(InventoryError::DirectCommit {
+                commit: "stray".to_owned(),
+            }),
+        ));
+        let mut view = RestackViewState::default();
+        assert_eq!(
+            selection_action_for_key(&interaction, &mut view, KeyEvent::from(KeyCode::Char('r'))),
+            Some(RestackInteractionAction::AcceptInventoryFallback)
+        );
+        assert_eq!(
+            selection_action_for_key(&interaction, &mut view, KeyEvent::from(KeyCode::Char('/'))),
+            None
+        );
+        assert!(!view.filtering);
+        assert_eq!(
+            selection_action_for_key(&interaction, &mut view, KeyEvent::from(KeyCode::Char(' '))),
+            None
+        );
+        assert_eq!(
+            selection_action_for_key(&interaction, &mut view, KeyEvent::from(KeyCode::Esc)),
+            Some(RestackInteractionAction::Cancel)
+        );
+    }
+
+    #[test]
+    fn unsupported_history_keys_accept_the_fallback_or_cancel() {
+        let stage = RestackInteractionStage::UnsupportedHistory;
+        assert_eq!(
+            action_for_key(stage, KeyEvent::from(KeyCode::Char('r'))),
+            Some(RestackInteractionAction::AcceptInventoryFallback)
+        );
+        assert_eq!(
+            action_for_key(stage, KeyEvent::from(KeyCode::Esc)),
+            Some(RestackInteractionAction::Cancel)
+        );
+        assert_eq!(
+            action_for_key(stage, KeyEvent::from(KeyCode::Char('q'))),
+            Some(RestackInteractionAction::Cancel)
+        );
+        assert_eq!(action_for_key(stage, KeyEvent::from(KeyCode::Enter)), None);
+        assert_eq!(
+            action_for_key(stage, KeyEvent::from(KeyCode::Char(' '))),
+            None
+        );
+        assert_eq!(
+            action_for_key(
+                RestackInteractionStage::Selection,
+                KeyEvent::from(KeyCode::Char('r'))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn inventory_checklist_shows_the_banner_carried_rows_and_drop_count(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut interaction = RestackInteraction::from_inventory(inventory_snapshot(
+            UnsupportedHistory::from(InventoryError::DirectCommit {
+                commit: "stray".to_owned(),
+            }),
+        ));
+        let _ = interaction.update(RestackInteractionAction::AcceptInventoryFallback);
+
+        let narrow = rendered_at(&interaction, None, None, 60, 24)?;
+        assert!(narrow.contains("Inventory mode · no rerere"));
+        assert!(narrow.contains("1 commit will be dropped"));
+        assert!(narrow.contains("feature/two"));
+        assert!(narrow.contains("↳ carried  feature/PROJ-12-one"));
+        assert!(narrow.contains("◆ dependency · ↳ carried"), "{narrow}");
+
+        let wide = rendered_at(&interaction, None, None, 120, 30)?;
+        assert!(wide
+            .contains("Inventory mode: reachability · oldest tip first · no reused resolutions"));
+
+        let _ = interaction.update(RestackInteractionAction::RemoveAll);
+        let removed = rendered_at(&interaction, None, None, 60, 24)?;
+        assert!(removed.contains("3 commits will be dropped"));
+        assert!(removed.contains("0 retained · 1 removed"));
+
+        let history = RestackInteraction::new(snapshot());
+        let plain = rendered_at(&history, None, None, 60, 24)?;
+        assert!(!plain.contains("Inventory mode"));
+        assert!(!plain.contains("dropped"));
+        assert!(!plain.contains("carried"));
+        Ok(())
+    }
+
+    #[test]
+    fn inventory_checklist_lists_every_carried_branch_under_its_top_level_merge(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let ids = |values: &[&str]| -> std::collections::BTreeSet<String> {
+            values.iter().map(ToString::to_string).collect()
+        };
+        let mut commits = std::collections::BTreeMap::new();
+        for (id, parents) in [
+            ("base", vec![]),
+            ("a", vec!["base"]),
+            ("b", vec!["a"]),
+            ("c", vec!["b"]),
+        ] {
+            commits.insert(
+                id.to_owned(),
+                GraphCommit {
+                    id: id.to_owned(),
+                    tree: format!("tree-{id}"),
+                    parents: parents.into_iter().map(str::to_owned).collect(),
+                    message: id.to_owned(),
+                },
+            );
+        }
+        let graph = RestackGraph {
+            remote: "origin".to_owned(),
+            environment: "qa".to_owned(),
+            environment_ref: "refs/remotes/origin/qa".to_owned(),
+            environment_tip: "c".to_owned(),
+            main: "main".to_owned(),
+            main_ref: "refs/remotes/origin/main".to_owned(),
+            main_tip: "base".to_owned(),
+            environment_ancestors: ids(&["base", "a", "b", "c"]),
+            main_ancestors: ids(&["base"]),
+            feature_refs: vec![
+                FeatureRef {
+                    name: "feature/inner".to_owned(),
+                    tip: "a".to_owned(),
+                    ancestors: ids(&["a"]),
+                },
+                FeatureRef {
+                    name: "feature/middle".to_owned(),
+                    tip: "b".to_owned(),
+                    ancestors: ids(&["a", "b"]),
+                },
+                FeatureRef {
+                    name: "feature/outer".to_owned(),
+                    tip: "c".to_owned(),
+                    ancestors: ids(&["a", "b", "c"]),
+                },
+            ],
+            commits,
+        };
+        let snapshot = build_inventory_snapshot(
+            &graph,
+            UnsupportedHistory::from(InventoryError::DirectCommit {
+                commit: "c".to_owned(),
+            }),
+            &std::collections::BTreeMap::new(),
+        );
+        let mut interaction = RestackInteraction::from_inventory(snapshot);
+        let _ = interaction.update(RestackInteractionAction::AcceptInventoryFallback);
+
+        let rendered = rendered_at(&interaction, None, None, 100, 30)?;
+        assert!(rendered.contains("feature/outer"), "{rendered}");
+        assert!(rendered.contains("↳ carried  feature/inner"), "{rendered}");
+        assert!(rendered.contains("↳ carried  feature/middle"), "{rendered}");
+        assert!(!rendered.contains("also via"), "{rendered}");
+        assert_eq!(filtered_feature_indices(&interaction, "inner"), vec![0]);
+        Ok(())
+    }
+
+    #[test]
+    fn inventory_filter_matches_carried_branches_through_their_carrier() {
+        let mut interaction = RestackInteraction::from_inventory(inventory_snapshot(
+            UnsupportedHistory::from(InventoryError::DirectCommit {
+                commit: "stray".to_owned(),
+            }),
+        ));
+        let _ = interaction.update(RestackInteractionAction::AcceptInventoryFallback);
+        assert_eq!(filtered_feature_indices(&interaction, "proj-12"), vec![0]);
+        assert_eq!(
+            filtered_feature_indices(&interaction, "nothing"),
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn inventory_review_lists_dropped_commits_and_confirmation_states_the_loss(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for orphan_count in [0_usize, 1, 200] {
+            let (interaction, plan) = inventory_plan(orphan_count)?;
+            let mut review = interaction.clone();
+            review.review_ready();
+            for (width, height) in [(60, 24), (120, 40)] {
+                let rendered = rendered_at(&review, Some(&plan), None, width, height)?;
+                assert!(rendered.contains("RESTACK REVIEW"), "{rendered}");
+                assert!(
+                    rendered.contains("oldest tip first"),
+                    "{width}x{height}: {rendered}"
+                );
+                if orphan_count == 0 {
+                    assert!(rendered.contains("no commits dropped"), "{rendered}");
+                    assert!(!rendered.contains("Dropped commits ("));
+                } else {
+                    assert!(
+                        rendered.contains(&format!("{orphan_count} commit")),
+                        "{rendered}"
+                    );
+                }
+            }
+            if orphan_count > 0 {
+                let tall = rendered_at(&review, Some(&plan), None, 120, 60)?;
+                if orphan_count == 1 {
+                    assert!(tall.contains("Dropped commits (1)"), "{tall}");
+                    assert!(tall.contains("orphan-  2026-01-02  Pat"), "{tall}");
+                    assert!(tall.contains("lost work 0"), "{tall}");
+                } else {
+                    assert!(tall.contains("Dropped commits (200)"), "{tall}");
+                }
+            }
+            let mut details = review.clone();
+            let _ = details.update(RestackInteractionAction::ToggleDetails);
+            let detailed = rendered_at(&details, Some(&plan), None, 120, 60)?;
+            assert!(
+                detailed.contains("history proof failed with directCommit"),
+                "{detailed}"
+            );
+            assert!(detailed.contains("1 branch(es) reached by a retained tip"));
+
+            let mut confirmation = review.clone();
+            let _ = confirmation.update(RestackInteractionAction::Continue);
+            let rendered = rendered_at(&confirmation, Some(&plan), None, 60, 30)?;
+            match orphan_count {
+                0 => assert!(!rendered.contains("Drops "), "{rendered}"),
+                1 => assert!(
+                    rendered.contains("Drops 1 commit that no retained branch"),
+                    "{rendered}"
+                ),
+                _ => assert!(
+                    rendered.contains("Drops 200 commits that no retained branch"),
+                    "{rendered}"
+                ),
+            }
+            assert!(rendered.contains("Ctrl+Y"), "{rendered}");
+
+            let text = success_text(&plan);
+            assert!(text.contains("Rebuilt from inventory"), "{text}");
+            if orphan_count == 1 {
+                assert!(text.ends_with("1 commit dropped."), "{text}");
+            }
+        }
+        let history = plan()?;
+        assert!(!success_text(&history).contains("inventory"));
+        let mut review = RestackInteraction::new(snapshot());
+        review.review_ready();
+        let rendered = rendered_at(&review, Some(&history), None, 120, 40)?;
+        assert!(!rendered.contains("Dropped commits"));
+        assert!(!rendered.contains("oldest tip first"));
+        Ok(())
+    }
+
+    fn inventory_plan(
+        orphan_count: usize,
+    ) -> Result<(RestackInteraction, RestackPlan), Box<dyn std::error::Error>> {
+        let mut snapshot =
+            inventory_snapshot(UnsupportedHistory::from(InventoryError::DirectCommit {
+                commit: "stray".to_owned(),
+            }));
+        snapshot.unattributed_commits = (0..orphan_count).map(|n| format!("orphan-{n}")).collect();
+        let orphans = (0..orphan_count)
+            .map(|n| OrphanedCommit {
+                commit: format!("orphan-{n}"),
+                subject: format!("lost work {n}"),
+                author: "Pat".to_owned(),
+                date: "2026-01-02".to_owned(),
+            })
+            .collect();
+        let mut interaction = RestackInteraction::from_inventory(snapshot.clone());
+        let _ = interaction.update(RestackInteractionAction::AcceptInventoryFallback);
+        let selection = RestackSelection {
+            retained: vec![BranchIdentity {
+                name: "feature/two".to_owned(),
+                tip: "b".to_owned(),
+            }],
+            removed: Vec::new(),
+        };
+        let plan = build_plan(
+            snapshot,
+            RemoteEndpointIdentity {
+                fetch_sha256: "f".repeat(64),
+                push_sha256: "p".repeat(64),
+            },
+            RestackAuthor {
+                name: "Pat".to_owned(),
+                email: "pat@example.com".to_owned(),
+            },
+            selection,
+            Reconstruction {
+                merges: vec![MergeOutcome {
+                    branch: "feature/two".to_owned(),
+                    tip: "b".to_owned(),
+                    commit: "preview".to_owned(),
+                    tree: "tree-tip".to_owned(),
+                    resolution: MergeResolution::Clean,
+                }],
+                final_tree: "tree-tip".to_owned(),
+                preview_commit: "preview".to_owned(),
+            },
+            orphans,
+        )?;
+        Ok((interaction, plan))
+    }
+
+    /// Reachability snapshot: feature/b carries feature/a; `stray` is dropped.
+    fn inventory_snapshot(reason: UnsupportedHistory) -> RestackSnapshot {
+        let ids = |values: &[&str]| -> std::collections::BTreeSet<String> {
+            values.iter().map(ToString::to_string).collect()
+        };
+        let mut commits = std::collections::BTreeMap::new();
+        for (id, parents) in [
+            ("base", vec![]),
+            ("a", vec!["base"]),
+            ("b", vec!["a"]),
+            ("stray", vec!["b"]),
+        ] {
+            commits.insert(
+                id.to_owned(),
+                GraphCommit {
+                    id: id.to_owned(),
+                    tree: format!("tree-{id}"),
+                    parents: parents.into_iter().map(str::to_owned).collect(),
+                    message: id.to_owned(),
+                },
+            );
+        }
+        let graph = RestackGraph {
+            remote: "origin".to_owned(),
+            environment: "qa".to_owned(),
+            environment_ref: "refs/remotes/origin/qa".to_owned(),
+            environment_tip: "stray".to_owned(),
+            main: "main".to_owned(),
+            main_ref: "refs/remotes/origin/main".to_owned(),
+            main_tip: "base".to_owned(),
+            environment_ancestors: ids(&["base", "a", "b", "stray"]),
+            main_ancestors: ids(&["base"]),
+            feature_refs: vec![
+                FeatureRef {
+                    name: "feature/PROJ-12-one".to_owned(),
+                    tip: "a".to_owned(),
+                    ancestors: ids(&["a"]),
+                },
+                FeatureRef {
+                    name: "feature/two".to_owned(),
+                    tip: "b".to_owned(),
+                    ancestors: ids(&["a", "b"]),
+                },
+            ],
+            commits,
+        };
+        build_inventory_snapshot(&graph, reason, &std::collections::BTreeMap::new())
+    }
+
     fn plan() -> Result<RestackPlan, Box<dyn std::error::Error>> {
         Ok(build_plan(
             snapshot(),
@@ -1901,15 +2721,18 @@ mod tests {
                     tip: "b".repeat(40),
                 }],
             },
-            vec![MergeOutcome {
-                branch: "feature/PROJ-12-one".to_owned(),
-                tip: "a".repeat(40),
-                commit: "preview".to_owned(),
-                tree: "tree-tip".to_owned(),
-                resolution: MergeResolution::Clean,
-            }],
-            "tree-tip".to_owned(),
-            "preview".to_owned(),
+            Reconstruction {
+                merges: vec![MergeOutcome {
+                    branch: "feature/PROJ-12-one".to_owned(),
+                    tip: "a".repeat(40),
+                    commit: "preview".to_owned(),
+                    tree: "tree-tip".to_owned(),
+                    resolution: MergeResolution::Clean,
+                }],
+                final_tree: "tree-tip".to_owned(),
+                preview_commit: "preview".to_owned(),
+            },
+            Vec::new(),
         )?)
     }
 
@@ -1946,6 +2769,10 @@ mod tests {
                 commit: "shared".to_owned(),
                 branches: vec!["feature/PROJ-12-one".to_owned(), "feature/two".to_owned()],
             }],
+            inventory_mode: InventoryMode::History,
+            unsupported_history: None,
+            carried_features: Vec::new(),
+            unattributed_commits: Vec::new(),
         }
     }
 }

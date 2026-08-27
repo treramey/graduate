@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use graduate::restack::{
-    MergeOutcome, RemoteEndpointIdentity, RestackAuthor, RestackSelection, RestackSnapshot,
-    RESTACK_SCHEMA_VERSION,
+    MergeOutcome, OrphanedCommit, RemoteEndpointIdentity, RestackAuthor, RestackSelection,
+    RestackSnapshot, RESTACK_SCHEMA_VERSION,
 };
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,7 @@ pub(crate) struct SessionMetadata {
     pub(crate) remote_endpoints: RemoteEndpointIdentity,
     pub(crate) author: RestackAuthor,
     pub(crate) selection: RestackSelection,
+    pub(crate) orphaned_commits: Vec<OrphanedCommit>,
     pub(crate) merges: Vec<MergeOutcome>,
     pub(crate) next_feature: usize,
     pub(crate) expected_head: String,
@@ -69,6 +70,7 @@ impl SessionMetadata {
         remote_endpoints: RemoteEndpointIdentity,
         author: RestackAuthor,
         selection: RestackSelection,
+        orphaned_commits: Vec<OrphanedCommit>,
         conflict: SessionConflict,
     ) -> Result<Self, SessionError> {
         let now = now()?;
@@ -79,6 +81,7 @@ impl SessionMetadata {
             remote_endpoints,
             author,
             selection,
+            orphaned_commits,
             merges: conflict.merges,
             next_feature: conflict.next_feature,
             expected_head: conflict.expected_head,
@@ -106,7 +109,7 @@ impl SessionMetadata {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SessionError {
     Unavailable,
     InvalidToken,
@@ -114,6 +117,11 @@ pub(crate) enum SessionError {
     Locked,
     Tampered,
     Expired,
+    /// The session was written by a Graduate release with a different restack schema.
+    SchemaMismatch {
+        found: u64,
+        expected: u8,
+    },
 }
 
 pub(crate) struct SessionStore {
@@ -124,7 +132,11 @@ pub(crate) struct SessionStore {
 impl SessionStore {
     pub(crate) fn open() -> Result<Self, SessionError> {
         let cache = dirs::cache_dir().ok_or(SessionError::Unavailable)?;
-        let root = cache.join("graduate").join("restack").join("sessions");
+        Self::open_root(cache.join("graduate").join("restack").join("sessions"))
+    }
+
+    /// Open or create a session store rooted at `root`.
+    pub(crate) fn open_root(root: PathBuf) -> Result<Self, SessionError> {
         create_restricted_directory(&root)?;
         let root = canonical_session_root(root)?;
         if root.to_str().is_none() {
@@ -487,11 +499,21 @@ fn read_metadata(
         return Err(SessionError::Tampered);
     }
     let contents = fs::read(path).map_err(|_| SessionError::Unavailable)?;
-    let envelope: SessionEnvelope =
+    // Older schemas lack fields the typed envelope requires, so check the
+    // version before typed deserialization or a mismatch reads as tampering.
+    let untyped: serde_json::Value =
         serde_json::from_slice(&contents).map_err(|_| SessionError::Tampered)?;
-    if envelope.metadata.schema_version != RESTACK_SCHEMA_VERSION {
-        return Err(SessionError::Tampered);
+    let found = untyped["metadata"]["schemaVersion"]
+        .as_u64()
+        .ok_or(SessionError::Tampered)?;
+    if found != u64::from(RESTACK_SCHEMA_VERSION) {
+        return Err(SessionError::SchemaMismatch {
+            found,
+            expected: RESTACK_SCHEMA_VERSION,
+        });
     }
+    let envelope: SessionEnvelope =
+        serde_json::from_value(untyped).map_err(|_| SessionError::Tampered)?;
     if envelope.capability != capability_digest(secret) {
         return Err(SessionError::InvalidToken);
     }

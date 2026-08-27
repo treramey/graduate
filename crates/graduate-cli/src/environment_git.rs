@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use gix::bstr::ByteSlice;
 use graduate::promotion::{EnvironmentInventory, PromotionCommit};
 use graduate::restack::{
-    build_snapshot, FeatureRef, GraphCommit, InventoryError, RestackGraph, RestackSnapshot,
+    build_snapshot, FeatureRef, GraphCommit, InventoryError, OrphanedCommit, RestackGraph,
+    RestackSnapshot,
 };
 use thiserror::Error;
 
@@ -31,8 +32,13 @@ pub(crate) struct EnvironmentInspection {
 pub(crate) enum RestackInspectionError {
     #[error("{0}")]
     Git(String),
-    #[error(transparent)]
-    Unsupported(#[from] InventoryError),
+    /// The history proof failed; the captured graph survives for the
+    /// reachability fallback.
+    #[error("{error}")]
+    Unsupported {
+        error: InventoryError,
+        graph: Box<RestackGraph>,
+    },
 }
 
 pub(crate) fn inspect_environment(
@@ -168,7 +174,78 @@ pub(crate) fn restack_snapshot(
         feature_refs,
         commits,
     };
-    build_snapshot(&graph).map_err(RestackInspectionError::from)
+    match build_snapshot(&graph) {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) => Err(RestackInspectionError::Unsupported {
+            error,
+            graph: Box::new(graph),
+        }),
+    }
+}
+
+/// Author timestamps for every remote tip the environment holds but main does not.
+pub(crate) fn tip_timestamps(
+    repository: &gix::Repository,
+    graph: &RestackGraph,
+) -> Result<BTreeMap<String, i64>, CliError> {
+    let mut timestamps = BTreeMap::new();
+    for feature in &graph.feature_refs {
+        if !graph.environment_ancestors.contains(&feature.tip)
+            || graph.main_ancestors.contains(&feature.tip)
+            || timestamps.contains_key(&feature.tip)
+        {
+            continue;
+        }
+        let commit = find_commit_by_hex(repository, &feature.tip)?;
+        let seconds = commit
+            .author()
+            .map_err(gitoxide_error)?
+            .time()
+            .map_err(gitoxide_error)?
+            .seconds;
+        timestamps.insert(feature.tip.clone(), seconds);
+    }
+    Ok(timestamps)
+}
+
+/// Subject, author, and date rows for commits a rebuild may drop.
+pub(crate) fn commit_rows<'a>(
+    repository: &gix::Repository,
+    ids: impl IntoIterator<Item = &'a String>,
+) -> Result<BTreeMap<String, OrphanedCommit>, CliError> {
+    let mut rows = BTreeMap::new();
+    for id in ids {
+        let commit = find_commit_by_hex(repository, id)?;
+        let author = commit.author().map_err(gitoxide_error)?;
+        let seconds = author.time().map_err(gitoxide_error)?.seconds;
+        let subject = commit
+            .message_raw()
+            .map_err(gitoxide_error)?
+            .to_str_lossy()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        rows.insert(
+            id.clone(),
+            OrphanedCommit {
+                commit: id.clone(),
+                subject,
+                author: author.name.to_str_lossy().into_owned(),
+                date: unix_date(seconds),
+            },
+        );
+    }
+    Ok(rows)
+}
+
+fn find_commit_by_hex<'repo>(
+    repository: &'repo gix::Repository,
+    id: &str,
+) -> Result<gix::Commit<'repo>, CliError> {
+    let id = gix::ObjectId::from_hex(id.as_bytes()).map_err(gitoxide_error)?;
+    repository.find_commit(id).map_err(gitoxide_error)
 }
 
 /// Commits reachable from `start` that the environment holds but main does not.
@@ -563,6 +640,122 @@ mod tests {
         assert_eq!(snapshot.features[0].historical_merges.len(), 2);
         assert_eq!(snapshot.dropped_markers.len(), 1);
         assert_eq!(snapshot.attributed_commits.len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn git_inspection_keeps_the_graph_when_history_cannot_be_read(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        run_git(directory.path(), &["init", "-q", "-b", "main"])?;
+        run_git(directory.path(), &["config", "user.name", "Test Author"])?;
+        run_git(
+            directory.path(),
+            &["config", "user.email", "test@example.com"],
+        )?;
+        std::fs::write(directory.path().join("base"), "base\n")?;
+        run_git(directory.path(), &["add", "base"])?;
+        run_git(directory.path(), &["commit", "-q", "-m", "base"])?;
+        // feature/a with an internal pull-merge, then the environment is the
+        // feature's own history plus direct work: a pull-merge on the spine.
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "feature/a", "main"],
+        )?;
+        std::fs::write(directory.path().join("a-one"), "one\n")?;
+        run_git(directory.path(), &["add", "a-one"])?;
+        run_git(directory.path(), &["commit", "-q", "-m", "a one"])?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "a-side", "main"],
+        )?;
+        std::fs::write(directory.path().join("a-side"), "side\n")?;
+        run_git(directory.path(), &["add", "a-side"])?;
+        run_git(directory.path(), &["commit", "-q", "-m", "a side"])?;
+        run_git(directory.path(), &["checkout", "-q", "feature/a"])?;
+        run_git(
+            directory.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "a-side",
+                "-m",
+                "Merge branch 'feature/a' into feature/a",
+            ],
+        )?;
+        run_git(directory.path(), &["branch", "-q", "-D", "a-side"])?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "feature/b", "feature/a"],
+        )?;
+        std::fs::write(directory.path().join("b-one"), "b\n")?;
+        run_git(directory.path(), &["add", "b-one"])?;
+        run_git(directory.path(), &["commit", "-q", "-m", "b one"])?;
+        run_git(
+            directory.path(),
+            &["checkout", "-q", "-b", "qa", "feature/a"],
+        )?;
+        run_git(
+            directory.path(),
+            &["merge", "-q", "--no-ff", "feature/b", "-m", "merge b"],
+        )?;
+        std::fs::write(directory.path().join("stray"), "stray\n")?;
+        run_git(directory.path(), &["add", "stray"])?;
+        run_git(directory.path(), &["commit", "-q", "-m", "direct work"])?;
+        for branch in ["main", "qa", "feature/a", "feature/b"] {
+            run_git(
+                directory.path(),
+                &[
+                    "update-ref",
+                    &format!("refs/remotes/origin/{branch}"),
+                    &format!("refs/heads/{branch}"),
+                ],
+            )?;
+        }
+        run_git(
+            directory.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )?;
+        let repository = gix::discover(directory.path())?;
+        let inspection = inspect_environment(&repository, "origin", "qa", None)?;
+
+        let Err(RestackInspectionError::Unsupported { error, graph }) =
+            restack_snapshot(&repository, &inspection)
+        else {
+            return Err("expected the history proof to fail".into());
+        };
+        let InventoryError::AmbiguousFeatureRefs { branches, .. } = error else {
+            return Err(format!("expected an ambiguous merge, got {error}").into());
+        };
+        assert_eq!(branches, ["feature/a", "feature/b"]);
+        let tips = tip_timestamps(&repository, &graph)?;
+        let candidates = graph
+            .feature_refs
+            .iter()
+            .filter(|feature| tips.contains_key(&feature.tip))
+            .map(|feature| feature.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(candidates, ["feature/a", "feature/b"]);
+        let stray = graph
+            .environment_ancestors
+            .difference(&graph.main_ancestors)
+            .find(|id| {
+                graph
+                    .commits
+                    .get(*id)
+                    .is_some_and(|commit| commit.message.trim() == "direct work")
+            })
+            .ok_or("stray commit missing from graph")?;
+        let rows = commit_rows(&repository, [stray])?;
+        let row = rows.get(stray).ok_or("row missing")?;
+        assert_eq!(row.subject, "direct work");
+        assert_eq!(row.author, "Test Author");
+        assert_eq!(row.date.len(), 10);
         Ok(())
     }
 

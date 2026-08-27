@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use graduate::restack::{
-    build_plan, canonical_merge_message, select_features, BranchIdentity, InventoryError,
-    MergeOutcome, MergeResolution, PlanError, RemoteEndpointIdentity, RestackAuthor,
+    build_inventory_snapshot, build_plan, canonical_merge_message, orphaned_commit_ids,
+    select_features, BranchIdentity, InventoryError, InventoryMode, MergeOutcome, MergeResolution,
+    OrphanedCommit, PlanError, Reconstruction, RemoteEndpointIdentity, RestackAuthor,
     RestackInteraction, RestackPlan, RestackSelection, RestackSnapshot, SelectionError,
     RESTACK_SCHEMA_VERSION,
 };
@@ -18,7 +19,8 @@ use sha2::{Digest, Sha256};
 
 use crate::cli::RestackArgs;
 use crate::environment_git::{
-    inspect_environment, restack_snapshot, validate_ref_component, RestackInspectionError,
+    commit_rows, inspect_environment, restack_snapshot, tip_timestamps, validate_ref_component,
+    RestackInspectionError,
 };
 use crate::error::{CliError, MachineError};
 use crate::git_process;
@@ -68,6 +70,8 @@ struct InteractiveDiscovery {
     remote: git_process::RestackRemote,
     repository_id: String,
     snapshot: RestackSnapshot,
+    /// Rows for every commit a reachability rebuild might drop; empty in history mode.
+    commit_rows: BTreeMap<String, OrphanedCommit>,
     author: RestackAuthor,
     source_objects: Vec<u8>,
 }
@@ -127,6 +131,12 @@ fn run_interactive(args: RestackArgs) -> Result<(), CliError> {
     finish_interactive(outcome, || terminal.restore(), write_interactive_outcome)
 }
 
+/// `git diff --check` in the isolated repository must reject leftover conflict
+/// markers but not the whitespace habits of feature content, which a rebuild
+/// reproduces faithfully.
+const ISOLATED_WHITESPACE_POLICY: &str =
+    "-trailing-space,-space-before-tab,-indent-with-non-tab,-tab-in-indent,-blank-at-eof,-blank-at-eol";
+
 /// Object cache shared by the environment, main, and feature history walks.
 const INSPECTION_OBJECT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -161,7 +171,12 @@ fn interactive_workflow(
 ) -> Result<InteractiveOutcome, CliError> {
     restack_tui::draw_loading(terminal, "Fetching and inspecting the environment…")?;
     let discovery = discover_interactive(args, source)?;
-    let mut interaction = RestackInteraction::new(discovery.snapshot.clone());
+    let mut interaction = match discovery.snapshot.inventory_mode {
+        InventoryMode::History => RestackInteraction::new(discovery.snapshot.clone()),
+        InventoryMode::Reachability => {
+            RestackInteraction::from_inventory(discovery.snapshot.clone())
+        }
+    };
     loop {
         let selection = match restack_tui::choose_features(terminal, &mut interaction)? {
             SelectionDecision::Preview(selection) => selection,
@@ -239,13 +254,73 @@ fn discover_interactive(
             json!({"stage": "refs"}),
         )
     })?;
+    let (snapshot, commit_rows) = match restack_snapshot(&repository, &inspection) {
+        Ok(snapshot) => (snapshot, BTreeMap::new()),
+        Err(RestackInspectionError::Unsupported { error, graph }) => {
+            inventory_fallback(&repository, error, &graph)?
+        }
+        Err(error) => return Err(inspection_error(error)),
+    };
     Ok(InteractiveDiscovery {
         remote,
         repository_id: source_repository_identity(source)?,
-        snapshot: restack_snapshot(&repository, &inspection).map_err(inspection_error)?,
+        snapshot,
+        commit_rows,
         author: configured_author(source)?,
         source_objects: source_object_directory(source)?,
     })
+}
+
+/// Build the reachability inventory and the rows for every commit it might drop.
+fn inventory_fallback(
+    repository: &gix::Repository,
+    error: InventoryError,
+    graph: &graduate::restack::RestackGraph,
+) -> Result<(RestackSnapshot, BTreeMap<String, OrphanedCommit>), CliError> {
+    let timestamps = tip_timestamps(repository, graph).map_err(|error| {
+        machine_failure(
+            "inspection_failed",
+            "could not read the remote feature tips",
+            json!({"stage": "tips", "error": error.to_string()}),
+        )
+    })?;
+    let snapshot = build_inventory_snapshot(graph, error.into(), &timestamps);
+    let rows = commit_rows(
+        repository,
+        snapshot
+            .attributed_commits
+            .iter()
+            .map(|commit| &commit.commit)
+            .chain(&snapshot.unattributed_commits),
+    )
+    .map_err(|error| {
+        machine_failure(
+            "inspection_failed",
+            "could not read the environment's unique commits",
+            json!({"stage": "orphans", "error": error.to_string()}),
+        )
+    })?;
+    Ok((snapshot, rows))
+}
+
+/// Rows for the commits the reviewed selection drops.
+fn orphan_rows(
+    snapshot: &RestackSnapshot,
+    commit_rows: &BTreeMap<String, OrphanedCommit>,
+    retained: &[BranchIdentity],
+) -> Result<Vec<OrphanedCommit>, CliError> {
+    orphaned_commit_ids(snapshot, retained)
+        .iter()
+        .map(|id| {
+            commit_rows.get(id).cloned().ok_or_else(|| {
+                machine_failure(
+                    "inspection_failed",
+                    "an orphaned commit was not captured during inspection",
+                    json!({"stage": "orphans", "commit": id}),
+                )
+            })
+        })
+        .collect()
 }
 
 fn prepare_interactive(
@@ -253,6 +328,11 @@ fn prepare_interactive(
     selection: RestackSelection,
     sessions: &SessionStore,
 ) -> Result<InteractivePreparation, CliError> {
+    let orphaned_commits = orphan_rows(
+        &discovery.snapshot,
+        &discovery.commit_rows,
+        &selection.retained,
+    )?;
     let mut draft = sessions.begin().map_err(session_error)?;
     let isolated = IsolatedRepository::create(&draft.repository(), &discovery.source_objects)?;
     isolated.train_resolutions(&discovery.snapshot, &selection.retained, &discovery.author)?;
@@ -271,9 +351,8 @@ fn prepare_interactive(
                 discovery.remote.identity(),
                 discovery.author.clone(),
                 selection,
-                reconstruction.merges,
-                reconstruction.final_tree,
-                reconstruction.preview_commit,
+                reconstruction,
+                orphaned_commits,
             )
             .map_err(plan_error)?;
             Ok(InteractivePreparation::Complete(Box::new(
@@ -291,6 +370,7 @@ fn prepare_interactive(
                 discovery.remote.identity(),
                 discovery.author.clone(),
                 selection,
+                orphaned_commits,
                 SessionConflict {
                     merges: conflict.merges,
                     next_feature: conflict.feature_index,
@@ -441,9 +521,8 @@ fn finish_or_preserve(
                 fresh.remote_endpoints,
                 fresh.author,
                 fresh.selection,
-                reconstruction.merges,
-                reconstruction.final_tree,
-                reconstruction.preview_commit,
+                reconstruction,
+                Vec::new(),
             )
             .map_err(plan_error)?;
             if let Some(digest) = fresh.apply_digest {
@@ -479,6 +558,7 @@ fn finish_or_preserve(
                 fresh.remote_endpoints,
                 fresh.author,
                 fresh.selection,
+                Vec::new(),
                 SessionConflict {
                     merges: conflict.merges,
                     next_feature: conflict.feature_index,
@@ -566,9 +646,8 @@ fn resume_preview(
                 session.metadata.remote_endpoints.clone(),
                 session.metadata.author.clone(),
                 session.metadata.selection.clone(),
-                reconstruction.merges,
-                reconstruction.final_tree,
-                reconstruction.preview_commit,
+                reconstruction,
+                session.metadata.orphaned_commits.clone(),
             )
             .map_err(plan_error)?;
             session.metadata.merges.clone_from(&plan.merges);
@@ -740,9 +819,12 @@ fn sealed_session_plan(metadata: &SessionMetadata) -> Result<RestackPlan, CliErr
         metadata.remote_endpoints.clone(),
         metadata.author.clone(),
         metadata.selection.clone(),
-        metadata.merges.clone(),
-        final_tree,
-        preview_commit,
+        Reconstruction {
+            merges: metadata.merges.clone(),
+            final_tree,
+            preview_commit,
+        },
+        metadata.orphaned_commits.clone(),
     )
     .map_err(plan_error)?;
     if plan.digest != saved_digest {
@@ -811,7 +893,7 @@ fn parse_params(params: Option<&str>, dry_run: bool) -> Result<MachineParams, Cl
     let parsed: MachineParams = serde_json::from_str(params).map_err(|_| {
         machine_usage(
             "invalid_params",
-            "--params must match the schema-v1 restack machine parameters",
+            "--params must match the schema-v2 restack machine parameters",
             json!({"expected": {"removeBranches": ["feature/BRANCH"], "planDigest": "apply only"}}),
         )
     })?;
@@ -985,12 +1067,6 @@ fn source_git(source: &Path) -> Command {
     clear_repository_location_environment(&mut command);
     command.current_dir(source);
     command
-}
-
-struct Reconstruction {
-    merges: Vec<MergeOutcome>,
-    final_tree: String,
-    preview_commit: String,
 }
 
 struct ReconstructionConflict {
@@ -1530,7 +1606,7 @@ impl IsolatedRepository {
             .current_dir(&self.root)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", &self.global_config)
-            .env("GIT_CONFIG_COUNT", "7")
+            .env("GIT_CONFIG_COUNT", "8")
             .env("GIT_CONFIG_KEY_0", "core.hooksPath")
             .env("GIT_CONFIG_VALUE_0", &self.hooks)
             .env("GIT_CONFIG_KEY_1", "core.fsmonitor")
@@ -1545,6 +1621,8 @@ impl IsolatedRepository {
             .env("GIT_CONFIG_VALUE_5", "false")
             .env("GIT_CONFIG_KEY_6", "core.autocrlf")
             .env("GIT_CONFIG_VALUE_6", "false")
+            .env("GIT_CONFIG_KEY_7", "core.whitespace")
+            .env("GIT_CONFIG_VALUE_7", ISOLATED_WHITESPACE_POLICY)
             .env("GIT_MERGE_AUTOEDIT", "no")
             .env("GIT_TERMINAL_PROMPT", "0");
         command
@@ -1610,7 +1688,7 @@ fn inspection_error(error: RestackInspectionError) -> CliError {
             "could not inspect the fetched environment history",
             json!({"stage": "history"}),
         ),
-        RestackInspectionError::Unsupported(error) => inventory_error(error),
+        RestackInspectionError::Unsupported { error, .. } => inventory_error(error),
     }
 }
 
@@ -1676,6 +1754,13 @@ fn plan_error(error: PlanError) -> CliError {
         }
         PlanError::MergeIdentity { index, expected } => {
             json!({"stage": "mergeIdentity", "index": index, "expected": expected})
+        }
+        PlanError::OrphanedCommits {
+            expected,
+            actual,
+            mismatch,
+        } => {
+            json!({"stage": "orphanedCommits", "expected": expected, "actual": actual, "mismatch": mismatch})
         }
     };
     machine_failure(
@@ -1944,6 +2029,30 @@ fn plan_json(plan: &RestackPlan) -> Value {
         "author": {"name": plan.author.name, "email": plan.author.email},
         "retainedBranches": branches(&plan.selection.retained),
         "removedBranches": branches(&plan.selection.removed),
+        "inventory": {
+            "mode": match plan.snapshot.inventory_mode {
+                InventoryMode::History => "history",
+                InventoryMode::Reachability => "reachability",
+            },
+            "reason": plan.snapshot.unsupported_history.as_ref().map(|reason| json!({
+                "kind": reason.kind,
+                "commit": reason.commit,
+                "featureParent": reason.feature_parent,
+                "branches": reason.branches,
+                "parents": reason.parents,
+            })),
+        },
+        "carriedBranches": plan.snapshot.carried_features.iter().map(|carried| json!({
+            "name": carried.name,
+            "tip": carried.tip,
+            "carriers": carried.carriers,
+        })).collect::<Vec<_>>(),
+        "orphanedCommits": plan.orphaned_commits.iter().map(|commit| json!({
+            "commit": commit.commit,
+            "subject": commit.subject,
+            "author": commit.author,
+            "date": commit.date,
+        })).collect::<Vec<_>>(),
         "droppedMarkers": plan.snapshot.dropped_markers.iter().map(|marker| json!({
             "commit": marker.commit,
             "parent": marker.parent,
@@ -1959,6 +2068,7 @@ fn plan_json(plan: &RestackPlan) -> Value {
             "sourceCheckoutChanged": false,
             "localRefsChanged": false,
             "personalRerereChanged": false,
+            "reusedResolutions": plan.snapshot.inventory_mode == InventoryMode::History,
             "commitSigning": "unsigned",
         },
     })
@@ -2042,6 +2152,11 @@ fn session_error(error: SessionError) -> CliError {
             "the restack session has expired",
             json!({}),
         ),
+        SessionError::SchemaMismatch { found, expected } => machine_failure(
+            "session_schema_mismatch",
+            "the restack session was saved by a different Graduate release; start a new restack",
+            json!({"found": found, "expected": expected}),
+        ),
         SessionError::Unavailable => machine_failure(
             "session_unavailable",
             "the restack session store is unavailable",
@@ -2093,6 +2208,7 @@ fn machine_failure(code: &'static str, message: &'static str, details: Value) ->
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::BTreeSet;
     use std::rc::Rc;
 
     use ratatui::backend::TestBackend;
@@ -2153,6 +2269,436 @@ mod tests {
         assert!(*restored.borrow());
         assert!(!*wrote.borrow());
         Ok(())
+    }
+
+    #[test]
+    fn plan_json_describes_the_inventory_mode_carried_branches_and_orphans(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use graduate::restack::{
+            FeatureRef, GraphCommit, InventoryError, RestackGraph, UnsupportedHistory,
+        };
+        use std::collections::BTreeSet;
+
+        let ids = |values: &[&str]| -> BTreeSet<String> {
+            values.iter().map(ToString::to_string).collect()
+        };
+        let mut commits = BTreeMap::new();
+        for (id, parents) in [
+            ("base", vec![]),
+            ("a", vec!["base"]),
+            ("b", vec!["a"]),
+            ("stray", vec!["b"]),
+        ] {
+            commits.insert(
+                id.to_owned(),
+                GraphCommit {
+                    id: id.to_owned(),
+                    tree: format!("tree-{id}"),
+                    parents: parents.into_iter().map(str::to_owned).collect(),
+                    message: id.to_owned(),
+                },
+            );
+        }
+        let graph = RestackGraph {
+            remote: "origin".to_owned(),
+            environment: "qa".to_owned(),
+            environment_ref: "refs/remotes/origin/qa".to_owned(),
+            environment_tip: "stray".to_owned(),
+            main: "main".to_owned(),
+            main_ref: "refs/remotes/origin/main".to_owned(),
+            main_tip: "base".to_owned(),
+            environment_ancestors: ids(&["base", "a", "b", "stray"]),
+            main_ancestors: ids(&["base"]),
+            feature_refs: vec![
+                FeatureRef {
+                    name: "feature/a".to_owned(),
+                    tip: "a".to_owned(),
+                    ancestors: ids(&["a"]),
+                },
+                FeatureRef {
+                    name: "feature/b".to_owned(),
+                    tip: "b".to_owned(),
+                    ancestors: ids(&["a", "b"]),
+                },
+            ],
+            commits,
+        };
+        let reason = UnsupportedHistory::from(InventoryError::DirectCommit {
+            commit: "stray".to_owned(),
+        });
+        let snapshot = build_inventory_snapshot(&graph, reason, &BTreeMap::new());
+        let selection = select_features(&snapshot, &[])?;
+        let author = RestackAuthor {
+            name: "Pat".to_owned(),
+            email: "pat@example.com".to_owned(),
+        };
+        let endpoints = RemoteEndpointIdentity {
+            fetch_sha256: "f".repeat(64),
+            push_sha256: "p".repeat(64),
+        };
+        let reconstruction = || Reconstruction {
+            merges: vec![MergeOutcome {
+                branch: "feature/b".to_owned(),
+                tip: "b".to_owned(),
+                commit: "preview".to_owned(),
+                tree: "tree".to_owned(),
+                resolution: MergeResolution::Clean,
+            }],
+            final_tree: "tree".to_owned(),
+            preview_commit: "preview".to_owned(),
+        };
+        let plan = build_plan(
+            snapshot.clone(),
+            endpoints.clone(),
+            author.clone(),
+            selection.clone(),
+            reconstruction(),
+            vec![OrphanedCommit {
+                commit: "stray".to_owned(),
+                subject: "stray".to_owned(),
+                author: "Pat".to_owned(),
+                date: "2026-01-02".to_owned(),
+            }],
+        )?;
+        let value = plan_json(&plan);
+        assert_eq!(value["schemaVersion"], 2);
+        assert_eq!(value["inventory"]["mode"], "reachability");
+        assert_eq!(value["inventory"]["reason"]["kind"], "directCommit");
+        assert_eq!(value["inventory"]["reason"]["commit"], "stray");
+        assert_eq!(
+            value["carriedBranches"],
+            json!([{"name": "feature/a", "tip": "a", "carriers": ["feature/b"]}])
+        );
+        assert_eq!(
+            value["orphanedCommits"],
+            json!([{"commit": "stray", "subject": "stray", "author": "Pat", "date": "2026-01-02"}])
+        );
+        assert_eq!(value["effects"]["reusedResolutions"], false);
+
+        let mut history = snapshot;
+        history.inventory_mode = InventoryMode::History;
+        history.unsupported_history = None;
+        history.carried_features.clear();
+        history.unattributed_commits.clear();
+        let plan = build_plan(
+            history,
+            endpoints,
+            author,
+            selection,
+            reconstruction(),
+            Vec::new(),
+        )?;
+        let value = plan_json(&plan);
+        assert_eq!(
+            value["inventory"],
+            json!({"mode": "history", "reason": null})
+        );
+        assert_eq!(value["carriedBranches"], json!([]));
+        assert_eq!(value["orphanedCommits"], json!([]));
+        assert_eq!(value["effects"]["reusedResolutions"], true);
+        Ok(())
+    }
+
+    #[test]
+    fn inventory_fallback_on_a_real_repository_matches_git_rev_list(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        let git = |arguments: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+            let status = crate::environment_git::isolated_git_command()
+                .args(["-c", "core.fsmonitor=false"])
+                .args(arguments)
+                .current_dir(root)
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("git {} failed", arguments.join(" ")).into())
+            }
+        };
+        let git_lines =
+            |arguments: &[&str]| -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+                let output = crate::environment_git::isolated_git_command()
+                    .args(arguments)
+                    .current_dir(root)
+                    .output()?;
+                if !output.status.success() {
+                    return Err(format!("git {} failed", arguments.join(" ")).into());
+                }
+                Ok(String::from_utf8(output.stdout)?
+                    .lines()
+                    .map(str::to_owned)
+                    .collect())
+            };
+        git(&["init", "-q", "-b", "main"])?;
+        git(&["config", "user.name", "Test Author"])?;
+        git(&["config", "user.email", "test@example.com"])?;
+        fs::write(root.join("base"), "base\n")?;
+        git(&["add", "base"])?;
+        git(&["commit", "-q", "-m", "base"])?;
+        git(&["checkout", "-q", "-b", "feature/a", "main"])?;
+        fs::write(root.join("a-one"), "one\n")?;
+        git(&["add", "a-one"])?;
+        git(&["commit", "-q", "-m", "a one"])?;
+        git(&["checkout", "-q", "-b", "a-side", "main"])?;
+        fs::write(root.join("a-side"), "side\n")?;
+        git(&["add", "a-side"])?;
+        git(&["commit", "-q", "-m", "a side"])?;
+        git(&["checkout", "-q", "feature/a"])?;
+        git(&["merge", "-q", "--no-ff", "a-side", "-m", "pull merge"])?;
+        git(&["branch", "-q", "-D", "a-side"])?;
+        git(&["checkout", "-q", "-b", "feature/b", "feature/a"])?;
+        fs::write(root.join("b-one"), "b\n")?;
+        git(&["add", "b-one"])?;
+        git(&["commit", "-q", "-m", "b one"])?;
+        git(&["checkout", "-q", "-b", "qa", "feature/a"])?;
+        git(&["merge", "-q", "--no-ff", "feature/b", "-m", "merge b"])?;
+        fs::write(root.join("stray"), "stray\n")?;
+        git(&["add", "stray"])?;
+        git(&["commit", "-q", "-m", "direct work"])?;
+        fs::write(root.join("stray-two"), "two\n")?;
+        git(&["add", "stray-two"])?;
+        git(&["commit", "-q", "-m", "more direct work"])?;
+        for branch in ["main", "qa", "feature/a", "feature/b"] {
+            git(&[
+                "update-ref",
+                &format!("refs/remotes/origin/{branch}"),
+                &format!("refs/heads/{branch}"),
+            ])?;
+        }
+        let repository = gix::discover(root)?;
+        let inspection = inspect_environment(&repository, "origin", "qa", Some("main"))?;
+        let Err(RestackInspectionError::Unsupported { error, graph }) =
+            restack_snapshot(&repository, &inspection)
+        else {
+            return Err("expected the history proof to fail".into());
+        };
+
+        let (snapshot, rows) = inventory_fallback(&repository, error, &graph)?;
+
+        assert_eq!(snapshot.inventory_mode, InventoryMode::Reachability);
+        assert_eq!(
+            snapshot
+                .features
+                .iter()
+                .map(|feature| feature.name.as_str())
+                .collect::<Vec<_>>(),
+            ["feature/b"]
+        );
+        assert_eq!(snapshot.carried_features[0].name, "feature/a");
+        let retained = select_features(&snapshot, &[])?.retained;
+        let orphans = orphan_rows(&snapshot, &rows, &retained)?;
+        let mut expected = git_lines(&["rev-list", "--no-merges", "main..qa"])?;
+        for kept in &retained {
+            for reached in git_lines(&["rev-list", "--no-merges", &format!("main..{}", kept.tip)])?
+            {
+                expected.remove(&reached);
+            }
+        }
+        assert_eq!(
+            orphans
+                .iter()
+                .map(|orphan| orphan.commit.clone())
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
+        let mut subjects = orphans
+            .iter()
+            .map(|orphan| orphan.subject.as_str())
+            .collect::<Vec<_>>();
+        subjects.sort_unstable();
+        assert_eq!(subjects, ["direct work", "more direct work"]);
+        assert!(orphans.iter().all(|orphan| orphan.author == "Test Author"));
+
+        let missing = orphan_rows(&snapshot, &BTreeMap::new(), &retained)
+            .err()
+            .ok_or("expected a missing row to fail closed")?;
+        let CliError::Machine(missing) = missing else {
+            return Err("expected a machine failure".into());
+        };
+        assert_eq!(missing.code, "inspection_failed");
+        assert!(missing.to_string().contains(r#""stage":"orphans""#));
+        Ok(())
+    }
+
+    #[test]
+    fn plan_error_reports_orphan_mismatches_as_machine_json(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let error = plan_error(PlanError::OrphanedCommits {
+            expected: 2,
+            actual: 1,
+            mismatch: "abc".to_owned(),
+        });
+        let CliError::Machine(error) = error else {
+            return Err("plan_error must build a machine failure".into());
+        };
+        assert_eq!(error.code, "validation_failed");
+        let text = error.to_string();
+        assert!(text.contains(r#""stage":"orphanedCommits""#), "{text}");
+        assert!(text.contains(r#""mismatch":"abc""#), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn conflicted_inventory_session_round_trips_orphaned_commits_into_the_sealed_plan(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (snapshot, orphans) = reachability_plan_inputs();
+        let selection = select_features(&snapshot, &[])?;
+        let author = RestackAuthor {
+            name: "Pat".to_owned(),
+            email: "pat@example.com".to_owned(),
+        };
+        let endpoints = RemoteEndpointIdentity {
+            fetch_sha256: "f".repeat(64),
+            push_sha256: "p".repeat(64),
+        };
+        let merges = vec![MergeOutcome {
+            branch: "feature/b".to_owned(),
+            tip: "b".to_owned(),
+            commit: "preview".to_owned(),
+            tree: "tree".to_owned(),
+            resolution: MergeResolution::Manual,
+        }];
+        let expected = build_plan(
+            snapshot.clone(),
+            endpoints.clone(),
+            author.clone(),
+            selection.clone(),
+            Reconstruction {
+                merges: merges.clone(),
+                final_tree: "tree".to_owned(),
+                preview_commit: "preview".to_owned(),
+            },
+            orphans.clone(),
+        )?;
+
+        let directory = tempfile::tempdir()?;
+        let store =
+            SessionStore::open_root(directory.path().join("sessions")).map_err(session_error)?;
+        let mut draft = store.begin().map_err(session_error)?;
+        let metadata = SessionMetadata::conflicted(
+            "repository".to_owned(),
+            snapshot,
+            endpoints,
+            author,
+            selection,
+            orphans.clone(),
+            SessionConflict {
+                merges: Vec::new(),
+                next_feature: 0,
+                expected_head: "base".to_owned(),
+                expected_head_reflog: "reflog".to_owned(),
+                expected_feature_tip: "b".to_owned(),
+            },
+        )
+        .map_err(session_error)?;
+        draft.save(&metadata).map_err(session_error)?;
+        let token = draft.token();
+        drop(draft);
+
+        let mut handle = store.resume(&token).map_err(session_error)?;
+        assert_eq!(handle.metadata.orphaned_commits, orphans);
+        handle.metadata.merges = merges;
+        handle.metadata.next_feature = 1;
+        handle.metadata.expected_feature_tip = None;
+        handle.metadata.expected_head = "preview".to_owned();
+        handle.metadata.final_tree = Some("tree".to_owned());
+        handle.metadata.preview_commit = Some("preview".to_owned());
+        handle.metadata.plan_digest = Some(expected.digest.clone());
+        handle.metadata.status = SessionStatus::Sealed;
+        handle.save().map_err(session_error)?;
+        let plan = sealed_session_plan(&handle.metadata)?;
+        assert_eq!(plan.orphaned_commits, orphans);
+        assert_eq!(plan.digest, expected.digest);
+
+        let mut without_rows = handle.metadata.clone();
+        without_rows.orphaned_commits.clear();
+        let Err(CliError::Machine(error)) = sealed_session_plan(&without_rows) else {
+            return Err("a sealed plan without its orphan rows must not rebuild".into());
+        };
+        assert_eq!(error.code, "validation_failed");
+
+        handle.metadata.schema_version = 1;
+        handle.save().map_err(session_error)?;
+        drop(handle);
+        assert_eq!(
+            store.resume(&token).err(),
+            Some(SessionError::SchemaMismatch {
+                found: 1,
+                expected: RESTACK_SCHEMA_VERSION,
+            })
+        );
+        let mapped = session_error(SessionError::SchemaMismatch {
+            found: 1,
+            expected: RESTACK_SCHEMA_VERSION,
+        });
+        let CliError::Machine(mapped) = mapped else {
+            return Err("expected a machine failure".into());
+        };
+        assert_eq!(mapped.code, "session_schema_mismatch");
+        Ok(())
+    }
+
+    /// Reachability snapshot where feature/b carries feature/a and `stray` is dropped.
+    fn reachability_plan_inputs() -> (RestackSnapshot, Vec<OrphanedCommit>) {
+        use graduate::restack::{
+            FeatureRef, GraphCommit, InventoryError, RestackGraph, UnsupportedHistory,
+        };
+        let ids = |values: &[&str]| -> BTreeSet<String> {
+            values.iter().map(ToString::to_string).collect()
+        };
+        let mut commits = BTreeMap::new();
+        for (id, parents) in [
+            ("base", vec![]),
+            ("a", vec!["base"]),
+            ("b", vec!["a"]),
+            ("stray", vec!["b"]),
+        ] {
+            commits.insert(
+                id.to_owned(),
+                GraphCommit {
+                    id: id.to_owned(),
+                    tree: format!("tree-{id}"),
+                    parents: parents.into_iter().map(str::to_owned).collect(),
+                    message: id.to_owned(),
+                },
+            );
+        }
+        let graph = RestackGraph {
+            remote: "origin".to_owned(),
+            environment: "qa".to_owned(),
+            environment_ref: "refs/remotes/origin/qa".to_owned(),
+            environment_tip: "stray".to_owned(),
+            main: "main".to_owned(),
+            main_ref: "refs/remotes/origin/main".to_owned(),
+            main_tip: "base".to_owned(),
+            environment_ancestors: ids(&["base", "a", "b", "stray"]),
+            main_ancestors: ids(&["base"]),
+            feature_refs: vec![
+                FeatureRef {
+                    name: "feature/a".to_owned(),
+                    tip: "a".to_owned(),
+                    ancestors: ids(&["a"]),
+                },
+                FeatureRef {
+                    name: "feature/b".to_owned(),
+                    tip: "b".to_owned(),
+                    ancestors: ids(&["a", "b"]),
+                },
+            ],
+            commits,
+        };
+        let reason = UnsupportedHistory::from(InventoryError::DirectCommit {
+            commit: "stray".to_owned(),
+        });
+        let snapshot = build_inventory_snapshot(&graph, reason, &BTreeMap::new());
+        let orphans = vec![OrphanedCommit {
+            commit: "stray".to_owned(),
+            subject: "stray".to_owned(),
+            author: "Pat".to_owned(),
+            date: "2026-01-02".to_owned(),
+        }];
+        (snapshot, orphans)
     }
 
     #[test]
