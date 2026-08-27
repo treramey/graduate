@@ -32,6 +32,12 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- `gd restack` inspection no longer walks every remote branch's full history
+  back to the root. Feature walks stop at commits already reachable from main
+  and only the commits the reconstruction proof reads are loaded, taking a
+  3,700-branch repository from about 90 seconds to under 2 seconds.
+- Interactive `gd restack` failures now include the structured details that
+  name the blocking merge commit or ambiguous branches.
 - Made the final restack checkpoint harder to trigger accidentally: publication
   now requires `Ctrl+Y`, rewrite scope and collaborator impact are explicit,
   lease protection leads with its plain-language outcome, and Back versus
