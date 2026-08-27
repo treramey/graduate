@@ -68,7 +68,7 @@ T1 domain types + schema bump
 
 ### Phase 3: TUI
 
-- [ ] Task 6: Unsupported-history screen with `r` to rebuild and `Esc` to cancel
+- [x] Task 6: Unsupported-history screen with `r` to rebuild and `Esc` to cancel
 - [ ] Task 7: Checklist banner, carried rows, and "N commits will be dropped" impact line
 - [ ] Task 8: Review orphan section, merge-order note, and confirmation line
 

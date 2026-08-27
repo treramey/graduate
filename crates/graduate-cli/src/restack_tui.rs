@@ -394,8 +394,8 @@ fn render(
     let content_width = frame.area().width.min(115);
     let minimum_height = match interaction.stage() {
         RestackInteractionStage::Confirmation => confirmation_minimum_height(plan, content_width),
-        RestackInteractionStage::Selection => 18,
-        RestackInteractionStage::UnsupportedHistory | RestackInteractionStage::Review => 12,
+        RestackInteractionStage::UnsupportedHistory | RestackInteractionStage::Selection => 18,
+        RestackInteractionStage::Review => 12,
     };
     if frame.area().width < 56 || frame.area().height < minimum_height {
         view.scrollable = false;
@@ -510,21 +510,158 @@ fn render_unsupported_history(
     area: Rect,
     interaction: &RestackInteraction,
 ) -> bool {
-    let mut lines = vec![Line::from(Span::styled(
-        "This environment's history cannot be read.",
-        Palette::primary().bold(),
-    ))];
-    if let Some(reason) = interaction.unsupported_history() {
-        lines.push(Line::from(Span::styled(
-            format!("Reason: {}", escape(&reason.kind)),
-            Palette::text(),
-        )));
-    }
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true }),
-        area,
+    let text = unsupported_history_text(interaction);
+    let height = wrapped_text_height(&text, area.width);
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), area);
+    height > usize::from(area.height)
+}
+
+const EVIDENCE_LIMIT: usize = 3;
+
+fn unsupported_history_text(interaction: &RestackInteraction) -> Text<'static> {
+    let snapshot = interaction.snapshot();
+    let environment = escape(&snapshot.environment);
+    let main = escape(&snapshot.main);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("HISTORY CANNOT BE READ", Palette::warning().bold()),
+            Span::styled(
+                format!("  ·  {}/{environment}", escape(&snapshot.remote)),
+                Palette::muted(),
+            ),
+        ]),
+        Line::from(""),
+    ];
+    let Some(reason) = interaction.unsupported_history() else {
+        lines.push(Line::raw(
+            "The environment history could not be classified.",
+        ));
+        return Text::from(lines);
+    };
+    let commit = reason
+        .commit
+        .as_deref()
+        .map_or_else(|| "?".to_owned(), short_oid);
+    let feature_parent = reason
+        .feature_parent
+        .as_deref()
+        .map_or_else(|| "?".to_owned(), short_oid);
+    let (explanation, evidence_title): (Vec<String>, Option<&str>) = match reason.kind.as_str() {
+        "ambiguousFeatureRefs" => (
+            vec![
+                format!(
+                    "Merge {commit} on {environment}'s history brings in {feature_parent}, which {} branches contain.",
+                    reason.branches.len()
+                ),
+                "Restack cannot tell which one it meant.".to_owned(),
+            ],
+            Some("Branches containing that commit"),
+        ),
+        "deletedFeatureRef" => (
+            vec![
+                format!(
+                    "Merge {commit} on {environment}'s history brings in {feature_parent},"
+                ),
+                "but no remote branch contains it any more.".to_owned(),
+            ],
+            None,
+        ),
+        "directCommit" => (
+            vec![
+                format!("Commit {commit} was made directly on {environment}"),
+                "instead of being merged from a feature branch.".to_owned(),
+            ],
+            None,
+        ),
+        "fastForwardHistory" => (
+            vec![
+                format!("{environment} was fast-forwarded through {commit};"),
+                "there is no merge commit to attribute that work to.".to_owned(),
+            ],
+            Some("Branches containing that commit"),
+        ),
+        "octopusMerge" => (
+            vec![
+                format!(
+                    "Merge {commit} has {} parents;",
+                    reason.parents.unwrap_or_default()
+                ),
+                "restack only understands two-parent merges.".to_owned(),
+            ],
+            None,
+        ),
+        "missingCommit" => (
+            vec![format!(
+                "Commit {commit} is missing from the fetched history."
+            )],
+            None,
+        ),
+        other => (
+            vec![format!("The history proof failed with {}.", escape(other))],
+            None,
+        ),
+    };
+    lines.extend(
+        explanation
+            .into_iter()
+            .map(|sentence| Line::styled(sentence, Palette::text())),
     );
-    false
+    if let Some(title) = evidence_title {
+        if !reason.branches.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::styled(title, Palette::muted().bold()));
+            lines.extend(
+                reason
+                    .branches
+                    .iter()
+                    .take(EVIDENCE_LIMIT)
+                    .map(|branch| Line::raw(format!("  •  {}", escape(branch)))),
+            );
+            if reason.branches.len() > EVIDENCE_LIMIT {
+                lines.push(Line::styled(
+                    format!(
+                        "  … and {} more",
+                        reason.branches.len().saturating_sub(EVIDENCE_LIMIT)
+                    ),
+                    Palette::muted(),
+                ));
+            }
+        }
+    }
+    let top_level = snapshot.features.len();
+    let carried = interaction.carried_features().len();
+    let dropped = interaction.orphaned_commit_count();
+    lines.extend([
+        Line::from(""),
+        Line::styled(
+            "Rebuilding from inventory instead",
+            Palette::primary().bold(),
+        ),
+        Line::raw(format!(
+            "  •  Membership: remote tips in {environment}, not in {main}. You pick."
+        )),
+        Line::raw("  •  Order: oldest branch tip first. No reused resolutions."),
+        Line::raw("  •  Commits on no kept branch are dropped; listed first."),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(format!(
+                "{top_level} top-level {} · {carried} carried · ",
+                if top_level == 1 { "branch" } else { "branches" }
+            )),
+            Span::styled(
+                format!(
+                    "{dropped} {} dropped",
+                    if dropped == 1 { "commit" } else { "commits" }
+                ),
+                if dropped == 0 {
+                    Palette::muted()
+                } else {
+                    Palette::warning()
+                },
+            ),
+        ]),
+    ]);
+    Text::from(lines)
 }
 
 fn render_selection(
@@ -1300,9 +1437,10 @@ fn short_oid(oid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use graduate::restack::{
-        build_plan, AttributedCommit, BranchIdentity, ExplicitFeature, HistoricalMerge,
-        InventoryMode, MergeOutcome, MergeResolution, Reconstruction, RemoteEndpointIdentity,
-        RestackAuthor, RestackSnapshot,
+        build_inventory_snapshot, build_plan, AttributedCommit, BranchIdentity, ExplicitFeature,
+        FeatureRef, GraphCommit, HistoricalMerge, InventoryError, InventoryMode, MergeOutcome,
+        MergeResolution, Reconstruction, RemoteEndpointIdentity, RestackAuthor, RestackGraph,
+        RestackSnapshot, UnsupportedHistory,
     };
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1914,6 +2052,162 @@ mod tests {
         let mut view = RestackViewState::default();
         terminal.draw(|frame| render(frame, interaction, plan, rejection, &mut view))?;
         Ok(terminal.backend().to_string())
+    }
+
+    #[test]
+    fn unsupported_history_screen_explains_every_reason_and_fits_the_minimum_size(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let reasons = [
+            (
+                InventoryError::AmbiguousFeatureRefs {
+                    merge_commit: "886faef4b24230540b9a5d8ae057a233a7dd0126".to_owned(),
+                    feature_parent: "0bbff862c139d704a3c6431d9fa7f16c55c1aa5a".to_owned(),
+                    branches: (1..=17).map(|n| format!("HPM-{n}")).collect(),
+                },
+                vec![
+                    "brings in 0bbff86, which 17",
+                    "cannot tell which one it meant",
+                    "HPM-3",
+                    "and 14 more",
+                ],
+            ),
+            (
+                InventoryError::DeletedFeatureRef {
+                    merge_commit: "a".repeat(40),
+                    feature_parent: "b".repeat(40),
+                },
+                vec!["no remote branch contains it any more"],
+            ),
+            (
+                InventoryError::DirectCommit {
+                    commit: "c".repeat(40),
+                },
+                vec!["was made directly on qa"],
+            ),
+            (
+                InventoryError::FastForwardHistory {
+                    commit: "d".repeat(40),
+                    branches: vec!["feature/ff".to_owned()],
+                },
+                vec!["fast-forwarded through ddddddd", "feature/ff"],
+            ),
+            (
+                InventoryError::OctopusMerge {
+                    merge_commit: "e".repeat(40),
+                    parents: 3,
+                },
+                vec!["has 3 parents"],
+            ),
+            (
+                InventoryError::MissingCommit {
+                    commit: "f".repeat(40),
+                },
+                vec!["is missing from the fetched history"],
+            ),
+        ];
+        for (error, expectations) in reasons {
+            let interaction = RestackInteraction::from_inventory(inventory_snapshot(error.into()));
+            for (width, height) in [(60, 24), (100, 30)] {
+                let rendered = rendered_at(&interaction, None, None, width, height)?;
+                assert!(
+                    rendered.contains("HISTORY CANNOT BE READ"),
+                    "{width}x{height}: {rendered}"
+                );
+                for expectation in &expectations {
+                    assert!(
+                        rendered.contains(expectation),
+                        "{width}x{height} missing {expectation:?}:\n{rendered}"
+                    );
+                }
+                assert!(rendered.contains("Rebuilding from inventory instead"));
+                assert!(rendered.contains("Membership: remote tips in qa, not in main. You pick."));
+                assert!(rendered.contains("No reused resolutions"));
+                assert!(rendered.contains("dropped; listed first"));
+                assert!(rendered.contains("1 top-level branch · 1 carried · 1 commit dropped"));
+                assert!(rendered.contains("Rebuild from inventory"));
+                assert!(rendered.contains("Cancel"));
+                assert!(!rendered.contains("SELECT FEATURES"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_history_keys_accept_the_fallback_or_cancel() {
+        let stage = RestackInteractionStage::UnsupportedHistory;
+        assert_eq!(
+            action_for_key(stage, KeyEvent::from(KeyCode::Char('r'))),
+            Some(RestackInteractionAction::AcceptInventoryFallback)
+        );
+        assert_eq!(
+            action_for_key(stage, KeyEvent::from(KeyCode::Esc)),
+            Some(RestackInteractionAction::Cancel)
+        );
+        assert_eq!(
+            action_for_key(stage, KeyEvent::from(KeyCode::Char('q'))),
+            Some(RestackInteractionAction::Cancel)
+        );
+        assert_eq!(action_for_key(stage, KeyEvent::from(KeyCode::Enter)), None);
+        assert_eq!(
+            action_for_key(stage, KeyEvent::from(KeyCode::Char(' '))),
+            None
+        );
+        assert_eq!(
+            action_for_key(
+                RestackInteractionStage::Selection,
+                KeyEvent::from(KeyCode::Char('r'))
+            ),
+            None
+        );
+    }
+
+    /// Reachability snapshot: feature/b carries feature/a; `stray` is dropped.
+    fn inventory_snapshot(reason: UnsupportedHistory) -> RestackSnapshot {
+        let ids = |values: &[&str]| -> std::collections::BTreeSet<String> {
+            values.iter().map(ToString::to_string).collect()
+        };
+        let mut commits = std::collections::BTreeMap::new();
+        for (id, parents) in [
+            ("base", vec![]),
+            ("a", vec!["base"]),
+            ("b", vec!["a"]),
+            ("stray", vec!["b"]),
+        ] {
+            commits.insert(
+                id.to_owned(),
+                GraphCommit {
+                    id: id.to_owned(),
+                    tree: format!("tree-{id}"),
+                    parents: parents.into_iter().map(str::to_owned).collect(),
+                    message: id.to_owned(),
+                },
+            );
+        }
+        let graph = RestackGraph {
+            remote: "origin".to_owned(),
+            environment: "qa".to_owned(),
+            environment_ref: "refs/remotes/origin/qa".to_owned(),
+            environment_tip: "stray".to_owned(),
+            main: "main".to_owned(),
+            main_ref: "refs/remotes/origin/main".to_owned(),
+            main_tip: "base".to_owned(),
+            environment_ancestors: ids(&["base", "a", "b", "stray"]),
+            main_ancestors: ids(&["base"]),
+            feature_refs: vec![
+                FeatureRef {
+                    name: "feature/PROJ-12-one".to_owned(),
+                    tip: "a".to_owned(),
+                    ancestors: ids(&["a"]),
+                },
+                FeatureRef {
+                    name: "feature/two".to_owned(),
+                    tip: "b".to_owned(),
+                    ancestors: ids(&["a", "b"]),
+                },
+            ],
+            commits,
+        };
+        build_inventory_snapshot(&graph, reason, &std::collections::BTreeMap::new())
     }
 
     fn plan() -> Result<RestackPlan, Box<dyn std::error::Error>> {

@@ -178,20 +178,20 @@ discovery (`InteractiveDiscovery.commit_rows`) and persisted in
 from inventory or `Esc` to cancel.
 
 **Acceptance criteria:**
-- [ ] Screen shows: one-sentence plain explanation per `kind` (e.g. "Merge
+- [x] Screen shows: one-sentence plain explanation per `kind` (e.g. "Merge
       886faef4 on QA's history brings in 0bbff862, which 17 branches contain;
       restack cannot tell which one it meant."), the evidence list (branches
       or commits, scrollable), what inventory mode does and does not do
       (reachability membership, oldest-first order, no reused resolutions,
       commits not on a kept branch are dropped), and the footer controls.
-- [ ] `r` maps to `AcceptInventoryFallback`, `Esc`/`q` to `Cancel`; the
+- [x] `r` maps to `AcceptInventoryFallback`, `Esc`/`q` to `Cancel`; the
       workflow header names the stage.
-- [ ] Fits 60×24; wider terminals get the same content with less wrapping.
-- [ ] Tests: `TestBackend` renders at 60×24 and 100×30 with every
+- [x] Fits 60×24; wider terminals get the same content with less wrapping.
+- [x] Tests: `TestBackend` renders at 60×24 and 100×30 with every
       `InventoryError` kind; key mapping test; too-small guidance still works.
 
 **Verification:**
-- [ ] `cargo test --locked -p graduate-cli restack_tui`
+- [x] `cargo test --locked -p graduate-cli restack_tui`
 
 **Dependencies:** Tasks 4, 5
 **Files:** `crates/graduate-cli/src/restack_tui.rs`
