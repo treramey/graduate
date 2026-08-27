@@ -269,11 +269,27 @@ the truth on the real repository.
       inventory fields; a clean fixture's `--dry-run` plan has
       `schemaVersion: 2`, `inventory.mode = "history"`, empty
       `carriedBranches`/`orphanedCommits`, `reusedResolutions: true`.
-- [ ] Manual: `gd restack QA` on Federated40 reaches review; the plan's
-      `orphanedCommits` ids equal the `git rev-list`/`comm` check in the spec;
-      inspection phase under 5 s. Record the command output and the check
-      result in the PR description. Do not publish unless the check matches
-      and you intend to rewrite QA.
+- [x] Manual: `gd restack QA` on Federated40 (release build, driven through
+      tmux). Evidence screen after ~2 s: "Merge 886faef on QA's history brings
+      in 0bbff86, which 17 branches contain" and "46 top-level branches · 139
+      carried · 19 commits dropped". Git cross-check: `git branch -r --merged
+      origin/QA --no-merged origin/master` (minus environments/backup) = 185 =
+      46 + 139; `git rev-list --no-merges --count origin/QA --not origin/master
+      <185 tips>` = 19. `r` opened the checklist (46 retained, 19 commits will
+      be dropped, carried rows nested). This run found and fixed a live bug:
+      the checklist key handler hardcoded the Selection stage, so `r` was
+      ignored until `selection_action_for_key` routed by stage (`de7a359`).
+      `Enter` first failed at `stagedDiffCheck`: `git diff --cached --check`
+      also rejects whitespace errors and HPM-2869 carries 18 trailing-
+      whitespace lines. With the user's approval the isolated repository now
+      disables every `core.whitespace` class (`a7717ef`, e2e test
+      `restack_reconstructs_features_whose_content_has_whitespace_errors`),
+      keeping the conflict-marker check. Rerun: reconstruction proceeded and
+      paused on a genuine conflict in HPM-2757
+      (`exportProcess/IVANS/ivansXML.cfm`) with the preserved-session handoff,
+      as expected without reused resolutions. The verification session was
+      aborted with `--resume <token> --abort`; no remote ref changed. Publish
+      deliberately not exercised.
 
 **Verification:**
 - [x] `cargo test --locked --test cli restack`
@@ -312,6 +328,6 @@ the truth on the real repository.
 ---
 
 ### Checkpoint: Complete
-- [x] Spec success criteria 2–6 met; criterion 1 blocked at reconstruction by the
-      pre-existing whitespace check (see Task 9)
+- [x] Spec success criteria 2–6 met; criterion 1 verified through to the
+      conflict handoff (publish deliberately not exercised)
 - [x] PR opened on its own branch off `main`, linking the spec
