@@ -24,6 +24,16 @@ fn gd_command() -> Result<Command, Box<dyn Error>> {
     Ok(command)
 }
 
+fn isolate_gd_storage(command: &mut Command, root: &Path) {
+    // `dirs::cache_dir` uses HOME on macOS rather than XDG_CACHE_HOME.
+    command
+        .env("HOME", root)
+        .env("XDG_CACHE_HOME", root)
+        .env("LOCALAPPDATA", root)
+        .env("APPDATA", root)
+        .env("USERPROFILE", root);
+}
+
 #[test]
 fn help_uses_the_product_focused_command_style() -> Result<(), Box<dyn Error>> {
     let usage = format!(
@@ -237,14 +247,15 @@ fn restack_rejects_percent_encoded_ref_components_before_git_io() -> Result<(), 
     }
 
     let cache = tempfile::tempdir()?;
-    let output = gd_command()?
+    let mut command = gd_command()?;
+    isolate_gd_storage(&mut command, cache.path());
+    let output = command
         .args([
             "restack",
             "qa",
             "--params",
             r#"{"removeBranches":["feature/%2e%2e"]}"#,
         ])
-        .env("XDG_CACHE_HOME", cache.path())
         .output()?;
     assert_eq!(output.status.code(), Some(2));
     let error: serde_json::Value = serde_json::from_slice(&output.stderr)?;
@@ -483,11 +494,11 @@ fn restack_preview_is_isolated_and_emits_canonical_machine_json() -> Result<(), 
 #[test]
 fn restack_dry_run_defaults_to_retaining_every_feature() -> Result<(), Box<dyn Error>> {
     let fixture = RestackFixture::new()?;
-    let output = gd_command()?
+    let output = fixture
+        .command()?
         .current_dir(&fixture.source)
         .args(["restack", "qa", "--main", "main", "--dry-run"])
         .env("GIT_CONFIG_GLOBAL", &fixture.global)
-        .env("XDG_CACHE_HOME", &fixture.cache)
         .output()?;
 
     assert!(
@@ -939,6 +950,7 @@ fn restack_apply_exact_lease_rejects_an_environment_race_before_publication(
     let output = fixture.apply_with_path(&[], digest, &path)?;
 
     assert_eq!(output.status.code(), Some(1));
+    assert_eq!(structured_restack_error(output)?["code"], "push_rejected");
     assert_eq!(
         fixture.git_text(&fixture.remote, &["rev-parse", "refs/heads/qa"])?,
         race_oid
@@ -988,7 +1000,10 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
         &["remote", "add", "origin", path_text(&secret_path)?],
     )?;
 
-    let invalid = gd_command()?
+    let cache = directory.path().join("cache");
+    let mut invalid_command = gd_command()?;
+    isolate_gd_storage(&mut invalid_command, &cache);
+    let invalid = invalid_command
         .current_dir(&source)
         .args([
             "restack",
@@ -996,7 +1011,6 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
             "--params",
             r#"{"removeBranches":"not-an-array"}"#,
         ])
-        .env("XDG_CACHE_HOME", directory.path().join("cache"))
         .output()?;
     assert_eq!(invalid.status.code(), Some(2));
     let invalid_error: serde_json::Value = serde_json::from_slice(&invalid.stderr)?;
@@ -1037,7 +1051,9 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
         assert_eq!(error["code"], "invalid_usage");
     }
 
-    let fetch = gd_command()?
+    let mut fetch_command = gd_command()?;
+    isolate_gd_storage(&mut fetch_command, &cache);
+    let fetch = fetch_command
         .current_dir(&source)
         .args([
             "restack",
@@ -1047,7 +1063,6 @@ fn restack_machine_failures_are_structured_and_redact_fetch_secrets() -> Result<
             "--apply",
         ])
         .env("GIT_PAT", "pat-secret-do-not-print")
-        .env("XDG_CACHE_HOME", directory.path().join("cache"))
         .output()?;
     assert_eq!(fetch.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&fetch.stdout);
@@ -1643,6 +1658,12 @@ impl RestackFixture {
         })
     }
 
+    fn command(&self) -> Result<Command, Box<dyn Error>> {
+        let mut command = gd_command()?;
+        isolate_gd_storage(&mut command, &self.cache);
+        Ok(command)
+    }
+
     fn preview(&self, removals: &[&str]) -> Result<std::process::Output, Box<dyn Error>> {
         self.preview_with_environment(removals, None)
     }
@@ -1661,12 +1682,11 @@ impl RestackFixture {
         git_config_parameters: Option<&str>,
     ) -> Result<std::process::Output, Box<dyn Error>> {
         let params = serde_json::json!({"removeBranches": removals}).to_string();
-        let mut command = gd_command()?;
+        let mut command = self.command()?;
         command
             .current_dir(&self.source)
             .args(["restack", "qa", "--main", "main", "--params", &params])
-            .env("GIT_CONFIG_GLOBAL", &self.global)
-            .env("XDG_CACHE_HOME", &self.cache);
+            .env("GIT_CONFIG_GLOBAL", &self.global);
         if let Some(parameters) = git_config_parameters {
             command.env("GIT_CONFIG_PARAMETERS", parameters);
         }
@@ -1683,13 +1703,13 @@ impl RestackFixture {
             "planDigest": digest,
         })
         .to_string();
-        Ok(gd_command()?
+        Ok(self
+            .command()?
             .current_dir(&self.source)
             .args([
                 "restack", "qa", "--main", "main", "--params", &params, "--apply",
             ])
             .env("GIT_CONFIG_GLOBAL", &self.global)
-            .env("XDG_CACHE_HOME", &self.cache)
             .output()?)
     }
 
@@ -1705,19 +1725,20 @@ impl RestackFixture {
             "planDigest": digest,
         })
         .to_string();
-        Ok(gd_command()?
+        Ok(self
+            .command()?
             .current_dir(&self.source)
             .args([
                 "restack", "qa", "--main", "main", "--params", &params, "--apply",
             ])
             .env("GIT_CONFIG_GLOBAL", &self.global)
-            .env("XDG_CACHE_HOME", &self.cache)
             .env("PATH", path)
             .output()?)
     }
 
     fn apply_without_digest(&self) -> Result<std::process::Output, Box<dyn Error>> {
-        Ok(gd_command()?
+        Ok(self
+            .command()?
             .current_dir(&self.source)
             .args([
                 "restack",
@@ -1729,7 +1750,6 @@ impl RestackFixture {
                 "--apply",
             ])
             .env("GIT_CONFIG_GLOBAL", &self.global)
-            .env("XDG_CACHE_HOME", &self.cache)
             .output()?)
     }
 
@@ -1908,8 +1928,15 @@ impl ConflictRestackFixture {
         })
     }
 
+    fn command(&self) -> Result<Command, Box<dyn Error>> {
+        let mut command = gd_command()?;
+        isolate_gd_storage(&mut command, &self.cache);
+        Ok(command)
+    }
+
     fn preview(&self) -> Result<std::process::Output, Box<dyn Error>> {
-        Ok(gd_command()?
+        Ok(self
+            .command()?
             .current_dir(&self.source)
             .args([
                 "restack",
@@ -1920,7 +1947,6 @@ impl ConflictRestackFixture {
                 r#"{"removeBranches":[]}"#,
             ])
             .env("GIT_CONFIG_GLOBAL", &self.global)
-            .env("XDG_CACHE_HOME", &self.cache)
             .output()?)
     }
 
@@ -1930,11 +1956,11 @@ impl ConflictRestackFixture {
         environment: &str,
         source: &Path,
     ) -> Result<std::process::Output, Box<dyn Error>> {
-        Ok(gd_command()?
+        Ok(self
+            .command()?
             .current_dir(source)
             .args(["restack", environment, "--resume", token])
             .env("GIT_CONFIG_GLOBAL", &self.global)
-            .env("XDG_CACHE_HOME", &self.cache)
             .output()?)
     }
 
@@ -1967,11 +1993,11 @@ impl ConflictRestackFixture {
     }
 
     fn resume_apply(&self, token: &str) -> Result<std::process::Output, Box<dyn Error>> {
-        Ok(gd_command()?
+        Ok(self
+            .command()?
             .current_dir(&self.source)
             .args(["restack", "qa", "--resume", token, "--apply"])
             .env("GIT_CONFIG_GLOBAL", &self.global)
-            .env("XDG_CACHE_HOME", &self.cache)
             .output()?)
     }
 
@@ -1981,21 +2007,21 @@ impl ConflictRestackFixture {
         token: &str,
         path: &std::ffi::OsStr,
     ) -> Result<std::process::Output, Box<dyn Error>> {
-        Ok(gd_command()?
+        Ok(self
+            .command()?
             .current_dir(&self.source)
             .args(["restack", "qa", "--resume", token, "--apply"])
             .env("GIT_CONFIG_GLOBAL", &self.global)
-            .env("XDG_CACHE_HOME", &self.cache)
             .env("PATH", path)
             .output()?)
     }
 
     fn abort(&self, token: &str) -> Result<std::process::Output, Box<dyn Error>> {
-        Ok(gd_command()?
+        Ok(self
+            .command()?
             .current_dir(&self.source)
             .args(["restack", "qa", "--resume", token, "--abort"])
             .env("GIT_CONFIG_GLOBAL", &self.global)
-            .env("XDG_CACHE_HOME", &self.cache)
             .output()?)
     }
 
