@@ -1,5 +1,11 @@
 # @treramey/graduate
 
+## 1.5.0
+
+### Minor Changes
+
+- 46b808d: Let interactive `gd restack` rebuild an environment whose history cannot be read by choosing which reachable branches stay and showing every commit that would be dropped; `restackPlan` moves to schema version 2 with `inventory`, `carriedBranches`, `orphanedCommits`, and `effects.reusedResolutions`. Reconstruction validation now rejects only leftover conflict markers, not whitespace errors in feature content.
+
 ## 1.4.1
 
 ### Patch Changes
