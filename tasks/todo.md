@@ -43,21 +43,21 @@ producing top-level features, carried features, graduated features, dropped
 markers, and the evidence, without any new graph walks.
 
 **Acceptance criteria:**
-- [ ] Candidates = `feature_refs` whose tip is in `environment_ancestors` and
+- [x] Candidates = `feature_refs` whose tip is in `environment_ancestors` and
       not in `main_ancestors`. A candidate whose tip is in another candidate's
       `ancestors` is carried (all carriers listed, sorted); the rest are
       top-level `ExplicitFeature`s with empty `historical_merges`.
-- [ ] Top-level order is ascending tip timestamp, then name; a missing
+- [x] Top-level order is ascending tip timestamp, then name; a missing
       timestamp sorts last by name (documented in a doc comment).
-- [ ] `From<InventoryError> for UnsupportedHistory` maps every variant with its
+- [x] `From<InventoryError> for UnsupportedHistory` maps every variant with its
       evidence; `graduated_features` and `dropped_markers` match history mode.
-- [ ] Tests: ambiguous-merge fixture yields expected top-level/carried split;
+- [x] Tests: ambiguous-merge fixture yields expected top-level/carried split;
       chain A⊂B⊂C yields one top-level; diamond yields two top-level and one
       carried with two carriers; ordering and tie-break; every `InventoryError`
       variant maps.
 
 **Verification:**
-- [ ] `cargo test --locked -p graduate restack::tests::inventory`
+- [x] `cargo test --locked -p graduate restack::tests::inventory`
 
 **Dependencies:** Task 1
 **Files:** `crates/graduate/src/restack.rs`

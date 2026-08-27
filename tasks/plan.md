@@ -53,7 +53,7 @@ T1 domain types + schema bump
 ### Phase 1: Domain foundation (pure, no I/O)
 
 - [x] Task 1: Add inventory types and bump the schema version
-- [ ] Task 2: Build a reachability snapshot from a failed history proof
+- [x] Task 2: Build a reachability snapshot from a failed history proof
 - [ ] Task 3: Compute orphaned commits and bind them into the plan digest
 - [ ] Task 4: Add the `UnsupportedHistory` interaction stage
 

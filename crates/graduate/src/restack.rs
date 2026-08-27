@@ -769,6 +769,200 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
     })
 }
 
+impl From<InventoryError> for UnsupportedHistory {
+    fn from(error: InventoryError) -> Self {
+        match error {
+            InventoryError::MissingCommit { commit } => Self {
+                kind: "missingCommit".to_owned(),
+                commit: Some(commit),
+                feature_parent: None,
+                branches: Vec::new(),
+                parents: None,
+            },
+            InventoryError::DirectCommit { commit } => Self {
+                kind: "directCommit".to_owned(),
+                commit: Some(commit),
+                feature_parent: None,
+                branches: Vec::new(),
+                parents: None,
+            },
+            InventoryError::FastForwardHistory { commit, branches } => Self {
+                kind: "fastForwardHistory".to_owned(),
+                commit: Some(commit),
+                feature_parent: None,
+                branches,
+                parents: None,
+            },
+            InventoryError::OctopusMerge {
+                merge_commit,
+                parents,
+            } => Self {
+                kind: "octopusMerge".to_owned(),
+                commit: Some(merge_commit),
+                feature_parent: None,
+                branches: Vec::new(),
+                parents: Some(parents),
+            },
+            InventoryError::DeletedFeatureRef {
+                merge_commit,
+                feature_parent,
+            } => Self {
+                kind: "deletedFeatureRef".to_owned(),
+                commit: Some(merge_commit),
+                feature_parent: Some(feature_parent),
+                branches: Vec::new(),
+                parents: None,
+            },
+            InventoryError::AmbiguousFeatureRefs {
+                merge_commit,
+                feature_parent,
+                branches,
+            } => Self {
+                kind: "ambiguousFeatureRefs".to_owned(),
+                commit: Some(merge_commit),
+                feature_parent: Some(feature_parent),
+                branches,
+                parents: None,
+            },
+        }
+    }
+}
+
+/// Build the reachability inventory after the history proof failed.
+///
+/// Membership comes from remote tips reachable from the environment but not
+/// from main. A candidate whose tip another candidate already reaches is
+/// carried and never merged on its own; two refs at the same tip keep the
+/// alphabetically first as the carrier. Top-level features are ordered by tip
+/// author time, oldest first, then by name; a tip without a timestamp sorts
+/// after every dated tip.
+#[must_use]
+pub fn build_inventory_snapshot(
+    graph: &RestackGraph,
+    reason: UnsupportedHistory,
+    tip_timestamps: &BTreeMap<String, i64>,
+) -> RestackSnapshot {
+    let candidates = graph
+        .feature_refs
+        .iter()
+        .filter(|feature| {
+            graph.environment_ancestors.contains(&feature.tip)
+                && !graph.main_ancestors.contains(&feature.tip)
+        })
+        .collect::<Vec<_>>();
+    let carriers_of = |feature: &FeatureRef| -> Vec<String> {
+        candidates
+            .iter()
+            .filter(|other| other.name != feature.name)
+            .filter(|other| other.ancestors.contains(&feature.tip))
+            .filter(|other| other.tip != feature.tip || other.name < feature.name)
+            .map(|other| other.name.clone())
+            .collect()
+    };
+    let mut carried_features = Vec::new();
+    let mut top_level = Vec::new();
+    for feature in &candidates {
+        let carriers = carriers_of(feature);
+        if carriers.is_empty() {
+            top_level.push(*feature);
+        } else {
+            carried_features.push(CarriedFeature {
+                name: feature.name.clone(),
+                tip: feature.tip.clone(),
+                carriers,
+            });
+        }
+    }
+    top_level.sort_by(|left, right| {
+        let left_time = tip_timestamps.get(&left.tip);
+        let right_time = tip_timestamps.get(&right.tip);
+        match (left_time, right_time) {
+            (Some(left_time), Some(right_time)) => left_time
+                .cmp(right_time)
+                .then_with(|| left.name.cmp(&right.name)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left.name.cmp(&right.name),
+        }
+    });
+
+    let unique = graph
+        .environment_ancestors
+        .difference(&graph.main_ancestors)
+        .collect::<Vec<_>>();
+    let dropped_markers = unique
+        .iter()
+        .filter_map(|id| {
+            let commit = graph.commits.get(*id)?;
+            let [parent] = commit.parents.as_slice() else {
+                return None;
+            };
+            is_dropped_marker(graph, commit, parent).then(|| DroppedMarker {
+                commit: commit.id.clone(),
+                parent: parent.clone(),
+                tree: commit.tree.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let attributed_commits = unique
+        .iter()
+        .filter(|id| {
+            graph
+                .commits
+                .get(**id)
+                .is_some_and(|commit| commit.parents.len() == 1)
+        })
+        .filter(|id| dropped_markers.iter().all(|marker| marker.commit != ***id))
+        .filter_map(|id| {
+            let branches = top_level
+                .iter()
+                .filter(|feature| feature.ancestors.contains(*id))
+                .map(|feature| feature.name.clone())
+                .collect::<Vec<_>>();
+            (!branches.is_empty()).then(|| AttributedCommit {
+                commit: (*id).clone(),
+                branches,
+            })
+        })
+        .collect();
+
+    RestackSnapshot {
+        remote: graph.remote.clone(),
+        environment: graph.environment.clone(),
+        environment_ref: graph.environment_ref.clone(),
+        environment_tip: graph.environment_tip.clone(),
+        main: graph.main.clone(),
+        main_ref: graph.main_ref.clone(),
+        main_tip: graph.main_tip.clone(),
+        features: top_level
+            .iter()
+            .map(|feature| ExplicitFeature {
+                name: feature.name.clone(),
+                tip: feature.tip.clone(),
+                historical_merges: Vec::new(),
+            })
+            .collect(),
+        graduated_features: graph
+            .feature_refs
+            .iter()
+            .filter(|feature| graph.main_ancestors.contains(&feature.tip))
+            .map(branch_identity)
+            .collect(),
+        indirect_features: carried_features
+            .iter()
+            .map(|carried| BranchIdentity {
+                name: carried.name.clone(),
+                tip: carried.tip.clone(),
+            })
+            .collect(),
+        dropped_markers,
+        attributed_commits,
+        inventory_mode: InventoryMode::Reachability,
+        unsupported_history: Some(reason),
+        carried_features,
+    }
+}
+
 /// Validate requested removals without silently changing their meaning.
 pub fn select_features(
     snapshot: &RestackSnapshot,
@@ -1666,6 +1860,254 @@ mod tests {
         add_commit(&mut graph, "feature", "tf", &["base"], "feature work");
         add_commit(&mut graph, "merge", "tm", &["base", "feature"], "merge");
         graph
+    }
+
+    #[test]
+    fn inventory_snapshot_splits_top_level_and_carried_and_attributes_reached_work(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // main: base. feature/a: base -> a1 -> a2(pull-merge of a1 and a1b).
+        // feature/b branched from feature/a: a2 -> b1. Environment spine:
+        // base -> a1 -> a2 -> envm(merge b1) -> stray (direct work).
+        let mut graph = empty_graph("stray");
+        add_commit(&mut graph, "base", "tb", &[], "base");
+        add_commit(&mut graph, "a1", "ta1", &["base"], "a one");
+        add_commit(&mut graph, "a1b", "ta1b", &["base"], "a one b");
+        add_commit(
+            &mut graph,
+            "a2",
+            "ta2",
+            &["a1", "a1b"],
+            "Merge branch 'feature/a' into feature/a",
+        );
+        add_commit(&mut graph, "b1", "tb1", &["a2"], "b one");
+        add_commit(&mut graph, "envm", "tenv", &["a2", "b1"], "merge b");
+        add_commit(&mut graph, "stray", "tstray", &["envm"], "direct work");
+        add_commit(&mut graph, "marker", "tstray", &["stray"], "### Match 'qa'");
+        graph.environment_tip = "marker".to_owned();
+        graph.environment_ancestors =
+            ids(&["base", "a1", "a1b", "a2", "b1", "envm", "stray", "marker"]);
+        graph.main_ancestors = ids(&["base"]);
+        graph.feature_refs = vec![
+            feature("feature/a", "a2", &["a1", "a1b", "a2"]),
+            feature("feature/b", "b1", &["a1", "a1b", "a2", "b1"]),
+            feature("feature/gone", "base", &[]),
+            feature("feature/unmerged", "elsewhere", &[]),
+        ];
+        let reason = UnsupportedHistory::from(InventoryError::AmbiguousFeatureRefs {
+            merge_commit: "a2".to_owned(),
+            feature_parent: "a1b".to_owned(),
+            branches: vec!["feature/a".to_owned(), "feature/b".to_owned()],
+        });
+
+        let snapshot = build_inventory_snapshot(&graph, reason.clone(), &BTreeMap::new());
+
+        assert_eq!(snapshot.inventory_mode, InventoryMode::Reachability);
+        assert_eq!(snapshot.unsupported_history, Some(reason));
+        assert_eq!(names(&snapshot.features), ["feature/b"]);
+        assert!(snapshot.features[0].historical_merges.is_empty());
+        assert_eq!(
+            snapshot.carried_features,
+            vec![CarriedFeature {
+                name: "feature/a".to_owned(),
+                tip: "a2".to_owned(),
+                carriers: vec!["feature/b".to_owned()],
+            }]
+        );
+        assert_eq!(
+            snapshot.indirect_features,
+            vec![BranchIdentity {
+                name: "feature/a".to_owned(),
+                tip: "a2".to_owned(),
+            }]
+        );
+        assert_eq!(
+            snapshot.graduated_features,
+            vec![BranchIdentity {
+                name: "feature/gone".to_owned(),
+                tip: "base".to_owned(),
+            }]
+        );
+        assert_eq!(snapshot.dropped_markers.len(), 1);
+        assert_eq!(snapshot.dropped_markers[0].commit, "marker");
+        let attributed = snapshot
+            .attributed_commits
+            .iter()
+            .map(|commit| commit.commit.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(attributed, ["a1", "a1b", "b1"]);
+        assert!(snapshot
+            .attributed_commits
+            .iter()
+            .all(|commit| commit.branches == ["feature/b"]));
+        Ok(())
+    }
+
+    #[test]
+    fn inventory_chain_keeps_only_the_outermost_tip_and_lists_every_carrier() {
+        let mut graph = empty_graph("c");
+        for id in ["base", "a", "b", "c"] {
+            add_commit(&mut graph, id, id, &[], id);
+        }
+        graph.environment_ancestors = ids(&["base", "a", "b", "c"]);
+        graph.main_ancestors = ids(&["base"]);
+        graph.feature_refs = vec![
+            feature("feature/a", "a", &["a"]),
+            feature("feature/b", "b", &["a", "b"]),
+            feature("feature/c", "c", &["a", "b", "c"]),
+        ];
+        let snapshot = build_inventory_snapshot(&graph, direct_reason(), &BTreeMap::new());
+        assert_eq!(names(&snapshot.features), ["feature/c"]);
+        assert_eq!(
+            snapshot
+                .carried_features
+                .iter()
+                .map(|carried| (carried.name.as_str(), carried.carriers.clone()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "feature/a",
+                    vec!["feature/b".to_owned(), "feature/c".to_owned()]
+                ),
+                ("feature/b", vec!["feature/c".to_owned()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn inventory_diamond_keeps_both_carriers_and_orders_by_tip_age_then_name() {
+        let mut graph = empty_graph("env");
+        for id in ["base", "x", "left", "right", "same", "undated"] {
+            add_commit(&mut graph, id, id, &[], id);
+        }
+        graph.environment_ancestors = ids(&["base", "x", "left", "right", "same", "undated"]);
+        graph.main_ancestors = ids(&["base"]);
+        graph.feature_refs = vec![
+            feature("feature/right", "right", &["x", "right"]),
+            feature("feature/left", "left", &["x", "left"]),
+            feature("feature/x", "x", &["x"]),
+            feature("feature/zzz-same", "same", &["same"]),
+            feature("feature/aaa-same", "same", &["same"]),
+            feature("feature/undated", "undated", &["undated"]),
+        ];
+        let timestamps = BTreeMap::from([
+            ("left".to_owned(), 200),
+            ("right".to_owned(), 100),
+            ("same".to_owned(), 100),
+        ]);
+        let snapshot = build_inventory_snapshot(&graph, direct_reason(), &timestamps);
+        assert_eq!(
+            names(&snapshot.features),
+            [
+                "feature/aaa-same",
+                "feature/right",
+                "feature/left",
+                "feature/undated"
+            ]
+        );
+        assert_eq!(
+            snapshot
+                .carried_features
+                .iter()
+                .map(|carried| (carried.name.as_str(), carried.carriers.clone()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "feature/x",
+                    vec!["feature/right".to_owned(), "feature/left".to_owned()]
+                ),
+                ("feature/zzz-same", vec!["feature/aaa-same".to_owned()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_inventory_error_becomes_fallback_evidence() {
+        let cases = [
+            (
+                InventoryError::MissingCommit {
+                    commit: "m".to_owned(),
+                },
+                ("missingCommit", Some("m"), None, vec![], None),
+            ),
+            (
+                InventoryError::DirectCommit {
+                    commit: "d".to_owned(),
+                },
+                ("directCommit", Some("d"), None, vec![], None),
+            ),
+            (
+                InventoryError::FastForwardHistory {
+                    commit: "f".to_owned(),
+                    branches: vec!["a".to_owned()],
+                },
+                ("fastForwardHistory", Some("f"), None, vec!["a"], None),
+            ),
+            (
+                InventoryError::OctopusMerge {
+                    merge_commit: "o".to_owned(),
+                    parents: 3,
+                },
+                ("octopusMerge", Some("o"), None, vec![], Some(3)),
+            ),
+            (
+                InventoryError::DeletedFeatureRef {
+                    merge_commit: "x".to_owned(),
+                    feature_parent: "p".to_owned(),
+                },
+                ("deletedFeatureRef", Some("x"), Some("p"), vec![], None),
+            ),
+            (
+                InventoryError::AmbiguousFeatureRefs {
+                    merge_commit: "y".to_owned(),
+                    feature_parent: "q".to_owned(),
+                    branches: vec!["a".to_owned(), "b".to_owned()],
+                },
+                (
+                    "ambiguousFeatureRefs",
+                    Some("y"),
+                    Some("q"),
+                    vec!["a", "b"],
+                    None,
+                ),
+            ),
+        ];
+        for (error, (kind, commit, feature_parent, branches, parents)) in cases {
+            let evidence = UnsupportedHistory::from(error);
+            assert_eq!(evidence.kind, kind);
+            assert_eq!(evidence.commit.as_deref(), commit);
+            assert_eq!(evidence.feature_parent.as_deref(), feature_parent);
+            assert_eq!(evidence.branches, branches);
+            assert_eq!(evidence.parents, parents);
+        }
+    }
+
+    fn direct_reason() -> UnsupportedHistory {
+        UnsupportedHistory::from(InventoryError::DirectCommit {
+            commit: "stray".to_owned(),
+        })
+    }
+
+    fn names(features: &[ExplicitFeature]) -> Vec<&str> {
+        features
+            .iter()
+            .map(|feature| feature.name.as_str())
+            .collect()
+    }
+
+    fn empty_graph(environment_tip: &str) -> RestackGraph {
+        RestackGraph {
+            remote: "origin".to_owned(),
+            environment: "qa".to_owned(),
+            environment_ref: "refs/remotes/origin/qa".to_owned(),
+            environment_tip: environment_tip.to_owned(),
+            main: "main".to_owned(),
+            main_ref: "refs/remotes/origin/main".to_owned(),
+            main_tip: "base".to_owned(),
+            environment_ancestors: BTreeSet::new(),
+            main_ancestors: BTreeSet::new(),
+            feature_refs: Vec::new(),
+            commits: BTreeMap::new(),
+        }
     }
 
     fn add_commit(graph: &mut RestackGraph, id: &str, tree: &str, parents: &[&str], message: &str) {
