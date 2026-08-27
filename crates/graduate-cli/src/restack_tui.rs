@@ -171,8 +171,15 @@ fn cancelled_text(environment: &str) -> String {
 }
 
 fn success_text(plan: &RestackPlan) -> String {
+    let inventory = match plan.snapshot.inventory_mode {
+        InventoryMode::History => String::new(),
+        InventoryMode::Reachability => format!(
+            " Rebuilt from inventory; {}.",
+            dropped_summary(plan.orphaned_commits.len())
+        ),
+    };
     format!(
-        "Restacked {}/{}: {} -> {} (tree {}); {} retained, {} omitted from the environment.",
+        "Restacked {}/{}: {} -> {} (tree {}); {} retained, {} omitted from the environment.{inventory}",
         escape(&plan.snapshot.remote),
         escape(&plan.snapshot.environment),
         short_oid(&plan.snapshot.environment_tip),
@@ -1074,6 +1081,18 @@ fn review_text(plan: &RestackPlan, show_details: bool) -> Text<'static> {
             )),
         ]),
     ];
+    if plan.snapshot.inventory_mode == InventoryMode::Reachability {
+        lines.push(Line::from(vec![
+            Span::styled("Inventory       ", Palette::muted()),
+            Span::styled(
+                format!(
+                    "reachability · oldest tip first · resolutions not reused · {}",
+                    dropped_summary(plan.orphaned_commits.len())
+                ),
+                Palette::warning(),
+            ),
+        ]));
+    }
     if !plan.selection.removed.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::styled(
@@ -1131,7 +1150,11 @@ fn review_text(plan: &RestackPlan, show_details: bool) -> Text<'static> {
         Line::from(""),
         Line::styled("Retained merge order", Palette::primary().bold()),
         Line::styled(
-            "Selected feature tips are rebuilt in this order.",
+            if plan.snapshot.inventory_mode == InventoryMode::Reachability {
+                "Selected feature tips are rebuilt oldest tip first, then by name."
+            } else {
+                "Selected feature tips are rebuilt in this order."
+            },
             Palette::muted(),
         ),
         Line::styled(
@@ -1175,6 +1198,37 @@ fn review_text(plan: &RestackPlan, show_details: bool) -> Text<'static> {
                     ])
                 }),
         );
+    }
+    if !plan.orphaned_commits.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!("Dropped commits ({})", plan.orphaned_commits.len()),
+            Palette::warning().bold(),
+        ));
+        lines.push(Line::styled(
+            "On no retained branch; they will not be in the rebuilt environment.",
+            Palette::muted(),
+        ));
+        lines.extend(plan.orphaned_commits.iter().map(|commit| {
+            Line::from(vec![
+                Span::styled(
+                    format!(
+                        "  {}  {}  ",
+                        short_oid(&commit.commit),
+                        escape(&commit.date)
+                    ),
+                    Palette::warning(),
+                ),
+                Span::styled(
+                    format!(
+                        "{}  ",
+                        pad_text(&truncate_text(&escape(&commit.author), 14), 14)
+                    ),
+                    Palette::muted(),
+                ),
+                Span::raw(truncate_text(&escape(&commit.subject), 48)),
+            ])
+        }));
     }
     if show_details {
         lines.push(Line::from(""));
@@ -1262,7 +1316,36 @@ fn technical_detail_lines(plan: &RestackPlan) -> Vec<Line<'static>> {
                 plan.snapshot.dropped_markers.len()
             )),
         ]),
+        Line::from(vec![
+            Span::styled("Inventory       ", Palette::muted()),
+            Span::raw(match &plan.snapshot.unsupported_history {
+                None => "history proof; every commit attributed".to_owned(),
+                Some(reason) => format!(
+                    "reachability; history proof failed with {} at {}",
+                    escape(&reason.kind),
+                    reason
+                        .commit
+                        .as_deref()
+                        .map_or_else(|| "?".to_owned(), short_oid)
+                ),
+            }),
+        ]),
+        Line::from(vec![
+            Span::styled("Carried         ", Palette::muted()),
+            Span::raw(format!(
+                "{} branch(es) reached by a retained tip",
+                plan.snapshot.carried_features.len()
+            )),
+        ]),
     ]
+}
+
+fn dropped_summary(count: usize) -> String {
+    match count {
+        0 => "no commits dropped".to_owned(),
+        1 => "1 commit dropped".to_owned(),
+        count => format!("{count} commits dropped"),
+    }
 }
 
 fn resolution_summary(plan: &RestackPlan) -> String {
@@ -1365,6 +1448,17 @@ fn confirmation_text(plan: Option<&RestackPlan>) -> Text<'static> {
                     )),
                 ]),
             ];
+            let dropped = plan.orphaned_commits.len();
+            if dropped > 0 {
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    format!(
+                        "Drops {dropped} {} that no retained branch contains.",
+                        if dropped == 1 { "commit" } else { "commits" }
+                    ),
+                    Palette::warning().bold(),
+                ));
+            }
             if removed > 0 {
                 lines.push(Line::from(""));
                 lines.push(Line::styled(
@@ -1557,8 +1651,8 @@ mod tests {
     use graduate::restack::{
         build_inventory_snapshot, build_plan, AttributedCommit, BranchIdentity, ExplicitFeature,
         FeatureRef, GraphCommit, HistoricalMerge, InventoryError, InventoryMode, MergeOutcome,
-        MergeResolution, Reconstruction, RemoteEndpointIdentity, RestackAuthor, RestackGraph,
-        RestackSnapshot, UnsupportedHistory,
+        MergeResolution, OrphanedCommit, Reconstruction, RemoteEndpointIdentity, RestackAuthor,
+        RestackGraph, RestackSelection, RestackSnapshot, UnsupportedHistory,
     };
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1869,10 +1963,11 @@ mod tests {
         assert!(details.contains("sha256:ffffffff"));
         assert!(details.contains("unsigned canonical merge commits"));
         assert!(details.contains("0 exact phase marker(s)"));
-        for _ in 0..20 {
+        assert!(details.contains("history proof; every commit attributed"));
+        for _ in 0..22 {
             let _ = interaction.update(RestackInteractionAction::MoveDown);
         }
-        let identities = rendered(&interaction, Some(&plan), None)?;
+        let identities = rendered_at(&interaction, Some(&plan), None, 115, 40)?;
         assert!(identities.contains("Exact feature identities"));
         assert!(identities.contains("retained  feature/PROJ-12-one @ aaaaaaaaaa"));
         assert!(identities.contains("removed   feature/two @ bbbbbbbbbb"));
@@ -2326,6 +2421,133 @@ mod tests {
             filtered_feature_indices(&interaction, "nothing"),
             Vec::<usize>::new()
         );
+    }
+
+    #[test]
+    fn inventory_review_lists_dropped_commits_and_confirmation_states_the_loss(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for orphan_count in [0_usize, 1, 200] {
+            let (interaction, plan) = inventory_plan(orphan_count)?;
+            let mut review = interaction.clone();
+            review.review_ready();
+            for (width, height) in [(60, 24), (120, 40)] {
+                let rendered = rendered_at(&review, Some(&plan), None, width, height)?;
+                assert!(rendered.contains("RESTACK REVIEW"), "{rendered}");
+                assert!(
+                    rendered.contains("oldest tip first"),
+                    "{width}x{height}: {rendered}"
+                );
+                if orphan_count == 0 {
+                    assert!(rendered.contains("no commits dropped"), "{rendered}");
+                    assert!(!rendered.contains("Dropped commits ("));
+                } else {
+                    assert!(
+                        rendered.contains(&format!("{orphan_count} commit")),
+                        "{rendered}"
+                    );
+                }
+            }
+            if orphan_count > 0 {
+                let tall = rendered_at(&review, Some(&plan), None, 120, 60)?;
+                if orphan_count == 1 {
+                    assert!(tall.contains("Dropped commits (1)"), "{tall}");
+                    assert!(tall.contains("orphan-  2026-01-02  Pat"), "{tall}");
+                    assert!(tall.contains("lost work 0"), "{tall}");
+                } else {
+                    assert!(tall.contains("Dropped commits (200)"), "{tall}");
+                }
+            }
+            let mut details = review.clone();
+            let _ = details.update(RestackInteractionAction::ToggleDetails);
+            let detailed = rendered_at(&details, Some(&plan), None, 120, 60)?;
+            assert!(
+                detailed.contains("history proof failed with directCommit"),
+                "{detailed}"
+            );
+            assert!(detailed.contains("1 branch(es) reached by a retained tip"));
+
+            let mut confirmation = review.clone();
+            let _ = confirmation.update(RestackInteractionAction::Continue);
+            let rendered = rendered_at(&confirmation, Some(&plan), None, 60, 30)?;
+            match orphan_count {
+                0 => assert!(!rendered.contains("Drops "), "{rendered}"),
+                1 => assert!(
+                    rendered.contains("Drops 1 commit that no retained branch"),
+                    "{rendered}"
+                ),
+                _ => assert!(
+                    rendered.contains("Drops 200 commits that no retained branch"),
+                    "{rendered}"
+                ),
+            }
+            assert!(rendered.contains("Ctrl+Y"), "{rendered}");
+
+            let text = success_text(&plan);
+            assert!(text.contains("Rebuilt from inventory"), "{text}");
+            if orphan_count == 1 {
+                assert!(text.ends_with("1 commit dropped."), "{text}");
+            }
+        }
+        let history = plan()?;
+        assert!(!success_text(&history).contains("inventory"));
+        let mut review = RestackInteraction::new(snapshot());
+        review.review_ready();
+        let rendered = rendered_at(&review, Some(&history), None, 120, 40)?;
+        assert!(!rendered.contains("Dropped commits"));
+        assert!(!rendered.contains("oldest tip first"));
+        Ok(())
+    }
+
+    fn inventory_plan(
+        orphan_count: usize,
+    ) -> Result<(RestackInteraction, RestackPlan), Box<dyn std::error::Error>> {
+        let mut snapshot =
+            inventory_snapshot(UnsupportedHistory::from(InventoryError::DirectCommit {
+                commit: "stray".to_owned(),
+            }));
+        snapshot.unattributed_commits = (0..orphan_count).map(|n| format!("orphan-{n}")).collect();
+        let orphans = (0..orphan_count)
+            .map(|n| OrphanedCommit {
+                commit: format!("orphan-{n}"),
+                subject: format!("lost work {n}"),
+                author: "Pat".to_owned(),
+                date: "2026-01-02".to_owned(),
+            })
+            .collect();
+        let mut interaction = RestackInteraction::from_inventory(snapshot.clone());
+        let _ = interaction.update(RestackInteractionAction::AcceptInventoryFallback);
+        let selection = RestackSelection {
+            retained: vec![BranchIdentity {
+                name: "feature/two".to_owned(),
+                tip: "b".to_owned(),
+            }],
+            removed: Vec::new(),
+        };
+        let plan = build_plan(
+            snapshot,
+            RemoteEndpointIdentity {
+                fetch_sha256: "f".repeat(64),
+                push_sha256: "p".repeat(64),
+            },
+            RestackAuthor {
+                name: "Pat".to_owned(),
+                email: "pat@example.com".to_owned(),
+            },
+            selection,
+            Reconstruction {
+                merges: vec![MergeOutcome {
+                    branch: "feature/two".to_owned(),
+                    tip: "b".to_owned(),
+                    commit: "preview".to_owned(),
+                    tree: "tree-tip".to_owned(),
+                    resolution: MergeResolution::Clean,
+                }],
+                final_tree: "tree-tip".to_owned(),
+                preview_commit: "preview".to_owned(),
+            },
+            orphans,
+        )?;
+        Ok((interaction, plan))
     }
 
     /// Reachability snapshot: feature/b carries feature/a; `stray` is dropped.

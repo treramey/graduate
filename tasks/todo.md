@@ -232,19 +232,19 @@ from inventory or `Esc` to cancel.
 **Description:** Put the loss in front of the user before Ctrl+Y.
 
 **Acceptance criteria:**
-- [ ] Review shows a "Dropped commits (N)" section listing short id, date,
+- [x] Review shows a "Dropped commits (N)" section listing short id, date,
       author, subject per orphan, scrollable with the existing review scroll;
       the merge-order rule appears once under the retained list in
       reachability mode; the reason evidence is in the technical details view.
-- [ ] Confirmation adds "Drops N commits that no retained branch contains."
+- [x] Confirmation adds "Drops N commits that no retained branch contains."
       when N > 0; `confirmation_minimum_height` accounts for it.
-- [ ] `success_text` mentions the mode and the dropped count so the terminal
+- [x] `success_text` mentions the mode and the dropped count so the terminal
       record after publish is complete.
-- [ ] Tests: review with 0, 1, and 200 orphans at minimum and wide sizes;
+- [x] Tests: review with 0, 1, and 200 orphans at minimum and wide sizes;
       confirmation height; success text.
 
 **Verification:**
-- [ ] `cargo test --locked -p graduate-cli restack_tui`
+- [x] `cargo test --locked -p graduate-cli restack_tui`
 
 **Dependencies:** Task 5
 **Files:** `crates/graduate-cli/src/restack_tui.rs`
@@ -253,8 +253,8 @@ from inventory or `Esc` to cancel.
 ---
 
 ### Checkpoint: Interactive flow
-- [ ] `cargo test --workspace --locked` green, clippy and fmt clean
-- [ ] Every new screen has a `TestBackend` test at 60×24
+- [x] `cargo test --workspace --locked` green, clippy and fmt clean
+- [x] Every new screen has a `TestBackend` test at 60×24
 
 ---
 

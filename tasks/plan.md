@@ -70,7 +70,7 @@ T1 domain types + schema bump
 
 - [x] Task 6: Unsupported-history screen with `r` to rebuild and `Esc` to cancel
 - [x] Task 7: Checklist banner, carried rows, and "N commits will be dropped" impact line
-- [ ] Task 8: Review orphan section, merge-order note, and confirmation line
+- [x] Task 8: Review orphan section, merge-order note, and confirmation line
 
 ### Checkpoint: Interactive flow
 - [ ] `cargo test --workspace --locked` passes; clippy and fmt clean
