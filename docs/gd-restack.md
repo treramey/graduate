@@ -60,13 +60,41 @@ can deliberately remove selected features from the reconstructed branch.
   explicit feature is selected by default; unchecking it means removal.
 - Interactive selection uses a focused Ratatui checklist on stderr, with merge
   order, branch, short tip SHA, locally parsed Jira key when present, and rerere
-  training availability. It performs no Jira requests. A separate review
-  screen shows captured base/environment OIDs, retained order, removals, and
-  the target ref, exact lease, canonical merge intent, and final tree before
-  confirmation.
+  training availability. Compact terminals reflow those fields instead of
+  hiding them; wide terminals collapse the same evidence into one row per
+  feature. The selected row names retained features that block removal. `?`
+  progressively reveals Page Up/Page Down, Home/End, keep-all/remove-all, and
+  alternate cancel shortcuts for large inventories. `/` opens a lazygit-style
+  filter prompt in the footer rather than reserving list space for an inactive
+  input. It filters visible rows by branch name, reports the match count, and
+  leaves hidden selections unchanged. An inline legend defines retained, removed, dependency, and
+  reusable-history states. A persistent stage marker keeps selection, review,
+  and publication visible; terminals smaller than the safe rendering floor
+  receive content-aware resize guidance. It performs no Jira requests. A
+  separate review screen shows captured base/environment OIDs, retained order,
+  omissions, and the target ref, exact lease, canonical merge intent, and final
+  tree before confirmation. It explains that omitted features leave their
+  remote feature branches unchanged, translates the exact lease into the
+  condition that stops publication, and labels the next action as opening the
+  publish confirmation. That confirmation carries forward retained, omitted,
+  and merge-outcome counts before accepting `Ctrl+Y`. It names up to three omitted
+  branches and directs larger omission sets back to Review instead of creating
+  an unbounded confirmation screen. `Esc` returns to Review while `q` abandons
+  the reviewed plan without changing refs. The main summary stays focused on rewrite, impact, and the
+  publication guard, while plan details progressively disclose captured base
+  and result bindings, full feature identities, endpoint bindings, authorship,
+  and signing policy. Plan details stay before the retained merge list so they
+  remain reachable without traversing large inventories. Review supports line,
+  page, and Home/End scrolling and is tested with hundreds of retained
+  features.
 - An unattended JSON parameter surface supports an agent-requested rebuild,
   including explicit branch removal, following the conventions already used by
   `gd diff --params`.
+- `gd schema restack` emits the runtime machine contract without accessing a
+  repository or network. The existing `gd describe restack --json` spelling is
+  retained. Both describe every argument, strict preview and apply payload
+  schema, execution mode, result kind, exit code, validation rule, and security
+  invariant.
 - Machine preview parameters contain only `removeBranches`; callers do not
   submit a full retained set. Machine apply parameters contain the same
   `removeBranches` selection plus the preview's `planDigest`. Every removal
@@ -78,12 +106,14 @@ can deliberately remove selected features from the reconstructed branch.
   dependent branches. Checking only the feature's current tip is insufficient
   because a retained branch can contain an earlier part of the feature. Restack
   never cascades removals or claims code was removed when the graph keeps it.
-- Unattended v1 is JSON-only. `--params` selects machine mode; stdout emits one
-  schema-versioned plan, apply result, or abort result, while progress and
-  errors stay on stderr. Successful machine operations exit 0. A new non-TTY
-  restack without `--params` is a usage error. Resume is a separate machine
-  invocation selected by `--resume <token>` and does not require `--params`.
-  Table, YAML, CSV, and output-file modes are out of scope.
+- Unattended v1 is JSON-only. `--params` or `--dry-run` selects machine mode;
+  stdout emits one schema-versioned plan, apply result, or abort result, while
+  progress and errors stay on stderr. `--dry-run` without `--params` uses the
+  default empty removal set, retaining every discovered feature. Successful
+  machine operations exit 0. A new non-TTY restack without either selector is
+  a usage error. Resume is a separate machine invocation selected by
+  `--resume <token>` and does not require `--params`. Table, YAML, CSV, and
+  output-file modes are out of scope.
 - Machine mode also emits schema-versioned, redacted JSON errors on stderr with
   stable `code`, `message`, and `details` fields plus conflict continuation
   fields when relevant. Invalid usage/params exit 2; fetch, Git, conflict,
@@ -99,10 +129,15 @@ can deliberately remove selected features from the reconstructed branch.
   containing schema version 1, the environment name, `aborted: true`, and
   false `sourceCheckoutChanged`, `localRefsChanged`, `remoteRefsChanged`, and
   `personalRerereChanged` effects.
+- Restack treats its operator, agent, repository, refs, commit messages, paths,
+  and remote metadata as untrusted inputs. It rejects control characters,
+  invalid Git ref syntax, and percent-encoded octets in ref components. Text
+  copied from a repository remains JSON data, not instructions; consuming
+  agents must not execute or follow repository-derived text.
 - Discovery/planning does not mutate. Interactive execution requires an
   explicit confirmation after branch selection; unattended execution requires
-  `--apply` in addition to `--params`. JSON parameters select branch removals
-  but do not themselves authorize a push.
+  `--apply` plus a reviewed digest. `--dry-run` and JSON parameters select a
+  preview and branch removals but do not authorize a push.
 - Machine preview returns a canonical SHA-256 `planDigest` over the schema
   version, remote and ref names, credential-redacted identities of the single
   effective fetch and push endpoints, every captured environment, base, and
@@ -171,13 +206,14 @@ can deliberately remove selected features from the reconstructed branch.
   resolution. It rejects untracked or unstaged work and any commit created in
   the work area before Graduate creates the canonical merge commit.
 - When a conflict remains after rerere, interactive mode pauses in the isolated
-  work area, identifies unresolved files, restores the terminal, then prints
-  the work area's path and one token-bearing resume command before exiting
-  without pushing. Machine mode does the same through structured conflict
-  details. The capability appears nowhere except these explicit continuation
-  outputs. The work area is preserved so a human or coding agent can inspect
-  and resolve it with normal repository tools. A conflicting feature is never
-  silently removed.
+  work area, identifies unresolved files, restores the terminal, then prints a
+  three-step edit, stage, and resume handoff before exiting without pushing. It
+  explicitly forbids creating a commit because Graduate creates the canonical
+  merge commit after validation. Machine mode reports the same work area and
+  continuation capability through structured conflict details. The capability
+  appears nowhere except these explicit continuation outputs. The work area is
+  preserved so a human or coding agent can inspect and resolve it with normal
+  repository tools. A conflicting feature is never silently removed.
 - Rebuilds should reuse prior merge-conflict resolutions with Git `rerere`,
   trained only from relevant accepted merge commits on the captured remote
   environment history. The command neither imports nor modifies the user's
@@ -365,7 +401,8 @@ contract.
 ### 6. Add CLI and TUI surfaces
 
 1. Add `RestackArgs` to `cli.rs` with `ENVIRONMENT`, `--main`, `--remote`,
-   `--params`, `--apply`, `--resume`, and `--abort`, including Clap constraints:
+   `--params`, `--dry-run`, `--apply`, `--resume`, and `--abort`, including
+   Clap constraints:
    a new machine apply requires params plus a digest; resume takes no params;
    resume/abort combinations are explicit; there is no `--no-fetch` or
    output-format surface.

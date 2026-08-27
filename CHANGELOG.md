@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Added `gd schema restack` and an explicit `gd restack --dry-run` machine
+  preview. A dry-run without `--params` safely retains every discovered
+  feature, while `--params` can still select exact removals.
+- Added `gd describe restack --json` for side-effect-free runtime discovery of
+  restack arguments, payload schemas, execution modes, result kinds,
+  validation rules, and security invariants.
 - Added `gd restack <environment>` for interactive and agent-reviewed rebuilds
   of ephemeral integration branches. It uses isolated unsigned reconstruction,
   reusable conflict resolutions, resumable conflict handoff, immutable plan
@@ -28,8 +34,47 @@ All notable changes to this project will be documented in this file.
 
 - Made the final restack checkpoint harder to trigger accidentally: publication
   now requires `Ctrl+Y`, rewrite scope and collaborator impact are explicit,
-  lease protection leads with its plain-language outcome, and Review versus
+  lease protection leads with its plain-language outcome, and Back versus
   Abandon labels state what each exit preserves.
+- Prevented undersized restack screens from accepting hidden progression or
+  publication actions, made wrapped-height safety checks match Ratatui, fixed
+  upward navigation after jumping to the end of Review, and clarified that
+  excluded features are omitted from the environment rather than deleted.
+- Made restack publication decisions explicit: review now explains the effect
+  and recoverability of omitted features, translates lease and signing policy
+  into plain-language consequences, puts omissions before retained details on
+  compact terminals, names the publish-confirmation action, and repeats
+  reviewed impact at the final publication checkpoint. The bounded confirmation labels
+  current and reviewed tips, previews up to three omitted branches, distinguishes
+  Back from Cancel, and removes repetitive and low-value safety copy. Plan
+  details advertise the exact evidence they reveal, while redundant target,
+  binding, and signing rows no longer compete with the primary review decision.
+  Reviews with hundreds of retained features keep plan details near the top and
+  support Home/End jumps across the full merge order.
+- Hardened the interactive restack TUI at its safety boundaries: minimum-size
+  confirmation keeps the publish instruction visible, selected dependencies
+  name the retained features blocking removal, conflict handoff explains the
+  edit-stage-resume sequence and forbids manual commits, and technical review
+  exposes exact feature identities. Selection now keeps its primary controls
+  concise, reveals bulk and navigation shortcuts on demand, opens filtering in
+  a lazygit-style footer prompt, reports match counts, and aligns wide Unicode
+  branch names by terminal columns.
+- Preserved Jira keys and reusable conflict-resolution evidence in compact
+  restack checklists, added a safe undersized-terminal state, exposed workflow
+  progress, branch filtering, and complete navigation controls, and made large
+  feature inventories faster to traverse and select in batches. Wide terminals
+  now use denser one-line evidence rows, while review keeps plan bindings visible
+  and the checklist defines every state symbol inline. Narrow terminals keep
+  complete dependency-rejection guidance visible instead of clipping the
+  blocking branch.
+- Rejected percent-encoded octets in Git ref components and documented that
+  agents and repository-derived content are untrusted inputs.
+- Kept the interactive restack checklist viewport stable while navigating long
+  feature lists.
+- Reworked interactive restack selection and review around compact workflow
+  headers, aligned feature columns, dependency markers, live selection totals,
+  an impact-first rewrite summary, semantic merge outcomes, optional technical
+  details, and clearer staged-action controls.
 - Flagged environment merges that an environment rebuild or pull-style
   self-merge moved off the environment branch's first-parent line, so stale
   feature branches carrying older environment history keep their

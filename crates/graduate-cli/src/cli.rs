@@ -24,12 +24,52 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Configure authentication for a ticket system.
     Auth(AuthArgs),
+    /// Describe a command's machine-readable contract.
+    Describe(DescribeArgs),
     /// Show feature branches in an environment that have not reached main.
     Diff(DiffArgs),
     /// Generate portable AI agent skills from Graduate's command contract.
     GenerateSkills(GenerateSkillsArgs),
     /// Review and safely publish an isolated environment reconstruction.
     Restack(RestackArgs),
+    /// Inspect a command's machine-readable runtime schema.
+    Schema(SchemaArgs),
+}
+
+/// Commands whose runtime contract can be described.
+#[derive(Debug, Args)]
+pub(crate) struct DescribeArgs {
+    #[command(subcommand)]
+    pub(crate) command: DescribeCommand,
+}
+
+/// Machine-readable command descriptions.
+#[derive(Debug, Subcommand)]
+pub(crate) enum DescribeCommand {
+    /// Describe restack arguments, payloads, modes, results, and security invariants.
+    Restack(DescribeRestackArgs),
+}
+
+/// Options for describing the restack contract.
+#[derive(Debug, Args)]
+pub(crate) struct DescribeRestackArgs {
+    /// Emit the command contract as JSON.
+    #[arg(long, required = true)]
+    pub(crate) json: bool,
+}
+
+/// Commands whose runtime schemas can be inspected as JSON.
+#[derive(Debug, Args)]
+pub(crate) struct SchemaArgs {
+    #[command(subcommand)]
+    pub(crate) command: SchemaCommand,
+}
+
+/// Machine-readable command schemas.
+#[derive(Debug, Subcommand)]
+pub(crate) enum SchemaCommand {
+    /// Describe restack arguments, payloads, modes, results, and security invariants.
+    Restack,
 }
 
 /// Options for reviewing or applying an environment restack.
@@ -47,6 +87,9 @@ pub(crate) struct RestackArgs {
     /// JSON with removeBranches and, only for apply, the reviewed planDigest.
     #[arg(long, value_name = "JSON", conflicts_with = "resume")]
     pub(crate) params: Option<String>,
+    /// Explicitly run a machine preview without publishing. Defaults to retaining every feature.
+    #[arg(long, conflicts_with_all = ["apply", "resume", "abort"])]
+    pub(crate) dry_run: bool,
     /// Publish a freshly reconstructed plan authorized by its reviewed digest.
     #[arg(long, conflicts_with = "abort")]
     pub(crate) apply: bool,
@@ -66,6 +109,7 @@ impl std::fmt::Debug for RestackArgs {
             .field("main", &self.main)
             .field("remote", &self.remote)
             .field("params", &self.params.as_ref().map(|_| "<json>"))
+            .field("dry_run", &self.dry_run)
             .field("apply", &self.apply)
             .field("resume", &self.resume.as_ref().map(|_| "<token>"))
             .field("abort", &self.abort)

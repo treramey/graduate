@@ -76,3 +76,10 @@ An isolated restack that Graduate preserves after an unresolved conflict. It
 binds the conflict resolution to the reviewed plan until the session is
 applied, aborted, or expires.
 _Avoid_: Saved plan, personal worktree
+
+- Inspect the current machine contract with `gd schema restack`. The older
+  explicit form, `gd describe restack --json`, remains available.
+- Prefer `gd restack <environment> --dry-run` for a machine preview that keeps
+  every feature, or combine `--dry-run` with `--params` to request removals.
+- `--dry-run` and `--params` never authorize publication. Only `--apply` plus
+  a reviewed `planDigest` can publish a machine restack.

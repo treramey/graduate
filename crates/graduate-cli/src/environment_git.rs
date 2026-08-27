@@ -356,6 +356,7 @@ pub(crate) fn validate_ref_component(label: &str, value: &str) -> Result<(), Cli
     if value.trim().is_empty()
         || value.starts_with('-')
         || value.chars().any(char::is_control)
+        || contains_percent_encoded_octet(value)
         || gix::validate::reference::name_partial(value.as_bytes().as_bstr()).is_err()
     {
         return Err(CliError::InvalidInput(format!(
@@ -363,6 +364,12 @@ pub(crate) fn validate_ref_component(label: &str, value: &str) -> Result<(), Cli
         )));
     }
     Ok(())
+}
+
+fn contains_percent_encoded_octet(value: &str) -> bool {
+    value.as_bytes().windows(3).any(|octet| {
+        octet[0] == b'%' && octet[1].is_ascii_hexdigit() && octet[2].is_ascii_hexdigit()
+    })
 }
 
 pub(crate) fn unix_date(seconds: i64) -> String {
@@ -411,6 +418,14 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn ref_components_reject_encoded_octets() {
+        for value in ["%2e%2e/qa", "%2E%2E/qa", "qa%2fchild", "%252e%252e/qa"] {
+            assert!(validate_ref_component("branch", value).is_err());
+        }
+        assert!(validate_ref_component("branch", "feature/100%-complete").is_ok());
+    }
 
     #[test]
     fn git_inspection_builds_a_first_merge_ordered_restack_snapshot(
