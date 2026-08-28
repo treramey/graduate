@@ -1,5 +1,11 @@
 # @treramey/graduate
 
+## 1.7.0
+
+### Minor Changes
+
+- c12afd5: `gd restack --resume` from a terminal returns to the interactive review screen instead of printing the plan as JSON
+
 ## 1.6.0
 
 ### Minor Changes

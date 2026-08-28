@@ -24,7 +24,7 @@ futures-util = "0.3"
 fs2 = "0.4"
 getrandom = "0.4"
 gix = { version = "0.86", default-features = false, features = ["max-performance-safe", "merge", "revision", "sha1"] }
-graduate = { version = "1.6.0", path = "../graduate" }
+graduate = { version = "1.7.0", path = "../graduate" }
 hmac = "0.12"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "unstable-rendered-line-info"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
