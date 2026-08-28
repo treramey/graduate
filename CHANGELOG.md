@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `gd diff` branch rows gained `mergesCleanlyOntoMain` and `conflictingPaths`,
+  computed by an in-memory gitoxide three-way merge of each tip onto main
+  that never writes to the repository. The fields stay `null` unless a report
+  that needs them (the readiness report) runs.
 - `gd restack` now detects tainted features: branches that merged the
   environment into themselves. They appear under `taintedBranches` in the
   schema-v3 `restackPlan`, start removed in the interactive checklist with a

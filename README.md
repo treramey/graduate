@@ -252,6 +252,14 @@ as `TIP IN ENV`, `UNMERGED`, and `ABSORBED` columns, and the TUI shows an
 Rows recovered from deleted branches have a `null` tip. The branch report
 schema is version 2.
 
+Rows also carry `mergesCleanlyOntoMain` and `conflictingPaths`. They are
+`null` (an empty CSV cell, `-` in the table's `MERGES CLEAN` column) unless
+the readiness report ran, because computing them means merging every branch
+tip onto main. Graduate performs that merge entirely in memory with gitoxide
+on a repository handle that never writes objects, so the scanned repository
+is unchanged; only the conflict count is reported, never conflict content or
+paths.
+
 Non-interactive runs emit JSON by default, with camelCase report fields and
 Jira issue data in the same `fields.status.name`, `fields.assignee.displayName`,
 and `fields.fixVersions` shapes that Jira returns. Select another format with

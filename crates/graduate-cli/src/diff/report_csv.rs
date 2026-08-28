@@ -30,6 +30,8 @@ pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
             "tipInEnvironment",
             "unmergedAhead",
             "absorbedEnvironmentMerges",
+            "mergesCleanlyOntoMain",
+            "conflictingPaths",
             "lastAuthor",
             "mergedEnvironments",
             "jiraIssue.key",
@@ -55,6 +57,8 @@ pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
                 &report.main,
                 direction,
                 &count,
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -112,6 +116,8 @@ pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
                     "",
                     "",
                     "",
+                    "",
+                    "",
                 ],
             )?;
         }
@@ -121,6 +127,10 @@ pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
         let tip_in_environment = yes_no(row.tip_in_environment);
         let unmerged_ahead = row.unmerged_ahead.to_string();
         let absorbed = row.absorbed_environment_merges.to_string();
+        let merges_cleanly = row.merge_onto_main.map_or("", |merge| yes_no(merge.clean));
+        let conflicting_paths = row
+            .merge_onto_main
+            .map_or(String::new(), |merge| merge.conflicting_paths.to_string());
         let merged_environments = row.merged_environments.join(", ");
         let (key, status, summary, assignee, versions, api_url, browse_url, jira_error) =
             match &row.jira {
@@ -206,6 +216,8 @@ pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
                 tip_in_environment,
                 &unmerged_ahead,
                 &absorbed,
+                merges_cleanly,
+                &conflicting_paths,
                 &row.last_author,
                 &merged_environments,
                 &key,

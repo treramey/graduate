@@ -60,6 +60,7 @@ fn scan_finds_a_feature_in_environment_but_not_main() -> Result<(), Box<dyn std:
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;
@@ -166,6 +167,7 @@ fn scan_reports_non_merge_commits_that_the_environment_is_behind_main(
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;
@@ -256,6 +258,7 @@ fn merge_commits_are_excluded_from_the_ahead_count_and_history(
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;

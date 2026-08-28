@@ -81,11 +81,11 @@ fn csv_keeps_jira_errors_out_of_issue_fields() -> Result<(), CliError> {
         .next()
         .is_some_and(|line| line.ends_with("\"jiraError\"")));
     assert!(csv.lines().next().is_some_and(|line| line.contains(
-        "\"ahead\",\"tip\",\"tipInEnvironment\",\"unmergedAhead\",\"absorbedEnvironmentMerges\",\"lastAuthor\""
+        "\"ahead\",\"tip\",\"tipInEnvironment\",\"unmergedAhead\",\"absorbedEnvironmentMerges\",\"mergesCleanlyOntoMain\",\"conflictingPaths\",\"lastAuthor\""
     )));
     assert!(csv
         .lines()
-        .any(|line| line.contains("\"2\",\"\",\"yes\",\"0\",\"0\",\"Pat\"")));
+        .any(|line| line.contains("\"2\",\"\",\"yes\",\"0\",\"0\",\"\",\"\",\"Pat\"")));
     assert!(csv.contains("\"inventory\",\"qa\",\"main\",\"behindMain\",\"1\""));
     assert!(csv.contains("\"commit\",\"qa\",\"main\",\"behindMain\",\"\",\"abcdef123456\""));
     assert!(csv.lines().any(|line| {

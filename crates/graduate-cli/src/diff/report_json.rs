@@ -64,6 +64,8 @@ pub(super) fn report_value(report: &PromotionReport) -> serde_json::Value {
                 "tipInEnvironment": branch.tip_in_environment,
                 "unmergedAhead": branch.unmerged_ahead,
                 "absorbedEnvironmentMerges": branch.absorbed_environment_merges,
+                "mergesCleanlyOntoMain": branch.merge_onto_main.map(|merge| merge.clean),
+                "conflictingPaths": branch.merge_onto_main.map(|merge| merge.conflicting_paths),
                 "lastAuthor": branch.last_author,
                 "mergedEnvironments": branch.merged_environments,
                 "jiraIssue": issue,

@@ -28,6 +28,7 @@ use scan_channel::{collect_plain, coordinate_scan};
 
 mod age_csv;
 mod branches;
+mod merge_check;
 mod output;
 mod params;
 mod report_csv;
@@ -73,6 +74,9 @@ struct ScanOptions {
     jira_configured: bool,
     fetch_before_scan: bool,
     selected_branches: Option<Vec<String>>,
+    /// Run the in-memory merge of every branch tip onto main. Only the
+    /// readiness report asks for it.
+    check_merge_onto_main: bool,
 }
 
 pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliError> {
@@ -107,6 +111,7 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
         jira_configured: credentials.is_some(),
         fetch_before_scan: !args.no_fetch && interactive,
         selected_branches,
+        check_merge_onto_main: false,
     };
     let coordinator = tokio::spawn(coordinate_scan(scan, credentials, updates_tx));
 
@@ -200,7 +205,15 @@ fn scan_repository(
             Some(key) => JiraIssueState::NotConfigured { key },
             None => JiraIssueState::NoTicket,
         };
-        let row = measure_branch(&repository, &measure_context, branch, id, jira)?;
+        let mut row = measure_branch(&repository, &measure_context, branch, id, jira)?;
+        if options.check_merge_onto_main {
+            row.merge_onto_main = Some(merge_check::merge_onto_main(
+                &repository,
+                &inspection.main_ancestors,
+                inspection.main_id,
+                id,
+            )?);
+        }
         if branch_scoped {
             scoped_commit_ids.extend(row.commits.iter().map(|commit| commit.id.clone()));
         }

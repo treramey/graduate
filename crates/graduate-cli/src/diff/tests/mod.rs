@@ -1,5 +1,7 @@
 //! Shared fixtures and helpers.
 
+use graduate::promotion::MergeOntoMain;
+
 use super::*;
 use crate::shared::environment_git::{excluded_branch, resolve_main_branch};
 use crate::shared::git_process::fetch_status_message;
@@ -10,6 +12,7 @@ mod environment_merges_tests;
 mod environment_reset_tests;
 mod formats_tests;
 mod membership_tests;
+mod merge_check_tests;
 mod output_paths_tests;
 mod recovered_tickets_tests;
 mod scan_tests;
@@ -97,6 +100,7 @@ fn scan_options(path: &Path, environment: &str) -> ScanOptions {
         jira_configured: false,
         fetch_before_scan: false,
         selected_branches: None,
+        check_merge_onto_main: false,
     }
 }
 

@@ -71,6 +71,7 @@ fn work_from_a_deleted_branch_is_recovered_by_commit_subject_jira_key(
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;
@@ -163,6 +164,7 @@ fn merge_commit_subjects_never_create_recovered_ticket_rows(
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;
@@ -242,6 +244,7 @@ fn a_surviving_branch_suppresses_the_recovered_row_for_its_key(
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;
