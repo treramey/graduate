@@ -269,6 +269,66 @@ can deliberately remove selected features from the reconstructed branch.
   TUI/JSON/docs. The command became public only after every safety slice was
   complete.
 
+## Why `diff` and `restack` list different branches
+
+`gd diff <env>` and `gd restack <env>` answer different questions, so they
+use different membership rules on purpose. Running both against one
+environment and seeing two branch lists does not mean one of them is wrong.
+
+### Any-commit reachability versus tip reachability
+
+`gd diff` reports a branch when any of its non-merge commits is reachable from
+the environment and not from main; the branch qualifies once an earlier commit
+on its own first-parent line reached the environment. `gd restack` rebuilds
+from explicit merges. In history mode it retains every feature whose two-parent
+merge appears on the environment's first-parent history and re-merges that
+feature at its current remote tip. When the history proof fails and you rebuild
+from inventory, membership narrows to branches whose *tip* is reachable from the
+environment and not from main.
+
+Example: `feature/PROJ-123` is merged into `qa` at commit `A`, then its owner
+pushes commit `B` on top. `gd diff qa` lists the branch with
+`tipInEnvironment: false` and `unmergedAhead: 1`; the readiness report puts it
+in the `partial` bucket. A history-mode `gd restack qa` retains it and merges
+`B` as part of the rebuild. An inventory rebuild does not list it, because `B`
+is not in `qa`, and reports `A` under the dropped commits. Promote the branch
+again (merge `B` into the environment) before an inventory rebuild if the work
+must survive.
+
+### Squash and rebase merges
+
+`gd diff` compares commit IDs, not patch content. A branch whose pull request
+was squash-merged or rebase-merged onto main keeps its original commits, and
+main never contains them, so the branch stays "ungraduated" in the report until
+someone deletes it. The readiness report's `closed` bucket catches most of
+these when Jira is configured, because the ticket is already done. To confirm
+that main already has the work by content, run:
+
+```bash
+git cherry origin/main origin/feature/PROJ-123
+```
+
+Every line prefixed with `-` is a commit whose patch is already in main. When
+all lines are `-`, delete the remote branch (`git push origin --delete
+feature/PROJ-123`); it drops out of both reports on the next fetch.
+
+### Remediation for unsupported history
+
+When `gd restack` fails with the `unsupported_history` error, or the plan's
+`inventory.reason` is set, its `kind` field says what happened. Fix the underlying history or rebuild from inventory:
+
+| `kind`                 | What happened                                                                    | What to do                                                                                                                                                                                              |
+| ---------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ambiguousFeatureRefs` | Several remote branches contain the merged feature commit.                       | Delete or rename the duplicate remote branches (usually stale copies) so exactly one remains, then retry. Or rebuild from inventory and keep only one of the listed branches.                            |
+| `deletedFeatureRef`    | The merge's feature branch no longer exists on the remote.                       | Recreate the branch at the merged commit (`git push origin <featureParent>:refs/heads/<name>`) and retry. Or rebuild from inventory and accept that its commits appear as dropped.                       |
+| `directCommit`         | Someone committed directly on the environment instead of merging a branch.       | Move the commit to a feature branch (`git branch feature/<name> <commit>`, push it), then rebuild from inventory and retain that branch. Or rebuild and accept that the commit drops.                    |
+| `fastForwardHistory`   | The environment was fast-forwarded, so there is no merge commit to attribute.     | Rebuild from inventory; the listed branches contain the commit, so retaining the owning branch keeps the work. Merge into environments with `--no-ff` from now on.                                       |
+| `octopusMerge`         | A merge on the environment has more than two parents.                            | Rebuild from inventory; each branch the octopus merged is still a tip in the environment and is retained on its own.                                                                                     |
+| `missingCommit`        | A commit the proof needs is not in the fetched history (shallow or pruned clone). | Run `git fetch --unshallow origin` (or a full fetch of the environment and main) and retry.                                                                                                              |
+
+Inventory rebuilds are interactive only; `--dry-run` and `--params` keep
+reporting `unsupported_history` until the history itself is fixed.
+
 ## Important tradeoffs
 
 - Before restack, Graduate only inspected Git history and reported promotion

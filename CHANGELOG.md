@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Documented why `gd diff` and `gd restack` list different branches
+  (any-commit versus tip reachability, squash and rebase merges) and a
+  remediation for every `unsupported_history` kind, in the README, the
+  restack contract, and the generated agent skill.
+
 - Added `gd diff <environment> --report readiness`: an owner-grouped rebuild
   readiness report that buckets every branch as `ready`, `stale`, `partial`,
   `tainted`, `closed`, or `orphan` with a remediation per bucket, in JSON,
