@@ -1,5 +1,14 @@
 # @treramey/graduate
 
+## 1.6.0
+
+### Minor Changes
+
+- ffda7b2: Add `mergesCleanlyOntoMain` and `conflictingPaths` to `gd diff` branch rows, computed by a read-only in-memory gitoxide merge of each tip onto main.
+- eb38430: Add `gd diff <environment> --report readiness`, an owner-grouped rebuild readiness report with per-branch buckets and remediation in JSON, YAML, table, and CSV.
+- d21c9ad: Expose `tip`, `tipInEnvironment`, `unmergedAhead`, and `absorbedEnvironmentMerges` on every `gd diff` branch row (branch report schema v2) and include branches that were merged into the environment and then extended.
+- c392756: Detect tainted features (branches that merged the environment into themselves) in `gd restack`, list them as `taintedBranches` in the schema-v3 plan, remove them by default, and never allow them to be retained.
+
 ## 1.5.1
 
 ### Patch Changes
