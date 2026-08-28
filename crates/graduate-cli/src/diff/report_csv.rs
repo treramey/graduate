@@ -26,6 +26,12 @@ pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
             "started",
             "last",
             "ahead",
+            "tip",
+            "tipInEnvironment",
+            "unmergedAhead",
+            "absorbedEnvironmentMerges",
+            "mergesCleanlyOntoMain",
+            "conflictingPaths",
             "lastAuthor",
             "mergedEnvironments",
             "jiraIssue.key",
@@ -51,6 +57,12 @@ pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
                 &report.main,
                 direction,
                 &count,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -100,12 +112,25 @@ pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
                     "",
                     "",
                     "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
                 ],
             )?;
         }
     }
     for row in &report.branches {
         let ahead = row.ahead.to_string();
+        let tip_in_environment = yes_no(row.tip_in_environment);
+        let unmerged_ahead = row.unmerged_ahead.to_string();
+        let absorbed = row.absorbed_environment_merges.to_string();
+        let merges_cleanly = row.merge_onto_main.map_or("", |merge| yes_no(merge.clean));
+        let conflicting_paths = row
+            .merge_onto_main
+            .map_or(String::new(), |merge| merge.conflicting_paths.to_string());
         let merged_environments = row.merged_environments.join(", ");
         let (key, status, summary, assignee, versions, api_url, browse_url, jira_error) =
             match &row.jira {
@@ -187,6 +212,12 @@ pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
                 &row.started,
                 &row.last,
                 &ahead,
+                &row.tip,
+                tip_in_environment,
+                &unmerged_ahead,
+                &absorbed,
+                merges_cleanly,
+                &conflicting_paths,
                 &row.last_author,
                 &merged_environments,
                 &key,
@@ -202,6 +233,14 @@ pub(super) fn format_csv(report: &PromotionReport) -> Result<String, CliError> {
     }
     String::from_utf8(file)
         .map_err(|error| CliError::InvalidInput(format!("CSV was not valid UTF-8: {error}")))
+}
+
+pub(super) fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 pub(super) fn csv_row(writer: &mut impl Write, fields: &[&str]) -> Result<(), CliError> {

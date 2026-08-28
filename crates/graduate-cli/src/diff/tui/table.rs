@@ -1,6 +1,6 @@
 //! Branch table rendering.
 
-use graduate::promotion::JiraIssueState;
+use graduate::promotion::{jira_issue_is_closed, JiraIssueState, JiraIssueSummary};
 use ratatui::layout::{Constraint, HorizontalAlignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -38,6 +38,7 @@ pub(super) fn render_table(
             sort_label("AHEAD", SortKey::Ahead),
             HorizontalAlignment::Right,
         ),
+        ("UNMERGED".to_owned(), HorizontalAlignment::Right),
     ];
     if show_jira {
         labels.push(("JIRA".to_owned(), HorizontalAlignment::Left));
@@ -69,11 +70,18 @@ pub(super) fn render_table(
                 Cell::from(
                     Line::from(report.ahead.to_string()).alignment(HorizontalAlignment::Right),
                 ),
+                Cell::from(
+                    Line::from(unmerged_label(report.unmerged_ahead))
+                        .alignment(HorizontalAlignment::Right),
+                ),
             ],
             None => vec![
                 Cell::from(branch),
                 placeholder_cell(),
                 placeholder_cell(),
+                Cell::from(
+                    Line::styled("…", Palette::muted()).alignment(HorizontalAlignment::Right),
+                ),
                 Cell::from(
                     Line::styled("…", Palette::muted()).alignment(HorizontalAlignment::Right),
                 ),
@@ -113,6 +121,7 @@ pub(super) fn render_table(
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(7),
+            Constraint::Length(8),
             Constraint::Length(12),
             Constraint::Length(16),
         ]
@@ -122,6 +131,7 @@ pub(super) fn render_table(
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(7),
+            Constraint::Length(8),
         ]
     };
     let table = Table::new(rows, widths)
@@ -130,6 +140,15 @@ pub(super) fn render_table(
         .row_highlight_style(Palette::action_focus())
         .highlight_symbol("› ");
     frame.render_stateful_widget(table, area, &mut model.table_state);
+}
+
+/// Hide a zero so fully merged branches stay visually quiet.
+fn unmerged_label(unmerged_ahead: usize) -> String {
+    if unmerged_ahead == 0 {
+        String::new()
+    } else {
+        unmerged_ahead.to_string()
+    }
 }
 
 fn placeholder_cell() -> Cell<'static> {
@@ -150,7 +169,7 @@ fn jira_cells(state: &JiraIssueState, flagged: bool) -> (Cell<'static>, Cell<'st
         JiraIssueState::Loading { .. } => ("loading…".to_owned(), Palette::muted()),
         JiraIssueState::Loaded(issue) => {
             let status = terminal_text::escape(&issue.status);
-            let style = jira_status_style(&status);
+            let style = jira_status_style(issue);
             (status, style)
         }
         JiraIssueState::Failed { .. } => ("Jira error".to_owned(), Palette::error()),
@@ -166,12 +185,11 @@ fn jira_cells(state: &JiraIssueState, flagged: bool) -> (Cell<'static>, Cell<'st
     }
 }
 
-fn jira_status_style(status: &str) -> Style {
-    let lowered = status.to_ascii_lowercase();
-    if matches!(lowered.as_str(), "done" | "closed" | "resolved") {
-        Palette::success()
-    } else if lowered.contains("cancel") {
+fn jira_status_style(issue: &JiraIssueSummary) -> Style {
+    if issue.status.to_ascii_lowercase().contains("cancel") {
         Palette::muted()
+    } else if jira_issue_is_closed(&issue.status, issue.status_category.as_deref()) {
+        Palette::success()
     } else {
         Palette::text()
     }

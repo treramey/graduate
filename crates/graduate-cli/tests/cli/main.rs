@@ -10,3 +10,4 @@ mod restack_inputs_test;
 mod restack_preview_test;
 mod restack_resume_safety_test;
 mod restack_resume_test;
+mod restack_tainted_test;

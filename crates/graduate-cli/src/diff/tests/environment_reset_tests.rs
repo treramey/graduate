@@ -164,6 +164,7 @@ fn no_ff_environment_merges_survive_an_environment_reset() -> Result<(), Box<dyn
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;

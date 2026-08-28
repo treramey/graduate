@@ -1,8 +1,11 @@
 //! Reachability inventory fallback snapshot.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::snapshot::{branch_identity, is_dropped_marker};
+use super::taint::{
+    absorbed_merges, environment_first_parent_merges, own_ancestors, tainted_features,
+};
 use super::{
     AttributedCommit, BranchIdentity, CarriedFeature, DroppedMarker, ExplicitFeature, FeatureRef,
     InventoryMode, RestackGraph, RestackSnapshot, UnsupportedHistory,
@@ -30,11 +33,41 @@ pub fn build_inventory_snapshot(
                 && !graph.main_ancestors.contains(&feature.tip)
         })
         .collect::<Vec<_>>();
+    // A branch that merged the environment reaches every promoted feature,
+    // but it neither carries nor owns that work.
+    let environment_merges = environment_first_parent_merges(graph);
+    let absorbed: BTreeMap<&str, BTreeSet<String>> = candidates
+        .iter()
+        .map(|feature| {
+            (
+                feature.name.as_str(),
+                absorbed_merges(graph, feature, &environment_merges),
+            )
+        })
+        .collect();
+    let owned: BTreeMap<&str, BTreeSet<String>> = candidates
+        .iter()
+        .map(|feature| {
+            let absorbed = absorbed.get(feature.name.as_str());
+            (
+                feature.name.as_str(),
+                absorbed.map_or_else(
+                    || feature.ancestors.clone(),
+                    |absorbed| own_ancestors(graph, feature, absorbed),
+                ),
+            )
+        })
+        .collect();
+    let owns = |feature: &FeatureRef, commit: &str| {
+        owned
+            .get(feature.name.as_str())
+            .is_some_and(|own| own.contains(commit))
+    };
     let carriers_of = |feature: &FeatureRef| -> Vec<String> {
         candidates
             .iter()
             .filter(|other| other.name != feature.name)
-            .filter(|other| other.ancestors.contains(&feature.tip))
+            .filter(|other| owns(other, &feature.tip))
             .filter(|other| other.tip != feature.tip || other.name < feature.name)
             .map(|other| other.name.clone())
             .collect()
@@ -105,7 +138,7 @@ pub fn build_inventory_snapshot(
     {
         let branches = top_level
             .iter()
-            .filter(|feature| feature.ancestors.contains(*id))
+            .filter(|feature| owns(feature, id))
             .map(|feature| feature.name.clone())
             .collect::<Vec<_>>();
         if branches.is_empty() {
@@ -153,6 +186,15 @@ pub fn build_inventory_snapshot(
         unsupported_history: Some(reason),
         carried_features,
         unattributed_commits,
+        tainted_features: tainted_features(top_level.iter().map(|feature| {
+            (
+                *feature,
+                absorbed
+                    .get(feature.name.as_str())
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        })),
     }
 }
 

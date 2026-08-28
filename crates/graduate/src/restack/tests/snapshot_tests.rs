@@ -269,7 +269,7 @@ fn plan_digest_binds_inputs_identity_selection_and_tree_but_not_preview_commit(
     assert_eq!(first.digest, second.digest);
     assert_eq!(
         first.digest,
-        "9077fbf6b660331cea97f2be2209570096b124619a0256774ddb6833c3891e4c"
+        "d2b68768185e6d9946809a318392c48d30e278c1c59a7357f5f68ffc2992d8c6"
     );
     assert_ne!(first.digest, changed_author.digest);
     assert_ne!(first.digest, changed_tree.digest);

@@ -80,7 +80,7 @@ fn render_report(frame: &mut Frame<'_>, area: Rect, model: &mut DiffModel) {
         render_inspector(frame, inspector, model);
     } else {
         let [details, _gutter, table] = Layout::vertical([
-            Constraint::Length(8),
+            Constraint::Length(10),
             Constraint::Length(SPACE_1X),
             Constraint::Fill(1),
         ])
@@ -166,11 +166,27 @@ fn render_title(frame: &mut Frame<'_>, area: Rect, model: &DiffModel, center_sum
 }
 
 pub(super) fn report_metadata(report: &PromotionBranch) -> Vec<Line<'static>> {
-    vec![
+    let mut lines = vec![
         detail_line("Author", &report.last_author),
         detail_line("Commits", &report.ahead.to_string()),
         detail_line("Updated", &report.last),
-    ]
+        detail_line(
+            "Tip in env",
+            if report.tip_in_environment {
+                "yes"
+            } else {
+                "no"
+            },
+        ),
+        detail_line("Unmerged", &report.unmerged_ahead.to_string()),
+    ];
+    if report.absorbed_environment_merges > 0 {
+        lines.push(detail_line(
+            "Absorbed",
+            &format!("{} environment merges", report.absorbed_environment_merges),
+        ));
+    }
+    lines
 }
 
 fn environment_merge_warning(model: &DiffModel) -> Option<String> {
@@ -184,8 +200,16 @@ fn environment_merge_warning(model: &DiffModel) -> Option<String> {
     } else {
         "have"
     };
+    let absorbed = if report.absorbed_environment_merges > 0 {
+        format!(
+            " ({} environment merges absorbed)",
+            report.absorbed_environment_merges
+        )
+    } else {
+        String::new()
+    };
     Some(format!(
-        "⚠ {environments} {verb} been merged into this branch; its ahead count and dates include environment commits"
+        "⚠ {environments} {verb} been merged into this branch{absorbed}; its ahead count and dates include environment commits"
     ))
 }
 

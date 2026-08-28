@@ -99,7 +99,7 @@ fn plan_json_describes_the_inventory_mode_carried_branches_and_orphans(
         }],
     )?;
     let value = plan_json(&plan);
-    assert_eq!(value["schemaVersion"], 2);
+    assert_eq!(value["schemaVersion"], 3);
     assert_eq!(value["inventory"]["mode"], "reachability");
     assert_eq!(value["inventory"]["reason"]["kind"], "directCommit");
     assert_eq!(value["inventory"]["reason"]["commit"], "stray");
@@ -107,6 +107,7 @@ fn plan_json_describes_the_inventory_mode_carried_branches_and_orphans(
         value["carriedBranches"],
         json!([{"name": "feature/a", "tip": "a", "carriers": ["feature/b"]}])
     );
+    assert_eq!(value["taintedBranches"], json!([]));
     assert_eq!(
         value["orphanedCommits"],
         json!([{"commit": "stray", "subject": "stray", "author": "Pat", "date": "2026-01-02"}])

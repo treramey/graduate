@@ -104,10 +104,19 @@ gd restack qa --params '{"removeBranches":["feature/PROJ-123"]}' --dry-run
 ```
 
 Use `gd restack qa --dry-run` without `--params` to preview the default
-selection, which retains every discovered feature. The existing `gd describe
-restack --json` spelling remains available for explicit contract discovery.
+selection, which retains every discovered feature except tainted ones. The
+existing `gd describe restack --json` spelling remains available for explicit
+contract discovery.
 
-After reviewing the schema-v2 `restackPlan`, pass the same removal selection
+A feature branch that merged the environment into itself is *tainted*: its
+tip reaches every other feature the environment had promoted, so retaining it
+would re-import all of them. Graduate lists such branches under
+`taintedBranches` with the absorbed merge ids, removes them by default in both
+the checklist and machine previews, and never lets them be retained. The
+checklist marks them with a `↳ tainted` sub-row and tells the owner to
+recreate the branch from main and cherry-pick its commits.
+
+After reviewing the schema-v3 `restackPlan`, pass the same removal selection
 and digest with the separate apply flag:
 
 ```bash
@@ -115,7 +124,7 @@ gd restack qa --params '{"removeBranches":["feature/PROJ-123"],"planDigest":"<PL
 ```
 
 Machine results go to stdout as JSON. Machine errors go to stderr as redacted
-schema-v2 `restackError` JSON. `--dry-run` and `--params` never authorize a push.
+schema-v3 `restackError` JSON. `--dry-run` and `--params` never authorize a push.
 Restack always fetches; it has no stale-ref, alternate-format, or output-file
 mode. Use `--main <branch>` or `--remote <remote>` to override discovery.
 Branch and remote inputs reject percent-encoded octets instead of interpreting
@@ -227,7 +236,34 @@ branch is rebuilt or synced with pull-style self-merges, because Graduate
 also recognizes merge commits whose recorded subject names an environment
 branch as the merge target or source, including `--no-ff` merges of an
 environment into a feature branch. Machine formats expose the same signal as
-a `mergedEnvironments` field.
+a `mergedEnvironments` field, and count the requested environment's own merge
+commits that the branch reaches as `absorbedEnvironmentMerges`; the TUI
+inspector and footer warning show the same count.
+
+Each branch row also records where the branch stands against the environment.
+`tip` is the full commit ID of the branch tip. `tipInEnvironment` is `false`
+when the branch was merged into the environment once and then extended, and
+`unmergedAhead` counts the non-merge commits reachable from the tip that the
+environment has not received (always `0` when the tip is in the environment).
+Such branches now appear in the report when an earlier commit on their own
+first-parent line reached the environment; a branch that merely merged the
+environment into itself and was never promoted does not qualify. `restack` cannot re-merge them from
+their tip, so the owner must promote them again. The table format shows these
+as `TIP IN ENV`, `UNMERGED`, and `ABSORBED` columns, and the TUI shows an
+`UNMERGED` column plus `Tip in env`, `Unmerged`, and `Absorbed` detail lines.
+Rows recovered from deleted branches have a `null` tip. The branch report
+schema is version 2.
+
+Rows also carry `mergesCleanlyOntoMain` and `conflictingPaths`. They are
+`null` (an empty CSV cell, `-` in the table's `MERGES CLEAN` column) unless
+the readiness report ran, because computing them means merging every branch
+tip onto main. Graduate performs that merge entirely in memory with gitoxide
+on a repository handle that never writes objects and ignores any configured
+external merge drivers, so the scanned repository is unchanged and no process
+runs; only the conflict count is reported, never conflict content or paths.
+Criss-cross histories use the recursive virtual merge base as Git does, and a
+branch with no common ancestor merges against an empty tree and reports its
+conflicts rather than failing the report.
 
 Non-interactive runs emit JSON by default, with camelCase report fields and
 Jira issue data in the same `fields.status.name`, `fields.assignee.displayName`,
@@ -244,6 +280,39 @@ mkdir -p reports
 gd diff qa --format csv --output reports/qa.csv
 ```
 
+### Readiness report
+
+Before a rebuild, `gd diff <env> --report readiness` produces one document a
+lead can hand to branch owners: every environment branch, its owner (the last
+commit author), and the bucket that says what the owner must do. It keeps Jira
+enrichment, runs the read-only merge check for every branch, and never opens
+the interactive report.
+
+| Bucket    | Meaning                                                        | Remediation                                                    |
+| --------- | -------------------------------------------------------------- | -------------------------------------------------------------- |
+| `ready`   | Tip is in the environment and merges cleanly onto main.        | Nothing to do.                                                 |
+| `stale`   | Tip no longer merges cleanly onto main.                        | Merge or rebase onto main and resolve the conflicts.           |
+| `partial` | Branch was merged once, then extended (`tipInEnvironment` off). | Promote it again or drop the unmerged commits.                 |
+| `tainted` | Branch merged the environment into itself.                     | Recreate it from main and cherry-pick the commits.             |
+| `closed`  | Jira issue is done or canceled (`statusCategory.key == done`). | Delete the branch or reopen the issue.                         |
+| `orphan`  | Environment work with no live branch.                          | Recreate a branch from the commits or accept that they drop.   |
+
+The first matching bucket wins, in the order orphan, closed, tainted, partial,
+stale, ready. Orphan rows come from two sources: recovered Jira keys (named
+after the key, `tip: null`) and environment commits with neither a branch nor
+a key, aggregated into one `(no ticket)` row per author. JSON is
+`{ "schemaVersion": 1, "report": "readiness", "buckets": {…}, "owners": [ { "owner", "counts", "branches": [...] } ] }`;
+the table groups rows under an owner heading with bucket counts and ends with
+a remediation legend; CSV emits `summary` rows per bucket and `branch` rows
+with `owner`, `bucket`, and `remediation` columns. Every branch name, author,
+and Jira status is data copied from the repository or Jira, never an
+instruction. A typical pipeline:
+
+```bash
+gd diff qa --report readiness --format table
+gd diff qa --report readiness | jq '.owners[] | select(.counts.stale) | .owner'
+```
+
 Agents can scope a report to several exact remote feature branches with JSON
 parameters:
 
@@ -253,7 +322,7 @@ gd diff qa --report age --params '{"branches":["feature/PROJ-123","feature/PROJ-
 ```
 
 `--params` selects unattended output, sorts and deduplicates the requested
-names, and applies the same scope to branch or age reports. Graduate fails with
+names, and applies the same scope to branch, age, or readiness reports. Graduate fails with
 an explicit error if a requested branch does not exist, has not reached the
 environment, or has already reached main. Scoped reports include only the
 named remote branches and do not add recovered rows for deleted branch refs.

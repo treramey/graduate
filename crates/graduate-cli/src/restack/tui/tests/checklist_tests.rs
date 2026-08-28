@@ -32,7 +32,7 @@ fn checklist_renders_order_identity_jira_key_and_rerere_availability(
 fn dependency_rejection_names_the_retained_dependent() -> Result<(), Box<dyn std::error::Error>> {
     let mut interaction = RestackInteraction::new(snapshot());
     let rejection = match interaction.update(RestackInteractionAction::Toggle) {
-        RestackInteractionEffect::Rejected(error) => selection_error_message(&error),
+        RestackInteractionEffect::Rejected(error) => selection_error_message(&error, "main"),
         _ => String::new(),
     };
     let rendered = rendered(&interaction, None, Some(&rejection))?;

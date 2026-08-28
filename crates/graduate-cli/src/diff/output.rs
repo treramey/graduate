@@ -3,11 +3,13 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use graduate::promotion::{PromotionAgeReport, ReportDate};
+use graduate::promotion::{PromotionAgeReport, PromotionReadinessReport, ReportDate};
 
 use super::age_csv::format_age_csv;
+use super::readiness_csv::format_readiness_csv;
 use super::report_csv::format_csv;
 use super::report_json::{age_report_value, report_value};
+use super::report_readiness::{format_readiness_table, readiness_report_value};
 use super::report_table::{format_age_table, format_table};
 use super::PromotionReport;
 use crate::cli::{DiffReport, ReportFormat};
@@ -41,6 +43,21 @@ pub(super) fn write_report(
                 ReportFormat::Yaml => serde_yaml::to_string(&age_report_value(report, &age))?,
                 ReportFormat::Table => format_age_table(report, &age),
                 ReportFormat::Csv => format_age_csv(report, &age)?,
+            }
+        }
+        DiffReport::Readiness => {
+            let readiness =
+                PromotionReadinessReport::new(&report.branches, &report.inventory.ahead);
+            match format {
+                ReportFormat::Json => format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(&readiness_report_value(report, &readiness))?
+                ),
+                ReportFormat::Yaml => {
+                    serde_yaml::to_string(&readiness_report_value(report, &readiness))?
+                }
+                ReportFormat::Table => format_readiness_table(report, &readiness),
+                ReportFormat::Csv => format_readiness_csv(report, &readiness)?,
             }
         }
     };

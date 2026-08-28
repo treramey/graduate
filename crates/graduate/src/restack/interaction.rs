@@ -7,7 +7,7 @@ use thiserror::Error;
 use super::inventory::orphaned_commit_ids;
 use super::plan::select_features;
 use super::snapshot::branch_identity_of;
-use super::{BranchIdentity, CarriedFeature, RestackSelection, RestackSnapshot};
+use super::{BranchIdentity, CarriedFeature, RestackSelection, RestackSnapshot, TaintedFeature};
 
 /// Evidence that a requested feature removal is not safe or meaningful.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -25,6 +25,8 @@ pub enum SelectionError {
         branch: String,
         dependents: Vec<String>,
     },
+    #[error("feature `{branch}` merged the environment into itself and cannot be retained; recreate it from main and cherry-pick its commits")]
+    Tainted { branch: String },
 }
 
 /// One screen in the deterministic interactive restack review flow.
@@ -80,11 +82,22 @@ pub struct RestackInteraction {
 }
 
 impl RestackInteraction {
-    /// Start with every explicit feature retained in discovered merge order.
+    /// Start with every explicit feature retained in discovered merge order,
+    /// except tainted features, which are removed and cannot be retained.
     #[must_use]
     pub fn new(snapshot: RestackSnapshot) -> Self {
+        let retained = snapshot
+            .features
+            .iter()
+            .map(|feature| {
+                !snapshot
+                    .tainted_features
+                    .iter()
+                    .any(|tainted| tainted.name == feature.name)
+            })
+            .collect();
         Self {
-            retained: vec![true; snapshot.features.len()],
+            retained,
             snapshot,
             cursor: 0,
             review_scroll: 0,
@@ -108,6 +121,21 @@ impl RestackInteraction {
     #[must_use]
     pub fn carried_features(&self) -> &[CarriedFeature] {
         &self.snapshot.carried_features
+    }
+
+    #[must_use]
+    pub fn tainted_features(&self) -> &[TaintedFeature] {
+        &self.snapshot.tainted_features
+    }
+
+    /// The tainted record for the feature at `index`, when it has one.
+    #[must_use]
+    pub fn tainted_feature(&self, index: usize) -> Option<&TaintedFeature> {
+        let feature = self.snapshot.features.get(index)?;
+        self.snapshot
+            .tainted_features
+            .iter()
+            .find(|tainted| tainted.name == feature.name)
     }
 
     /// Commits the rebuild would drop for the current retained set.

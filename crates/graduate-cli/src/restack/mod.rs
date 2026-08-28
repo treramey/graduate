@@ -122,7 +122,7 @@ fn parse_params(params: Option<&str>, dry_run: bool) -> Result<MachineParams, Cl
     let parsed: MachineParams = serde_json::from_str(params).map_err(|_| {
         machine_usage(
             "invalid_params",
-            "--params must match the schema-v2 restack machine parameters",
+            "--params must match the schema-v3 restack machine parameters",
             json!({"expected": {"removeBranches": ["feature/BRANCH"], "planDigest": "apply only"}}),
         )
     })?;

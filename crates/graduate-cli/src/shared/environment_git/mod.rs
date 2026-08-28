@@ -110,7 +110,7 @@ pub(crate) fn promotion_candidates(
                     inspection.main
                 )));
             }
-            if !inspection.environment_ancestors.contains(&id) {
+            if !reaches_environment(repository, inspection, id)? {
                 return Err(CliError::InvalidInput(format!(
                     "--params branch `{branch}` has not reached `{}`",
                     inspection.environment
@@ -123,13 +123,40 @@ pub(crate) fn promotion_candidates(
 
     let mut candidates = Vec::new();
     for (branch, id) in remote_feature_refs(repository, inspection)? {
-        if inspection.environment_ancestors.contains(&id)
-            && !inspection.main_ancestors.contains(&id)
+        if !inspection.main_ancestors.contains(&id)
+            && reaches_environment(repository, inspection, id)?
         {
             candidates.push((branch, id));
         }
     }
     Ok(candidates)
+}
+
+/// Whether the branch's own line of work has reached the environment.
+///
+/// A branch whose tip is in the environment qualifies immediately. A branch
+/// that was merged once and then extended qualifies through an earlier
+/// first-parent commit. Only the first-parent line is followed: history that
+/// arrives through a merge into the branch (for example merging the
+/// environment itself) is not the branch's own work and never qualifies it.
+fn reaches_environment(
+    repository: &gix::Repository,
+    inspection: &EnvironmentInspection,
+    tip: gix::ObjectId,
+) -> Result<bool, CliError> {
+    let mut visited = HashSet::new();
+    let mut current = Some(tip);
+    while let Some(id) = current {
+        if inspection.main_ancestors.contains(&id) || !visited.insert(id) {
+            return Ok(false);
+        }
+        if inspection.environment_ancestors.contains(&id) {
+            return Ok(true);
+        }
+        let commit = repository.find_commit(id).map_err(gitoxide_error)?;
+        current = commit.parent_ids().next().map(|parent| parent.detach());
+    }
+    Ok(false)
 }
 
 pub(crate) fn promotion_inventory(

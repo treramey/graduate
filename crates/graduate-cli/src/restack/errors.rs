@@ -69,6 +69,7 @@ pub(super) fn selection_error(error: SelectionError) -> CliError {
         SelectionError::RetainedDependency { branch, dependents } => {
             ("retainedDependency", branch, dependents)
         }
+        SelectionError::Tainted { branch } => ("tainted", branch, Vec::new()),
     };
     machine_usage(
         "invalid_removal",

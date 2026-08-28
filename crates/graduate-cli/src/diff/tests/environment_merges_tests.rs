@@ -121,6 +121,7 @@ fn environment_merges_into_a_feature_branch_are_flagged() -> Result<(), Box<dyn 
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;
@@ -286,6 +287,7 @@ fn environment_merges_hidden_by_an_environment_rebuild_are_flagged(
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;

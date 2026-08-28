@@ -19,7 +19,8 @@ use crate::shared::environment_git::{
 use crate::shared::error::CliError;
 use crate::shared::git_process::fetch_remote as fetch_remote_name;
 use branches::{
-    environment_merge_markers, environment_subjects, measure_branch, recover_deleted_branch_tickets,
+    environment_merge_markers, environment_subjects, measure_branch,
+    recover_deleted_branch_tickets, MeasureContext,
 };
 use output::write_report;
 use params::parse_selected_branches;
@@ -27,10 +28,13 @@ use scan_channel::{collect_plain, coordinate_scan};
 
 mod age_csv;
 mod branches;
+mod merge_check;
 mod output;
 mod params;
+mod readiness_csv;
 mod report_csv;
 mod report_json;
+mod report_readiness;
 mod report_table;
 mod scan_channel;
 #[cfg(test)]
@@ -72,6 +76,9 @@ struct ScanOptions {
     jira_configured: bool,
     fetch_before_scan: bool,
     selected_branches: Option<Vec<String>>,
+    /// Run the in-memory merge of every branch tip onto main. Only the
+    /// readiness report asks for it.
+    check_merge_onto_main: bool,
 }
 
 pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliError> {
@@ -106,6 +113,7 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
         jira_configured: credentials.is_some(),
         fetch_before_scan: !args.no_fetch && interactive,
         selected_branches,
+        check_merge_onto_main: matches!(report_kind, DiffReport::Readiness),
     };
     let coordinator = tokio::spawn(coordinate_scan(scan, credentials, updates_tx));
 
@@ -149,6 +157,13 @@ fn scan_repository(
         &inspection.main_ancestors,
     )?;
     let environment_subjects = environment_subjects(&names, &options.remote);
+    let measure_context = MeasureContext {
+        environment: &options.environment,
+        main_ancestors: &inspection.main_ancestors,
+        environment_ancestors: &inspection.environment_ancestors,
+        environment_markers: &environment_markers,
+        environment_subjects: &environment_subjects,
+    };
 
     let mut candidates = promotion_candidates(
         &repository,
@@ -192,15 +207,15 @@ fn scan_repository(
             Some(key) => JiraIssueState::NotConfigured { key },
             None => JiraIssueState::NoTicket,
         };
-        let row = measure_branch(
-            &repository,
-            &inspection.main_ancestors,
-            &environment_markers,
-            &environment_subjects,
-            branch,
-            id,
-            jira,
-        )?;
+        let mut row = measure_branch(&repository, &measure_context, branch, id, jira)?;
+        if options.check_merge_onto_main {
+            row.merge_onto_main = Some(merge_check::merge_onto_main(
+                &repository,
+                &inspection.main_ancestors,
+                inspection.main_id,
+                id,
+            )?);
+        }
         if branch_scoped {
             scoped_commit_ids.extend(row.commits.iter().map(|commit| commit.id.clone()));
         }

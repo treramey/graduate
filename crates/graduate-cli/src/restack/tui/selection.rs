@@ -122,6 +122,16 @@ pub(super) fn render_selection(
             wide_rows,
             branch_width,
         }));
+        if let Some(tainted) = interaction.tainted_feature(index) {
+            item_features.push(None);
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled("      ↳ tainted  ", Palette::warning()),
+                Span::styled(
+                    absorbed_merges_text(tainted.absorbed_merges.len()),
+                    Palette::muted(),
+                ),
+            ])));
+        }
         for carried in carried_by(interaction, &feature.name) {
             let also = carried
                 .carriers
@@ -312,7 +322,23 @@ fn feature_item(row: FeatureRow<'_>) -> ListItem<'static> {
     }
 }
 
+pub(super) fn absorbed_merges_text(count: usize) -> String {
+    if count == 1 {
+        "1 environment merge absorbed".to_owned()
+    } else {
+        format!("{count} environment merges absorbed")
+    }
+}
+
 fn selection_context(interaction: &RestackInteraction, show_shortcuts: bool) -> String {
+    if let Some(tainted) = interaction.tainted_feature(interaction.cursor()) {
+        return format!(
+            "↳ Tainted: {} merged {} into itself. Recreate it from {} and cherry-pick your commits.",
+            escape(&tainted.name),
+            escape(&interaction.snapshot().environment),
+            escape(&interaction.snapshot().main)
+        );
+    }
     let dependents = interaction.retained_dependents(interaction.cursor());
     if !dependents.is_empty() {
         return format!(
@@ -329,7 +355,8 @@ fn selection_context(interaction: &RestackInteraction, show_shortcuts: bool) -> 
             .to_owned();
     }
     if interaction.inventory_mode() == InventoryMode::Reachability {
-        return "✓ retained · – removed · ◆ dependency · ↳ carried".to_owned();
+        return "✓ retained · – removed · ◆ dependency · ↳ carried · ↳ tainted".to_owned();
     }
-    "✓ retained · – removed · ◆ retained dependency · history = reusable resolution".to_owned()
+    "✓ retained · – removed · ◆ retained dependency · ↳ tainted · history = reusable resolution"
+        .to_owned()
 }

@@ -23,7 +23,7 @@ dirs = "6.0"
 futures-util = "0.3"
 fs2 = "0.4"
 getrandom = "0.4"
-gix = { version = "0.86", default-features = false, features = ["max-performance-safe", "revision", "sha1"] }
+gix = { version = "0.86", default-features = false, features = ["max-performance-safe", "merge", "revision", "sha1"] }
 graduate = { version = "1.5.1", path = "../graduate" }
 hmac = "0.12"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "unstable-rendered-line-info"] }

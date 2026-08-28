@@ -12,7 +12,7 @@ fn history_snapshot_reports_history_mode_without_fallback_evidence(
 
 #[test]
 fn plan_and_snapshot_round_trip_every_inventory_field() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(RESTACK_SCHEMA_VERSION, 2);
+    assert_eq!(RESTACK_SCHEMA_VERSION, 3);
     let mut snapshot = build_snapshot(&simple_graph())?;
     snapshot.inventory_mode = InventoryMode::Reachability;
     snapshot.unsupported_history = Some(UnsupportedHistory {

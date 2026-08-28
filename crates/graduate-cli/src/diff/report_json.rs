@@ -4,6 +4,9 @@ use graduate::promotion::{AgeBucket, JiraIssueState, PromotionAgeReport, Promoti
 
 use super::PromotionReport;
 
+/// Schema version of the default branch report.
+pub(super) const BRANCH_REPORT_SCHEMA_VERSION: u8 = 2;
+
 pub(super) fn report_value(report: &PromotionReport) -> serde_json::Value {
     let branches = report
         .branches
@@ -47,11 +50,22 @@ pub(super) fn report_value(report: &PromotionReport) -> serde_json::Value {
                     serde_json::Value::Null,
                 ),
             };
+            let tip = if branch.tip.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(branch.tip)
+            };
             serde_json::json!({
                 "branch": branch.branch,
+                "tip": tip,
                 "started": branch.started,
                 "last": branch.last,
                 "ahead": branch.ahead,
+                "tipInEnvironment": branch.tip_in_environment,
+                "unmergedAhead": branch.unmerged_ahead,
+                "absorbedEnvironmentMerges": branch.absorbed_environment_merges,
+                "mergesCleanlyOntoMain": branch.merge_onto_main.map(|merge| merge.clean),
+                "conflictingPaths": branch.merge_onto_main.map(|merge| merge.conflicting_paths),
                 "lastAuthor": branch.last_author,
                 "mergedEnvironments": branch.merged_environments,
                 "jiraIssue": issue,
@@ -61,7 +75,7 @@ pub(super) fn report_value(report: &PromotionReport) -> serde_json::Value {
         })
         .collect::<Vec<_>>();
     serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": BRANCH_REPORT_SCHEMA_VERSION,
         "environment": report.environment,
         "main": report.main,
         "commitInventory": {

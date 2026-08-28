@@ -2,13 +2,14 @@
 
 use graduate::promotion::{JiraIssueState, PromotionAgeReport};
 
+use super::report_csv::yes_no;
 use super::report_json::{age_bucket_label, age_bucket_reading, share_percent};
 use super::PromotionReport;
 
 pub(super) fn format_table(report: &PromotionReport) -> String {
     let mut output = format!(
         "Branches in {} but not {}\n{} ahead of main; {} behind main.\n\
-         {:<36} {:<10} {:<10} {:>5}  {:<12} {:<14} LAST AUTHOR\n",
+         {:<36} {:<10} {:<10} {:>5} {:<10} {:>8} {:>8} {:<12}  {:<12} {:<14} LAST AUTHOR\n",
         crate::shared::terminal_text::escape(&report.environment),
         crate::shared::terminal_text::escape(&report.main),
         commit_count(report.inventory.ahead.len()),
@@ -17,6 +18,10 @@ pub(super) fn format_table(report: &PromotionReport) -> String {
         "STARTED",
         "LAST",
         "AHEAD",
+        "TIP IN ENV",
+        "UNMERGED",
+        "ABSORBED",
+        "MERGES CLEAN",
         "JIRA",
         "STATUS"
     );
@@ -37,11 +42,15 @@ pub(super) fn format_table(report: &PromotionReport) -> String {
             JiraIssueState::Loading { .. } => "loading",
         };
         output.push_str(&format!(
-            "{:<36} {:<10} {:<10} {:>5}  {:<12} {:<14} {}\n",
+            "{:<36} {:<10} {:<10} {:>5} {:<10} {:>8} {:>8} {:<12}  {:<12} {:<14} {}\n",
             crate::shared::terminal_text::escape(&row.branch),
             row.started,
             row.last,
             row.ahead,
+            yes_no(row.tip_in_environment),
+            row.unmerged_ahead,
+            row.absorbed_environment_merges,
+            merges_clean_label(row.merge_onto_main),
             key,
             crate::shared::terminal_text::escape(status),
             crate::shared::terminal_text::escape(&row.last_author)
@@ -49,6 +58,15 @@ pub(super) fn format_table(report: &PromotionReport) -> String {
     }
     append_behind_commits_table(&mut output, report);
     output
+}
+
+/// `yes`, `no (N paths)`, or `-` when the readiness merge check did not run.
+fn merges_clean_label(merge: Option<graduate::promotion::MergeOntoMain>) -> String {
+    match merge {
+        None => "-".to_owned(),
+        Some(merge) if merge.clean => "yes".to_owned(),
+        Some(merge) => format!("no ({})", merge.conflicting_paths),
+    }
 }
 
 fn commit_count(count: usize) -> String {

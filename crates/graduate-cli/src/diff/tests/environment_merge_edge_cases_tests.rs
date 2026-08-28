@@ -102,6 +102,7 @@ fn main_merges_and_environment_like_branch_names_are_never_flagged(
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;
@@ -213,6 +214,7 @@ fn multiple_environment_merges_are_deduplicated_and_sorted(
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: None,
+            check_merge_onto_main: false,
         },
         &sender,
     )?;

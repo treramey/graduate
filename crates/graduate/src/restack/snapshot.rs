@@ -1,8 +1,11 @@
 //! Explicit-merge snapshot construction.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::errors::InventoryError;
+use super::taint::{
+    absorbed_merges, environment_first_parent_merges, own_ancestors, tainted_features,
+};
 use super::{
     AttributedCommit, BranchIdentity, DroppedMarker, ExplicitFeature, FeatureRef, GraphCommit,
     HistoricalMerge, InventoryMode, RestackGraph, RestackSnapshot,
@@ -110,6 +113,29 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
         }
     }
 
+    let environment_merges = environment_first_parent_merges(graph);
+    let absorbed: BTreeMap<&str, BTreeSet<String>> = surviving
+        .iter()
+        .map(|feature| {
+            (
+                feature.name.as_str(),
+                absorbed_merges(graph, feature, &environment_merges),
+            )
+        })
+        .collect();
+    let owned: BTreeMap<&str, BTreeSet<String>> = surviving
+        .iter()
+        .map(|feature| {
+            let absorbed = absorbed.get(feature.name.as_str());
+            (
+                feature.name.as_str(),
+                absorbed.map_or_else(
+                    || feature.ancestors.clone(),
+                    |absorbed| own_ancestors(graph, feature, absorbed),
+                ),
+            )
+        })
+        .collect();
     let mut attributed_commits = Vec::new();
     for id in graph
         .environment_ancestors
@@ -126,11 +152,9 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
             .iter()
             .filter(|feature| {
                 feature.historical_merges.iter().any(|historical| {
-                    graph
-                        .feature_refs
-                        .iter()
-                        .find(|candidate| candidate.name == feature.name)
-                        .is_some_and(|candidate| candidate.ancestors.contains(id))
+                    owned
+                        .get(feature.name.as_str())
+                        .is_some_and(|own| own.contains(id))
                         && graph
                             .environment_ancestors
                             .contains(&historical.feature_parent)
@@ -182,6 +206,21 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
         })
         .map(branch_identity)
         .collect();
+    let tainted_features = tainted_features(
+        surviving
+            .iter()
+            .copied()
+            .filter(|feature| explicit_names.contains(feature.name.as_str()))
+            .map(|feature| {
+                (
+                    feature,
+                    absorbed
+                        .get(feature.name.as_str())
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+            }),
+    );
 
     Ok(RestackSnapshot {
         remote: graph.remote.clone(),
@@ -200,6 +239,7 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
         unsupported_history: None,
         carried_features: Vec::new(),
         unattributed_commits: Vec::new(),
+        tainted_features,
     })
 }
 

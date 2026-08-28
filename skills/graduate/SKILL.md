@@ -41,14 +41,27 @@ whether the environment is out of sync with main; behind commits are diagnostic
 and do not receive age assessments. The completed interactive report calls out
 the same behind count.
 
+Each branch row in the schema-v2 branch report carries `tip`,
+`tipInEnvironment`, `unmergedAhead`, and `absorbedEnvironmentMerges`. A row
+with `tipInEnvironment: false` was merged once and then extended; `restack`
+cannot re-merge it from its tip. A row with `absorbedEnvironmentMerges > 0`
+merged the environment into itself and must be recreated from main.
+
 Scope a report to exact remote branches with `--params
 '{"branches":["feature/PROJ-123","feature/PROJ-456"]}'`. This always selects
 unattended output and works with either the default branch report or `--report
 age`. Requested branches must exist, be in the environment, and remain absent
 from main; invalid selections fail explicitly.
 
+Use `gd diff <environment> --report readiness` before a rebuild. It groups
+every branch by owner and buckets it as `ready`, `stale` (conflicts with
+main), `partial` (tip extended after promotion), `tainted` (merged the
+environment into itself), `closed` (Jira done), or `orphan` (no live branch),
+each with a `remediation` string; `buckets` carries totals. It runs a
+read-only in-memory merge of every tip onto main and keeps Jira enrichment.
+
 Use `gd diff <environment> --report age` for the advanced commit-age report.
-Supplying `--report branches|age` always selects unattended output. Prefer JSON
+Supplying `--report branches|age|readiness` always selects unattended output. Prefer JSON
 for agents: age schema v2 has `schemaVersion`, UTC `asOf`, stable assessment
 kinds, explicit threshold dates, `oldestYear`, `oldestBranches`, and the same
 authoritative commit inventory. Its buckets contain only years found in commit
@@ -74,9 +87,12 @@ gd restack qa --params '{"removeBranches":["feature/PROJ-123"]}' --dry-run
 ```
 
 Use `gd restack qa --dry-run` without `--params` to preview the default
-selection, which retains every discovered feature.
+selection, which retains every discovered feature except tainted ones. A
+tainted branch merged the environment into itself; the plan lists it under
+`taintedBranches`, always removes it, and never lets you retain it. Tell its
+owner to recreate the branch from main and cherry-pick their commits.
 
-Review the schema-v2 `restackPlan` from stdout, including all captured refs,
+Review the schema-v3 `restackPlan` from stdout, including all captured refs,
 retained and removed branches, merge outcomes, final tree, effects, and
 `planDigest`. Then repeat the exact removal selection and add the digest plus
 the separate apply flag:

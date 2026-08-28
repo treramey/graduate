@@ -1,12 +1,17 @@
 //! Deterministic promotion-report contracts and branch-to-ticket mapping.
 
 mod age;
+mod readiness;
 #[cfg(test)]
 mod tests;
 
 pub use age::{
     AgeBucket, OlderCommitSummary, OldestPromotionBranch, PromotionAgeReport, RecentCommitSummary,
     ReportDate, ReportDateError,
+};
+pub use readiness::{
+    jira_issue_is_closed, PromotionReadinessReport, ReadinessBucket, ReadinessOwnerGroup,
+    ReadinessRow, NO_TICKET_ROW,
 };
 
 /// Jira information associated with a feature branch.
@@ -16,6 +21,9 @@ pub struct JiraIssueSummary {
     pub api_url: String,
     pub summary: String,
     pub status: String,
+    /// Jira's `statusCategory.key` (`new`, `indeterminate`, `done`) when the
+    /// site returned one.
+    pub status_category: Option<String>,
     pub assignee: Option<String>,
     pub fix_versions: Vec<String>,
     pub url: String,
@@ -112,6 +120,9 @@ pub struct EnvironmentInventory {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromotionBranch {
     pub branch: String,
+    /// Full object ID of the branch tip. Empty for synthetic rows that
+    /// recover work from a deleted branch.
+    pub tip: String,
     pub started: String,
     pub last: String,
     pub ahead: usize,
@@ -120,7 +131,27 @@ pub struct PromotionBranch {
     /// Environment branches whose merge history is reachable from this
     /// branch, meaning the environment was merged into the feature branch.
     pub merged_environments: Vec<String>,
+    /// Whether the branch tip is reachable from the environment. `false`
+    /// means the branch was merged once and then extended.
+    pub tip_in_environment: bool,
+    /// Non-merge commits reachable from the tip but not from the
+    /// environment; always zero when the tip is in the environment.
+    pub unmerged_ahead: usize,
+    /// First-parent merges of the requested environment that this branch
+    /// reaches, meaning the environment itself was merged into the branch.
+    pub absorbed_environment_merges: usize,
+    /// Result of merging the tip onto main, populated only by the readiness
+    /// report.
+    pub merge_onto_main: Option<MergeOntoMain>,
     pub jira: JiraIssueState,
+}
+
+/// Outcome of an in-memory three-way merge of a branch tip onto main.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MergeOntoMain {
+    pub clean: bool,
+    /// Paths with unresolved conflicts; zero when `clean`.
+    pub conflicting_paths: usize,
 }
 
 /// Extract the first Jira-style issue key from a branch name.

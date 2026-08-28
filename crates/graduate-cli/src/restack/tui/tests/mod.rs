@@ -16,6 +16,7 @@ mod checklist_tests;
 mod confirmation_tests;
 mod inventory_tests;
 mod review_tests;
+mod tainted_tests;
 mod unsupported_history_tests;
 
 fn rendered(
@@ -212,5 +213,6 @@ fn snapshot() -> RestackSnapshot {
         unsupported_history: None,
         carried_features: Vec::new(),
         unattributed_commits: Vec::new(),
+        tainted_features: Vec::new(),
     }
 }

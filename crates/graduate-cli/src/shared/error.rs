@@ -72,7 +72,7 @@ impl std::fmt::Display for MachineError {
         match serde_json::to_string(self) {
             Ok(json) => formatter.write_str(&json),
             Err(_) => formatter.write_str(
-                r#"{"kind":"restackError","schemaVersion":2,"code":"serialization_failed","message":"could not serialize the structured error","details":{}}"#,
+                r#"{"kind":"restackError","schemaVersion":3,"code":"serialization_failed","message":"could not serialize the structured error","details":{}}"#,
             ),
         }
     }

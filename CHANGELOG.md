@@ -6,6 +6,29 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Added `gd diff <environment> --report readiness`: an owner-grouped rebuild
+  readiness report that buckets every branch as `ready`, `stale`, `partial`,
+  `tainted`, `closed`, or `orphan` with a remediation per bucket, in JSON,
+  YAML, table, and CSV. It runs the read-only merge check and keeps Jira
+  enrichment; `JiraIssueSummary` now carries Jira's `statusCategory.key` so
+  the report and the TUI agree on what "closed" means.
+- `gd diff` branch rows gained `mergesCleanlyOntoMain` and `conflictingPaths`,
+  computed by an in-memory gitoxide three-way merge of each tip onto main
+  that never writes to the repository. The fields stay `null` unless a report
+  that needs them (the readiness report) runs.
+- `gd restack` now detects tainted features: branches that merged the
+  environment into themselves. They appear under `taintedBranches` in the
+  schema-v3 `restackPlan`, start removed in the interactive checklist with a
+  `↳ tainted` sub-row and remediation text, and can never be retained; machine
+  previews union them into `removeBranches`. Commit attribution now follows
+  ownership, so removing a tainted branch does not block on the features it
+  absorbed. Persisted schema-2 sessions fail closed as mismatched.
+- `gd diff` branch rows now expose `tip`, `tipInEnvironment`, `unmergedAhead`,
+  and `absorbedEnvironmentMerges` in JSON, YAML, CSV, and table output, with
+  matching `UNMERGED` column and inspector lines in the TUI. Branches that
+  were merged into the environment once and then extended now appear in the
+  report instead of being skipped. The branch report schema is version 2.
+
 - `gd restack` can now rebuild an environment whose history cannot be read.
   When the history proof fails, the interactive flow explains the blocking
   commit and offers to rebuild from inventory: membership from remote tips

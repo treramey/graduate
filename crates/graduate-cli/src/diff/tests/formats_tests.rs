@@ -62,6 +62,11 @@ fn csv_keeps_jira_errors_out_of_issue_fields() -> Result<(), CliError> {
             last_author: "Pat".to_owned(),
             commits: Vec::new(),
             merged_environments: vec!["qa".to_owned()],
+            tip: String::new(),
+            tip_in_environment: true,
+            unmerged_ahead: 0,
+            absorbed_environment_merges: 0,
+            merge_onto_main: None,
             jira: JiraIssueState::Failed {
                 key: "PROJ-123".to_owned(),
                 message: "request timed out".to_owned(),
@@ -75,6 +80,12 @@ fn csv_keeps_jira_errors_out_of_issue_fields() -> Result<(), CliError> {
         .lines()
         .next()
         .is_some_and(|line| line.ends_with("\"jiraError\"")));
+    assert!(csv.lines().next().is_some_and(|line| line.contains(
+        "\"ahead\",\"tip\",\"tipInEnvironment\",\"unmergedAhead\",\"absorbedEnvironmentMerges\",\"mergesCleanlyOntoMain\",\"conflictingPaths\",\"lastAuthor\""
+    )));
+    assert!(csv
+        .lines()
+        .any(|line| line.contains("\"2\",\"\",\"yes\",\"0\",\"0\",\"\",\"\",\"Pat\"")));
     assert!(csv.contains("\"inventory\",\"qa\",\"main\",\"behindMain\",\"1\""));
     assert!(csv.contains("\"commit\",\"qa\",\"main\",\"behindMain\",\"\",\"abcdef123456\""));
     assert!(csv.lines().any(|line| {
@@ -125,11 +136,17 @@ fn json_report_uses_camel_case_and_jira_api_field_shapes() {
             last_author: "Pat".to_owned(),
             commits: Vec::new(),
             merged_environments: vec!["qa".to_owned()],
+            tip: String::new(),
+            tip_in_environment: true,
+            unmerged_ahead: 0,
+            absorbed_environment_merges: 0,
+            merge_onto_main: None,
             jira: JiraIssueState::Loaded(graduate::promotion::JiraIssueSummary {
                 key: "PROJ-123".to_owned(),
                 api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
                 summary: "Add login".to_owned(),
                 status: "Ready for QA".to_owned(),
+                status_category: None,
                 assignee: Some("Pat".to_owned()),
                 fix_versions: vec!["1.2".to_owned()],
                 url: "https://example.atlassian.net/browse/PROJ-123".to_owned(),
@@ -139,7 +156,12 @@ fn json_report_uses_camel_case_and_jira_api_field_shapes() {
 
     let value = report_value(&report);
 
+    assert_eq!(value["schemaVersion"], 2);
     assert_eq!(value["branches"][0]["lastAuthor"], "Pat");
+    assert_eq!(value["branches"][0]["tip"], serde_json::Value::Null);
+    assert_eq!(value["branches"][0]["tipInEnvironment"], true);
+    assert_eq!(value["branches"][0]["unmergedAhead"], 0);
+    assert_eq!(value["branches"][0]["absorbedEnvironmentMerges"], 0);
     assert_eq!(value["commitInventory"]["behindMain"]["count"], 1);
     assert_eq!(
         value["commitInventory"]["behindMain"]["commits"][0]["subject"],
@@ -159,6 +181,9 @@ fn json_report_uses_camel_case_and_jira_api_field_shapes() {
         "1.2"
     );
     let table = format_table(&report);
+    assert!(table.contains("TIP IN ENV"));
+    assert!(table.contains("UNMERGED"));
+    assert!(table.contains("ABSORBED"));
     assert!(table.contains("1 commit behind main"));
     assert!(table.contains("Main work absent from QA"));
 }

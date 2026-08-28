@@ -141,6 +141,7 @@ fn scan_can_scope_a_report_to_multiple_json_selected_branches(
                 "feature/PROJ-3-third".to_owned(),
                 "feature/PROJ-1-first".to_owned(),
             ]),
+            check_merge_onto_main: false,
         },
         &sender,
     )?;
@@ -185,6 +186,7 @@ fn scan_can_scope_a_report_to_multiple_json_selected_branches(
             jira_configured: false,
             fetch_before_scan: false,
             selected_branches: Some(vec!["feature/PROJ-404-missing".to_owned()]),
+            check_merge_onto_main: false,
         },
         &missing_sender,
     )
