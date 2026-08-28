@@ -118,6 +118,17 @@ impl RestackInteraction {
         }
     }
 
+    /// Start directly on the review screen for a plan that was already
+    /// reconstructed, such as a resumed session; the selection lives in the
+    /// plan, not in this interaction.
+    #[must_use]
+    pub fn for_review(snapshot: RestackSnapshot) -> Self {
+        Self {
+            stage: RestackInteractionStage::Review,
+            ..Self::new(snapshot)
+        }
+    }
+
     #[must_use]
     pub fn carried_features(&self) -> &[CarriedFeature] {
         &self.snapshot.carried_features

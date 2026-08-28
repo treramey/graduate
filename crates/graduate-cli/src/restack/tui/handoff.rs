@@ -18,6 +18,10 @@ pub(crate) fn write_success(plan: &RestackPlan) -> Result<(), CliError> {
     write_human(success_text(plan))
 }
 
+pub(crate) fn write_preserved(environment: &str, resume_token: &str) -> Result<(), CliError> {
+    write_human(preserved_text(environment, resume_token))
+}
+
 pub(crate) fn write_conflict(handoff: &ConflictHandoff<'_>) -> Result<(), CliError> {
     write_human(conflict_text(handoff))
 }
@@ -30,6 +34,13 @@ fn cancelled_text(environment: &str) -> String {
     format!(
         "Restack of {} cancelled; no remote refs changed.",
         escape(environment)
+    )
+}
+
+pub(super) fn preserved_text(environment: &str, resume_token: &str) -> String {
+    let environment = escape(environment);
+    format!(
+        "Restack of {environment} left unpublished; no remote refs changed.\nThe sealed plan is preserved for 24 hours of inactivity:\n  Review again: gd restack {environment} --resume {resume_token}\n  Publish:      gd restack {environment} --resume {resume_token} --apply\n  Discard:      gd restack {environment} --resume {resume_token} --abort"
     )
 }
 

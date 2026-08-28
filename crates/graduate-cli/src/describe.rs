@@ -126,7 +126,7 @@ fn write_restack_schema() -> Result<(), CliError> {
             "modes": [
                 {
                     "name": "interactive",
-                    "selector": "terminal stdin and stderr without --params, --dry-run, or --resume",
+                    "selector": "terminal stdin and stderr without --params or --dry-run; a bare --resume also reviews interactively",
                     "mutatesRemote": "only after explicit confirmation"
                 },
                 {
@@ -143,7 +143,7 @@ fn write_restack_schema() -> Result<(), CliError> {
                 },
                 {
                     "name": "resumePreview",
-                    "selector": "--resume without --apply or --abort",
+                    "selector": "--resume without --apply or --abort when stdin or stderr is not a terminal",
                     "stdoutKind": "restackPlan",
                     "mutatesRemote": false
                 },

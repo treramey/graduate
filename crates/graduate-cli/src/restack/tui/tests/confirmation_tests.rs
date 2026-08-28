@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use graduate::restack::RestackInteractionStage;
 
-use super::super::handoff::{conflict_text, success_text};
+use super::super::handoff::{conflict_text, preserved_text, success_text};
 use super::super::keys::action_for_key;
 use super::super::render::{pad_text, render, truncate_text};
 use super::*;
@@ -224,4 +224,13 @@ fn ordinary_completion_and_conflict_handoff_are_redacted_and_actionable(
     assert!(handoff.contains("Do not commit; Graduate creates the canonical merge commit"));
     assert!(handoff.contains("expires after 24 hours of inactivity"));
     Ok(())
+}
+
+#[test]
+fn preserved_text_names_every_way_to_finish_the_sealed_session() {
+    let text = preserved_text("qa", "v1.token");
+    assert!(text.starts_with("Restack of qa left unpublished; no remote refs changed."));
+    assert!(text.contains("gd restack qa --resume v1.token\n"));
+    assert!(text.contains("gd restack qa --resume v1.token --apply"));
+    assert!(text.contains("gd restack qa --resume v1.token --abort"));
 }

@@ -192,14 +192,7 @@ pub(super) fn prepare_interactive(
                 },
             )
             .map_err(session_error)?;
-            let repository = draft.repository();
-            let work_area = repository.to_str().map(str::to_owned).ok_or_else(|| {
-                machine_failure(
-                    "session_unavailable",
-                    "the restack work area path is not valid UTF-8",
-                    json!({}),
-                )
-            })?;
+            let work_area = work_area_text(&draft.repository())?;
             let resume_token = draft.token();
             draft.save(&metadata).map_err(session_error)?;
             Ok(InteractivePreparation::Conflict(InteractiveConflict {
@@ -211,6 +204,17 @@ pub(super) fn prepare_interactive(
             }))
         }
     }
+}
+
+/// The work area path as shown to a human resolving conflicts.
+pub(super) fn work_area_text(repository: &Path) -> Result<String, CliError> {
+    repository.to_str().map(str::to_owned).ok_or_else(|| {
+        machine_failure(
+            "session_unavailable",
+            "the restack work area path is not valid UTF-8",
+            json!({}),
+        )
+    })
 }
 
 pub(super) fn publish_interactive(

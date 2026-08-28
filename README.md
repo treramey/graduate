@@ -141,7 +141,14 @@ git -C <WORK_AREA> add <RESOLVED_PATHS>
 gd restack qa --resume <RESUME_TOKEN>
 ```
 
-Review the returned plan, then publish that sealed session or discard it:
+From a terminal, a bare `--resume` reopens the interactive review screen with
+the sealed plan. Publish from there, or leave the review to keep the sealed
+session for a later `--apply` or `--abort`; only `--abort` discards it. A
+later conflict prints the same handoff with the same token. Without a
+terminal, or with `--apply` or `--abort`, `--resume` keeps its
+machine-readable behavior, and a bare `--resume` on an already sealed session
+returns the same plan again. Review the returned plan, then publish that
+sealed session or discard it:
 
 ```bash
 gd restack qa --resume <RESUME_TOKEN> --apply
