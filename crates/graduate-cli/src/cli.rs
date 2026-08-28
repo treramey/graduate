@@ -166,6 +166,7 @@ impl std::fmt::Debug for DiffArgs {
 pub(crate) enum DiffReport {
     Branches,
     Age,
+    Readiness,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -267,6 +268,14 @@ mod tests {
         let cli = Cli::try_parse_from(["gd", "diff", "qa", "--report", "age"])?;
 
         assert!(format!("{cli:?}").contains("Age"));
+        Ok(())
+    }
+
+    #[test]
+    fn diff_selects_the_readiness_report_explicitly() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["gd", "diff", "qa", "--report", "readiness"])?;
+
+        assert!(format!("{cli:?}").contains("Readiness"));
         Ok(())
     }
 

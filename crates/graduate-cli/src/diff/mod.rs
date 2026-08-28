@@ -31,8 +31,10 @@ mod branches;
 mod merge_check;
 mod output;
 mod params;
+mod readiness_csv;
 mod report_csv;
 mod report_json;
+mod report_readiness;
 mod report_table;
 mod scan_channel;
 #[cfg(test)]
@@ -111,7 +113,7 @@ pub(crate) async fn run(args: DiffArgs, config_path: &Path) -> Result<(), CliErr
         jira_configured: credentials.is_some(),
         fetch_before_scan: !args.no_fetch && interactive,
         selected_branches,
-        check_merge_onto_main: false,
+        check_merge_onto_main: matches!(report_kind, DiffReport::Readiness),
     };
     let coordinator = tokio::spawn(coordinate_scan(scan, credentials, updates_tx));
 

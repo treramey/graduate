@@ -1,12 +1,17 @@
 //! Deterministic promotion-report contracts and branch-to-ticket mapping.
 
 mod age;
+mod readiness;
 #[cfg(test)]
 mod tests;
 
 pub use age::{
     AgeBucket, OlderCommitSummary, OldestPromotionBranch, PromotionAgeReport, RecentCommitSummary,
     ReportDate, ReportDateError,
+};
+pub use readiness::{
+    jira_issue_is_closed, PromotionReadinessReport, ReadinessBucket, ReadinessOwnerGroup,
+    ReadinessRow, NO_TICKET_ROW,
 };
 
 /// Jira information associated with a feature branch.
@@ -16,6 +21,9 @@ pub struct JiraIssueSummary {
     pub api_url: String,
     pub summary: String,
     pub status: String,
+    /// Jira's `statusCategory.key` (`new`, `indeterminate`, `done`) when the
+    /// site returned one.
+    pub status_category: Option<String>,
     pub assignee: Option<String>,
     pub fix_versions: Vec<String>,
     pub url: String,

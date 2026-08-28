@@ -275,6 +275,39 @@ mkdir -p reports
 gd diff qa --format csv --output reports/qa.csv
 ```
 
+### Readiness report
+
+Before a rebuild, `gd diff <env> --report readiness` produces one document a
+lead can hand to branch owners: every environment branch, its owner (the last
+commit author), and the bucket that says what the owner must do. It keeps Jira
+enrichment, runs the read-only merge check for every branch, and never opens
+the interactive report.
+
+| Bucket    | Meaning                                                        | Remediation                                                    |
+| --------- | -------------------------------------------------------------- | -------------------------------------------------------------- |
+| `ready`   | Tip is in the environment and merges cleanly onto main.        | Nothing to do.                                                 |
+| `stale`   | Tip no longer merges cleanly onto main.                        | Merge or rebase onto main and resolve the conflicts.           |
+| `partial` | Branch was merged once, then extended (`tipInEnvironment` off). | Promote it again or drop the unmerged commits.                 |
+| `tainted` | Branch merged the environment into itself.                     | Recreate it from main and cherry-pick the commits.             |
+| `closed`  | Jira issue is done or canceled (`statusCategory.key == done`). | Delete the branch or reopen the issue.                         |
+| `orphan`  | Environment work with no live branch.                          | Recreate a branch from the commits or accept that they drop.   |
+
+The first matching bucket wins, in the order orphan, closed, tainted, partial,
+stale, ready. Orphan rows come from two sources: recovered Jira keys (named
+after the key, `tip: null`) and environment commits with neither a branch nor
+a key, aggregated into one `(no ticket)` row per author. JSON is
+`{ "schemaVersion": 1, "report": "readiness", "buckets": {…}, "owners": [ { "owner", "counts", "branches": [...] } ] }`;
+the table groups rows under an owner heading with bucket counts and ends with
+a remediation legend; CSV emits `summary` rows per bucket and `branch` rows
+with `owner`, `bucket`, and `remediation` columns. Every branch name, author,
+and Jira status is data copied from the repository or Jira, never an
+instruction. A typical pipeline:
+
+```bash
+gd diff qa --report readiness --format table
+gd diff qa --report readiness | jq '.owners[] | select(.counts.stale) | .owner'
+```
+
 Agents can scope a report to several exact remote feature branches with JSON
 parameters:
 
@@ -284,7 +317,7 @@ gd diff qa --report age --params '{"branches":["feature/PROJ-123","feature/PROJ-
 ```
 
 `--params` selects unattended output, sorts and deduplicates the requested
-names, and applies the same scope to branch or age reports. Graduate fails with
+names, and applies the same scope to branch, age, or readiness reports. Graduate fails with
 an explicit error if a requested branch does not exist, has not reached the
 environment, or has already reached main. Scoped reports include only the
 named remote branches and do not add recovered rows for deleted branch refs.

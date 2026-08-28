@@ -14,6 +14,7 @@ mod formats_tests;
 mod membership_tests;
 mod merge_check_tests;
 mod output_paths_tests;
+mod readiness_tests;
 mod recovered_tickets_tests;
 mod scan_tests;
 mod selection_tests;

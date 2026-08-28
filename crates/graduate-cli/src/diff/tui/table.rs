@@ -1,6 +1,6 @@
 //! Branch table rendering.
 
-use graduate::promotion::JiraIssueState;
+use graduate::promotion::{jira_issue_is_closed, JiraIssueState, JiraIssueSummary};
 use ratatui::layout::{Constraint, HorizontalAlignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -169,7 +169,7 @@ fn jira_cells(state: &JiraIssueState, flagged: bool) -> (Cell<'static>, Cell<'st
         JiraIssueState::Loading { .. } => ("loading…".to_owned(), Palette::muted()),
         JiraIssueState::Loaded(issue) => {
             let status = terminal_text::escape(&issue.status);
-            let style = jira_status_style(&status);
+            let style = jira_status_style(issue);
             (status, style)
         }
         JiraIssueState::Failed { .. } => ("Jira error".to_owned(), Palette::error()),
@@ -185,12 +185,11 @@ fn jira_cells(state: &JiraIssueState, flagged: bool) -> (Cell<'static>, Cell<'st
     }
 }
 
-fn jira_status_style(status: &str) -> Style {
-    let lowered = status.to_ascii_lowercase();
-    if matches!(lowered.as_str(), "done" | "closed" | "resolved") {
-        Palette::success()
-    } else if lowered.contains("cancel") {
+fn jira_status_style(issue: &JiraIssueSummary) -> Style {
+    if issue.status.to_ascii_lowercase().contains("cancel") {
         Palette::muted()
+    } else if jira_issue_is_closed(&issue.status, issue.status_category.as_deref()) {
+        Palette::success()
     } else {
         Palette::text()
     }

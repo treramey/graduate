@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Added `gd diff <environment> --report readiness`: an owner-grouped rebuild
+  readiness report that buckets every branch as `ready`, `stale`, `partial`,
+  `tainted`, `closed`, or `orphan` with a remediation per bucket, in JSON,
+  YAML, table, and CSV. It runs the read-only merge check and keeps Jira
+  enrichment; `JiraIssueSummary` now carries Jira's `statusCategory.key` so
+  the report and the TUI agree on what "closed" means.
 - `gd diff` branch rows gained `mergesCleanlyOntoMain` and `conflictingPaths`,
   computed by an in-memory gitoxide three-way merge of each tip onto main
   that never writes to the repository. The fields stay `null` unless a report

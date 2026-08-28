@@ -86,7 +86,7 @@ impl JiraClient {
         struct Fields {
             #[serde(default)]
             summary: String,
-            status: NamedValue,
+            status: Status,
             assignee: Option<Assignee>,
             #[serde(default)]
             fix_versions: Vec<NamedValue>,
@@ -95,6 +95,18 @@ impl JiraClient {
         #[serde(rename_all = "camelCase")]
         struct NamedValue {
             name: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Status {
+            name: String,
+            #[serde(default)]
+            status_category: Option<StatusCategory>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct StatusCategory {
+            key: Option<String>,
         }
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -110,6 +122,11 @@ impl JiraClient {
             api_url: issue.api_url,
             summary: issue.fields.summary,
             status: issue.fields.status.name,
+            status_category: issue
+                .fields
+                .status
+                .status_category
+                .and_then(|category| category.key),
             assignee: issue.fields.assignee.map(|assignee| assignee.display_name),
             fix_versions: issue
                 .fields

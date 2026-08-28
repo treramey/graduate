@@ -115,6 +115,7 @@ fn loaded(key: &str) -> JiraIssueState {
         api_url: String::new(),
         summary: String::new(),
         status: String::new(),
+        status_category: None,
         assignee: None,
         fix_versions: Vec::new(),
         url: String::new(),

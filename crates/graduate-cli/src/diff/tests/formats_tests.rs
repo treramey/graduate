@@ -146,6 +146,7 @@ fn json_report_uses_camel_case_and_jira_api_field_shapes() {
                 api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
                 summary: "Add login".to_owned(),
                 status: "Ready for QA".to_owned(),
+                status_category: None,
                 assignee: Some("Pat".to_owned()),
                 fix_versions: vec!["1.2".to_owned()],
                 url: "https://example.atlassian.net/browse/PROJ-123".to_owned(),

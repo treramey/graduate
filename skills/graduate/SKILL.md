@@ -53,8 +53,15 @@ unattended output and works with either the default branch report or `--report
 age`. Requested branches must exist, be in the environment, and remain absent
 from main; invalid selections fail explicitly.
 
+Use `gd diff <environment> --report readiness` before a rebuild. It groups
+every branch by owner and buckets it as `ready`, `stale` (conflicts with
+main), `partial` (tip extended after promotion), `tainted` (merged the
+environment into itself), `closed` (Jira done), or `orphan` (no live branch),
+each with a `remediation` string; `buckets` carries totals. It runs a
+read-only in-memory merge of every tip onto main and keeps Jira enrichment.
+
 Use `gd diff <environment> --report age` for the advanced commit-age report.
-Supplying `--report branches|age` always selects unattended output. Prefer JSON
+Supplying `--report branches|age|readiness` always selects unattended output. Prefer JSON
 for agents: age schema v2 has `schemaVersion`, UTC `asOf`, stable assessment
 kinds, explicit threshold dates, `oldestYear`, `oldestBranches`, and the same
 authoritative commit inventory. Its buckets contain only years found in commit
