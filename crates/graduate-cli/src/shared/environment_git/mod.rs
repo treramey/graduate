@@ -132,31 +132,29 @@ pub(crate) fn promotion_candidates(
     Ok(candidates)
 }
 
-/// Whether any commit of the branch above main has reached the environment.
+/// Whether the branch's own line of work has reached the environment.
 ///
 /// A branch whose tip is in the environment qualifies immediately. A branch
-/// that was merged once and then extended qualifies through the commits it
-/// shares with the environment; a branch that never reached the environment
-/// does not.
+/// that was merged once and then extended qualifies through an earlier
+/// first-parent commit. Only the first-parent line is followed: history that
+/// arrives through a merge into the branch (for example merging the
+/// environment itself) is not the branch's own work and never qualifies it.
 fn reaches_environment(
     repository: &gix::Repository,
     inspection: &EnvironmentInspection,
     tip: gix::ObjectId,
 ) -> Result<bool, CliError> {
-    if inspection.environment_ancestors.contains(&tip) {
-        return Ok(true);
-    }
     let mut visited = HashSet::new();
-    let mut pending = vec![tip];
-    while let Some(id) = pending.pop() {
+    let mut current = Some(tip);
+    while let Some(id) = current {
         if inspection.main_ancestors.contains(&id) || !visited.insert(id) {
-            continue;
+            return Ok(false);
         }
         if inspection.environment_ancestors.contains(&id) {
             return Ok(true);
         }
         let commit = repository.find_commit(id).map_err(gitoxide_error)?;
-        pending.extend(commit.parent_ids().map(|parent| parent.detach()));
+        current = commit.parent_ids().next().map(|parent| parent.detach());
     }
     Ok(false)
 }

@@ -199,12 +199,17 @@ fn readiness_row(branch: &PromotionBranch) -> ReadinessRow {
 
 /// One `(no ticket)` orphan row per author for environment commits that no
 /// branch or recovered ticket row attributes.
+///
+/// A tainted branch reaches every commit the environment had promoted, so
+/// its commit list attributes nothing here; otherwise one tainted branch
+/// would hide every orphan.
 fn untracked_rows(
     branches: &[PromotionBranch],
     environment_ahead: &[PromotionCommit],
 ) -> Vec<ReadinessRow> {
     let attributed = branches
         .iter()
+        .filter(|branch| branch.absorbed_environment_merges == 0)
         .flat_map(|branch| branch.commits.iter().map(|commit| commit.id.as_str()))
         .collect::<HashSet<_>>();
     let mut by_author: BTreeMap<&str, (usize, &str)> = BTreeMap::new();

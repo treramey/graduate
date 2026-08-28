@@ -245,7 +245,9 @@ Each branch row also records where the branch stands against the environment.
 when the branch was merged into the environment once and then extended, and
 `unmergedAhead` counts the non-merge commits reachable from the tip that the
 environment has not received (always `0` when the tip is in the environment).
-Such branches now appear in the report; `restack` cannot re-merge them from
+Such branches now appear in the report when an earlier commit on their own
+first-parent line reached the environment; a branch that merely merged the
+environment into itself and was never promoted does not qualify. `restack` cannot re-merge them from
 their tip, so the owner must promote them again. The table format shows these
 as `TIP IN ENV`, `UNMERGED`, and `ABSORBED` columns, and the TUI shows an
 `UNMERGED` column plus `Tip in env`, `Unmerged`, and `Absorbed` detail lines.
@@ -256,9 +258,12 @@ Rows also carry `mergesCleanlyOntoMain` and `conflictingPaths`. They are
 `null` (an empty CSV cell, `-` in the table's `MERGES CLEAN` column) unless
 the readiness report ran, because computing them means merging every branch
 tip onto main. Graduate performs that merge entirely in memory with gitoxide
-on a repository handle that never writes objects, so the scanned repository
-is unchanged; only the conflict count is reported, never conflict content or
-paths.
+on a repository handle that never writes objects and ignores any configured
+external merge drivers, so the scanned repository is unchanged and no process
+runs; only the conflict count is reported, never conflict content or paths.
+Criss-cross histories use the recursive virtual merge base as Git does, and a
+branch with no common ancestor merges against an empty tree and reports its
+conflicts rather than failing the report.
 
 Non-interactive runs emit JSON by default, with camelCase report fields and
 Jira issue data in the same `fields.status.name`, `fields.assignee.displayName`,

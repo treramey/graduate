@@ -114,36 +114,25 @@ pub fn build_snapshot(graph: &RestackGraph) -> Result<RestackSnapshot, Inventory
     }
 
     let environment_merges = environment_first_parent_merges(graph);
-    let absorbed: BTreeMap<&str, Vec<String>> = surviving
+    let absorbed: BTreeMap<&str, BTreeSet<String>> = surviving
         .iter()
         .map(|feature| {
-            let own_merges = features
-                .iter()
-                .find(|explicit| explicit.name == feature.name)
-                .map(|explicit| {
-                    explicit
-                        .historical_merges
-                        .iter()
-                        .map(|historical| historical.commit.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
             (
                 feature.name.as_str(),
-                absorbed_merges(graph, feature, &environment_merges, &own_merges),
+                absorbed_merges(graph, feature, &environment_merges),
             )
         })
         .collect();
     let owned: BTreeMap<&str, BTreeSet<String>> = surviving
         .iter()
         .map(|feature| {
-            let absorbed = absorbed
-                .get(feature.name.as_str())
-                .map(Vec::as_slice)
-                .unwrap_or_default();
+            let absorbed = absorbed.get(feature.name.as_str());
             (
                 feature.name.as_str(),
-                own_ancestors(graph, feature, absorbed),
+                absorbed.map_or_else(
+                    || feature.ancestors.clone(),
+                    |absorbed| own_ancestors(graph, feature, absorbed),
+                ),
             )
         })
         .collect();

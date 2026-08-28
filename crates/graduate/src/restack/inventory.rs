@@ -36,25 +36,25 @@ pub fn build_inventory_snapshot(
     // A branch that merged the environment reaches every promoted feature,
     // but it neither carries nor owns that work.
     let environment_merges = environment_first_parent_merges(graph);
-    let absorbed: BTreeMap<&str, Vec<String>> = candidates
+    let absorbed: BTreeMap<&str, BTreeSet<String>> = candidates
         .iter()
         .map(|feature| {
             (
                 feature.name.as_str(),
-                absorbed_merges(graph, feature, &environment_merges, &BTreeSet::new()),
+                absorbed_merges(graph, feature, &environment_merges),
             )
         })
         .collect();
     let owned: BTreeMap<&str, BTreeSet<String>> = candidates
         .iter()
         .map(|feature| {
-            let absorbed = absorbed
-                .get(feature.name.as_str())
-                .map(Vec::as_slice)
-                .unwrap_or_default();
+            let absorbed = absorbed.get(feature.name.as_str());
             (
                 feature.name.as_str(),
-                own_ancestors(graph, feature, absorbed),
+                absorbed.map_or_else(
+                    || feature.ancestors.clone(),
+                    |absorbed| own_ancestors(graph, feature, absorbed),
+                ),
             )
         })
         .collect();

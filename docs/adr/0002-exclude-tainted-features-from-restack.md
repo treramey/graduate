@@ -15,11 +15,20 @@ deliberately removed, and would defeat the purpose of the rebuild.
 `graduate::restack` detects tainted features in both history and inventory
 mode. An environment merge is a two-parent merge on the environment's
 first-parent history whose second parent is not on main. A feature is tainted
-when its tip reaches an environment merge that is neither one of the merges
-that promoted the feature itself nor a merge on the feature's own first-parent
-line (the environment may have been fast-forwarded onto the branch). The
-snapshot records each tainted feature with its tip and the absorbed merge ids
-and binds them into the plan digest through the schema version.
+when its tip reaches an environment merge that is neither on the feature's own
+first-parent line (the environment may have been fast-forwarded onto the
+branch) nor a merge whose second parent is on that line (a merge that
+promoted this feature). The rule uses only graph shape, so history and
+inventory mode agree. The snapshot records each tainted feature with its tip
+and the absorbed merge ids and binds them into the plan digest through the
+schema version.
+
+A branch that was cut *from* the environment rather than from main is
+indistinguishable from a fast-forwarded environment: the environment merges it
+reaches sit on its own first-parent line, so it is not tainted and owns every
+commit it reaches. Recreating such branches from main is still the right
+remedy, but Graduate cannot tell the two shapes apart and errs toward not
+blocking the rebuild.
 
 A tainted feature can never be retained, interactively or by machine. The
 interactive checklist starts it removed, marks it with a `↳ tainted` sub-row,

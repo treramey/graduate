@@ -74,3 +74,24 @@ fn branches_that_merged_the_environment_count_absorbed_merges(
     assert_eq!(a.absorbed_environment_merges, 0);
     Ok(())
 }
+
+#[test]
+fn a_branch_that_only_merged_the_environment_is_not_a_candidate(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path();
+    membership_fixture(path)?;
+    run_git(
+        path,
+        &["checkout", "-q", "-b", "feature/synced-only", "main"],
+    )?;
+    commit_file(path, "s", "s\n", "s one", "2024-02-05T00:00:00Z")?;
+    run_git(path, &["merge", "-q", "--no-ff", "qa", "-m", "sync qa"])?;
+    run_git(path, &["checkout", "-q", "main"])?;
+    publish(path, &["feature/synced-only"])?;
+
+    let rows = measured_rows(&scan_options(path, "qa"))?;
+
+    assert!(rows.iter().all(|row| row.branch != "feature/synced-only"));
+    Ok(())
+}

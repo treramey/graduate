@@ -131,10 +131,6 @@ impl RestackInteraction {
     /// The tainted record for the feature at `index`, when it has one.
     #[must_use]
     pub fn tainted_feature(&self, index: usize) -> Option<&TaintedFeature> {
-        self.tainted_feature_at(index)
-    }
-
-    pub(super) fn tainted_feature_at(&self, index: usize) -> Option<&TaintedFeature> {
         let feature = self.snapshot.features.get(index)?;
         self.snapshot
             .tainted_features

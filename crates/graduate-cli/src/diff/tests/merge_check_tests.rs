@@ -153,3 +153,86 @@ fn merge_fields_are_null_or_empty_until_computed() {
     let table = super::super::report_table::format_table(&report);
     assert!(table.contains("MERGES CLEAN"));
 }
+
+#[test]
+fn unrelated_histories_report_conflicts_instead_of_failing(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path();
+    init_repository(path)?;
+    run_git(path, &["checkout", "-q", "--orphan", "feature/orphan"])?;
+    run_git(path, &["rm", "-q", "-rf", "."])?;
+    commit_file(
+        path,
+        "base",
+        "orphan\n",
+        "orphan root",
+        "2024-02-01T00:00:00Z",
+    )?;
+    run_git(path, &["checkout", "-q", "-b", "qa", "main"])?;
+    run_git(
+        path,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "--allow-unrelated-histories",
+            "-X",
+            "theirs",
+            "feature/orphan",
+            "-m",
+            "promote orphan",
+        ],
+    )?;
+    run_git(path, &["checkout", "-q", "main"])?;
+    publish(path, &["main", "qa", "feature/orphan"])?;
+
+    let mut options = scan_options(path, "qa");
+    options.check_merge_onto_main = true;
+    let rows = measured_rows(&options)?;
+
+    let orphan = rows
+        .iter()
+        .find(|row| row.branch == "feature/orphan")
+        .ok_or("feature/orphan missing")?;
+    assert_eq!(
+        orphan.merge_onto_main,
+        Some(MergeOntoMain {
+            clean: false,
+            conflicting_paths: 1,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn configured_external_merge_drivers_never_run() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path();
+    merge_fixture(path)?;
+    let marker = path.join("driver-ran");
+    run_git(
+        path,
+        &[
+            "config",
+            "merge.hostile.driver",
+            &format!("touch {}", marker.display()),
+        ],
+    )?;
+    std::fs::write(path.join(".git/info/attributes"), "base merge=hostile\n")?;
+
+    let mut options = scan_options(path, "qa");
+    options.check_merge_onto_main = true;
+    let rows = measured_rows(&options)?;
+
+    assert!(!marker.exists(), "external merge driver was executed");
+    let conflict = rows
+        .iter()
+        .find(|row| row.branch == "feature/conflict")
+        .ok_or("feature/conflict missing")?;
+    assert_eq!(
+        conflict.merge_onto_main.map(|merge| merge.clean),
+        Some(false)
+    );
+    Ok(())
+}

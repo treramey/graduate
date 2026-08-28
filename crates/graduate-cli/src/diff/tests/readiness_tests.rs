@@ -164,6 +164,34 @@ fn buckets_follow_precedence_and_group_by_owner() {
 }
 
 #[test]
+fn a_tainted_branch_does_not_hide_untracked_commits() {
+    let mut tainted = row("feature/tainted", "Alex");
+    tainted.absorbed_environment_merges = 1;
+    // A tainted branch reaches the loose commit through the absorbed merge.
+    tainted.commits.push(PromotionCommit {
+        id: "loose-1".to_owned(),
+        short_id: "loose1".to_owned(),
+        subject: "loose work".to_owned(),
+        author: "Sam".to_owned(),
+        date: "2024-03-01".to_owned(),
+    });
+    let loose = vec![PromotionCommit {
+        id: "loose-1".to_owned(),
+        short_id: "loose1".to_owned(),
+        subject: "loose work".to_owned(),
+        author: "Sam".to_owned(),
+        date: "2024-03-01".to_owned(),
+    }];
+    let report = PromotionReadinessReport::new(&[tainted], &loose);
+
+    assert_eq!(
+        bucket_of(&report, NO_TICKET_ROW),
+        Some(ReadinessBucket::Orphan)
+    );
+    assert_eq!(report.total(ReadinessBucket::Orphan), 1);
+}
+
+#[test]
 fn a_tainted_open_ticket_is_tainted_and_a_clean_extended_branch_is_partial() {
     let mut tainted = row("feature/PROJ-7-tainted", "Alex");
     tainted.absorbed_environment_merges = 1;

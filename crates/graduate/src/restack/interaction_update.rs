@@ -97,7 +97,7 @@ impl RestackInteraction {
             {
                 // Keep all never retains a tainted feature.
                 let retained = (0..self.retained.len())
-                    .map(|index| self.tainted_feature_at(index).is_none())
+                    .map(|index| self.tainted_feature(index).is_none())
                     .collect();
                 self.retained = retained;
                 RestackInteractionEffect::None

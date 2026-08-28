@@ -36,28 +36,36 @@ pub(super) fn environment_first_parent_merges(graph: &RestackGraph) -> BTreeSet<
 /// Environment merges the feature reaches without owning them, sorted.
 ///
 /// A merge on the feature's own first-parent line is the feature's own work
-/// (the environment may have been fast-forwarded onto the branch), and the
-/// merges in `own_merges` promoted this feature itself. Every other
-/// environment merge the tip reaches was pulled in by merging the
-/// environment into the branch.
+/// (the environment may have been fast-forwarded onto the branch), and a
+/// merge whose second parent is on that line promoted this feature itself.
+/// Every other environment merge the tip reaches was pulled in by merging
+/// the environment into the branch. The rule is the same in history and
+/// inventory mode.
 #[must_use]
 pub(super) fn absorbed_merges(
     graph: &RestackGraph,
     feature: &FeatureRef,
     environment_merges: &BTreeSet<String>,
-    own_merges: &BTreeSet<String>,
-) -> Vec<String> {
+) -> BTreeSet<String> {
     let reached = environment_merges
         .iter()
-        .filter(|merge| feature.ancestors.contains(*merge) && !own_merges.contains(*merge))
+        .filter(|merge| feature.ancestors.contains(*merge))
         .collect::<Vec<_>>();
     if reached.is_empty() {
-        return Vec::new();
+        return BTreeSet::new();
     }
     let own_line = first_parent_line(graph, feature);
     reached
         .into_iter()
         .filter(|merge| !own_line.contains(*merge))
+        .filter(|merge| {
+            let promoted_this_feature = graph
+                .commits
+                .get(*merge)
+                .and_then(|commit| commit.parents.get(1))
+                .is_some_and(|second| own_line.contains(second));
+            !promoted_this_feature
+        })
         .cloned()
         .collect()
 }
@@ -89,7 +97,7 @@ fn first_parent_line(graph: &RestackGraph, feature: &FeatureRef) -> BTreeSet<Str
 pub(super) fn own_ancestors(
     graph: &RestackGraph,
     feature: &FeatureRef,
-    absorbed: &[String],
+    absorbed: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     if absorbed.is_empty() {
         return feature.ancestors.clone();
@@ -111,7 +119,7 @@ pub(super) fn own_ancestors(
 #[must_use]
 pub(super) fn tainted_features<'a, I>(features: I) -> Vec<TaintedFeature>
 where
-    I: IntoIterator<Item = (&'a FeatureRef, Vec<String>)>,
+    I: IntoIterator<Item = (&'a FeatureRef, BTreeSet<String>)>,
 {
     let mut tainted = features
         .into_iter()
@@ -119,7 +127,7 @@ where
         .map(|(feature, absorbed_merges)| TaintedFeature {
             name: feature.name.clone(),
             tip: feature.tip.clone(),
-            absorbed_merges,
+            absorbed_merges: absorbed_merges.into_iter().collect(),
         })
         .collect::<Vec<_>>();
     tainted.sort_by(|left, right| left.name.cmp(&right.name));

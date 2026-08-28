@@ -11,9 +11,12 @@ use crate::shared::error::CliError;
 /// how many paths conflict.
 ///
 /// The merge runs on a repository handle with in-memory object storage, so
-/// merged blobs and trees never reach the object database; the scanned
-/// repository is left untouched. Conflict content and paths are never
-/// surfaced, only the count.
+/// merged blobs and trees never reach the object database. Configured
+/// external merge drivers are dropped from that handle first, so the check
+/// never runs a process. Criss-cross histories use the recursive virtual
+/// merge base as Git does; unrelated histories merge against an empty tree
+/// and report their conflicts instead of failing the report. Conflict content
+/// and paths are never surfaced, only the count.
 pub(super) fn merge_onto_main(
     repository: &gix::Repository,
     main_ancestors: &HashSet<gix::ObjectId>,
@@ -26,37 +29,22 @@ pub(super) fn merge_onto_main(
             conflicting_paths: 0,
         });
     }
-    let repository = repository.clone().with_object_memory();
-    let base = repository.merge_base(main, tip).map_err(gitoxide_error)?;
-    if base.detach() == tip {
-        return Ok(MergeOntoMain {
-            clean: true,
-            conflicting_paths: 0,
-        });
-    }
-    let tree_of = |id: gix::ObjectId| -> Result<gix::ObjectId, CliError> {
-        Ok(repository
-            .find_commit(id)
-            .map_err(gitoxide_error)?
-            .tree_id()
-            .map_err(gitoxide_error)?
-            .detach())
-    };
-    let base_tree = tree_of(base.detach())?;
-    let main_tree = tree_of(main)?;
-    let tip_tree = tree_of(tip)?;
-    let options = repository.tree_merge_options().map_err(gitoxide_error)?;
+    let mut repository = repository.clone().with_object_memory();
+    drop_external_merge_drivers(&mut repository)?;
+    let options =
+        gix::merge::commit::Options::from(repository.tree_merge_options().map_err(gitoxide_error)?)
+            .with_allow_missing_merge_base(true);
     let outcome = repository
-        .merge_trees(
-            base_tree,
-            main_tree,
-            tip_tree,
+        .merge_commits(
+            main,
+            tip,
             gix::merge::blob::builtin_driver::text::Labels::default(),
             options,
         )
         .map_err(gitoxide_error)?;
     let how = gix::merge::tree::TreatAsUnresolved::git();
     let conflicting_paths = outcome
+        .tree_merge
         .conflicts
         .iter()
         .filter(|conflict| conflict.is_unresolved(how))
@@ -65,4 +53,22 @@ pub(super) fn merge_onto_main(
         clean: conflicting_paths == 0,
         conflicting_paths,
     })
+}
+
+/// Remove every `merge.<driver>.*` section so gitoxide only uses its built-in
+/// text and binary drivers.
+fn drop_external_merge_drivers(repository: &mut gix::Repository) -> Result<(), CliError> {
+    let mut config = repository.config_snapshot_mut();
+    let driver_sections = config
+        .sections_and_ids_by_name("merge")
+        .into_iter()
+        .flatten()
+        .filter(|(section, _)| section.header().subsection_name().is_some())
+        .map(|(_, id)| id)
+        .collect::<Vec<_>>();
+    for id in driver_sections {
+        config.remove_section_by_id(id);
+    }
+    config.commit().map_err(gitoxide_error)?;
+    Ok(())
 }

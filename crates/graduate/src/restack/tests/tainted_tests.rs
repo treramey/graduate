@@ -115,3 +115,43 @@ fn environment_fast_forwarded_onto_a_feature_does_not_taint_it() {
     let snapshot = build_inventory_snapshot(&ambiguous_graph(), direct_reason(), &BTreeMap::new());
     assert!(snapshot.tainted_features.is_empty());
 }
+
+/// `feature/a` was promoted, then merged `qa` back while `qa` held nothing
+/// but `a` itself: the only environment merge it reaches promoted `a`.
+fn self_synced_graph() -> RestackGraph {
+    let mut graph = empty_graph("envm1");
+    add_commit(&mut graph, "base", "tb", &[], "base");
+    add_commit(&mut graph, "a1", "ta1", &["base"], "a one");
+    add_commit(&mut graph, "envm1", "te1", &["base", "a1"], "promote a");
+    add_commit(&mut graph, "a2", "ta2", &["a1", "envm1"], "sync qa");
+    graph.environment_ancestors = ids(&["base", "a1", "envm1"]);
+    graph.main_ancestors = ids(&["base"]);
+    graph.feature_refs = vec![feature("feature/a", "a2", &["a1", "envm1", "a2"])];
+    graph
+}
+
+#[test]
+fn merging_only_your_own_promotion_back_is_not_tainted_in_either_mode(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let graph = self_synced_graph();
+    let history = build_snapshot(&graph);
+    // The tip is not in the environment, so history mode reports nothing
+    // for it either way; inventory mode must agree once the tip is merged.
+    assert!(history.map_or(true, |snapshot| snapshot.tainted_features.is_empty()));
+
+    let mut graph = graph;
+    add_commit(
+        &mut graph,
+        "envm2",
+        "te2",
+        &["envm1", "a2"],
+        "promote a again",
+    );
+    graph.environment_tip = "envm2".to_owned();
+    graph.environment_ancestors = ids(&["base", "a1", "envm1", "a2", "envm2"]);
+    let history = build_snapshot(&graph)?;
+    assert!(history.tainted_features.is_empty());
+    let inventory = build_inventory_snapshot(&graph, direct_reason(), &BTreeMap::new());
+    assert!(inventory.tainted_features.is_empty());
+    Ok(())
+}
