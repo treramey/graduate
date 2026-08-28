@@ -1634,7 +1634,7 @@ dependencies = [
 
 [[package]]
 name = "graduate"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1645,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "graduate-cli"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "assert_cmd",
  "atomicwrites",
