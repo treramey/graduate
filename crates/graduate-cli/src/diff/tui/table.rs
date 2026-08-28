@@ -38,6 +38,7 @@ pub(super) fn render_table(
             sort_label("AHEAD", SortKey::Ahead),
             HorizontalAlignment::Right,
         ),
+        ("UNMERGED".to_owned(), HorizontalAlignment::Right),
     ];
     if show_jira {
         labels.push(("JIRA".to_owned(), HorizontalAlignment::Left));
@@ -69,11 +70,18 @@ pub(super) fn render_table(
                 Cell::from(
                     Line::from(report.ahead.to_string()).alignment(HorizontalAlignment::Right),
                 ),
+                Cell::from(
+                    Line::from(unmerged_label(report.unmerged_ahead))
+                        .alignment(HorizontalAlignment::Right),
+                ),
             ],
             None => vec![
                 Cell::from(branch),
                 placeholder_cell(),
                 placeholder_cell(),
+                Cell::from(
+                    Line::styled("…", Palette::muted()).alignment(HorizontalAlignment::Right),
+                ),
                 Cell::from(
                     Line::styled("…", Palette::muted()).alignment(HorizontalAlignment::Right),
                 ),
@@ -113,6 +121,7 @@ pub(super) fn render_table(
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(7),
+            Constraint::Length(8),
             Constraint::Length(12),
             Constraint::Length(16),
         ]
@@ -122,6 +131,7 @@ pub(super) fn render_table(
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(7),
+            Constraint::Length(8),
         ]
     };
     let table = Table::new(rows, widths)
@@ -130,6 +140,15 @@ pub(super) fn render_table(
         .row_highlight_style(Palette::action_focus())
         .highlight_symbol("› ");
     frame.render_stateful_widget(table, area, &mut model.table_state);
+}
+
+/// Hide a zero so fully merged branches stay visually quiet.
+fn unmerged_label(unmerged_ahead: usize) -> String {
+    if unmerged_ahead == 0 {
+        String::new()
+    } else {
+        unmerged_ahead.to_string()
+    }
 }
 
 fn placeholder_cell() -> Cell<'static> {

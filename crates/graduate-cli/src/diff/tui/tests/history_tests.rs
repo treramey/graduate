@@ -27,6 +27,11 @@ fn history_list_scrolls_to_any_number_of_commits() -> Result<(), Box<dyn std::er
                 .map(|index| test_commit(&format!("Commit {index}")))
                 .collect(),
             merged_environments: Vec::new(),
+            tip: String::new(),
+            tip_in_environment: true,
+            unmerged_ahead: 0,
+            absorbed_environment_merges: 0,
+            merge_onto_main: None,
             jira: JiraIssueState::NoTicket,
         }))),
     )?;
@@ -59,6 +64,11 @@ fn history_sheet_uses_the_wide_modal_and_explains_the_comparison(
             last_author: "Pat".to_owned(),
             commits: vec![test_commit("DEMO-101 Add authentication")],
             merged_environments: Vec::new(),
+            tip: String::new(),
+            tip_in_environment: true,
+            unmerged_ahead: 0,
+            absorbed_environment_merges: 0,
+            merge_onto_main: None,
             jira: JiraIssueState::NoTicket,
         }),
     });

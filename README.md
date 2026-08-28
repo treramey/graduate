@@ -227,7 +227,21 @@ branch is rebuilt or synced with pull-style self-merges, because Graduate
 also recognizes merge commits whose recorded subject names an environment
 branch as the merge target or source, including `--no-ff` merges of an
 environment into a feature branch. Machine formats expose the same signal as
-a `mergedEnvironments` field.
+a `mergedEnvironments` field, and count the requested environment's own merge
+commits that the branch reaches as `absorbedEnvironmentMerges`; the TUI
+inspector and footer warning show the same count.
+
+Each branch row also records where the branch stands against the environment.
+`tip` is the full commit ID of the branch tip. `tipInEnvironment` is `false`
+when the branch was merged into the environment once and then extended, and
+`unmergedAhead` counts the non-merge commits reachable from the tip that the
+environment has not received (always `0` when the tip is in the environment).
+Such branches now appear in the report; `restack` cannot re-merge them from
+their tip, so the owner must promote them again. The table format shows these
+as `TIP IN ENV`, `UNMERGED`, and `ABSORBED` columns, and the TUI shows an
+`UNMERGED` column plus `Tip in env`, `Unmerged`, and `Absorbed` detail lines.
+Rows recovered from deleted branches have a `null` tip. The branch report
+schema is version 2.
 
 Non-interactive runs emit JSON by default, with camelCase report fields and
 Jira issue data in the same `fields.status.name`, `fields.assignee.displayName`,

@@ -41,6 +41,12 @@ whether the environment is out of sync with main; behind commits are diagnostic
 and do not receive age assessments. The completed interactive report calls out
 the same behind count.
 
+Each branch row in the schema-v2 branch report carries `tip`,
+`tipInEnvironment`, `unmergedAhead`, and `absorbedEnvironmentMerges`. A row
+with `tipInEnvironment: false` was merged once and then extended; `restack`
+cannot re-merge it from its tip. A row with `absorbedEnvironmentMerges > 0`
+merged the environment into itself and must be recreated from main.
+
 Scope a report to exact remote branches with `--params
 '{"branches":["feature/PROJ-123","feature/PROJ-456"]}'`. This always selects
 unattended output and works with either the default branch report or `--report

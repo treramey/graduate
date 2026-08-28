@@ -2,13 +2,14 @@
 
 use graduate::promotion::{JiraIssueState, PromotionAgeReport};
 
+use super::report_csv::yes_no;
 use super::report_json::{age_bucket_label, age_bucket_reading, share_percent};
 use super::PromotionReport;
 
 pub(super) fn format_table(report: &PromotionReport) -> String {
     let mut output = format!(
         "Branches in {} but not {}\n{} ahead of main; {} behind main.\n\
-         {:<36} {:<10} {:<10} {:>5}  {:<12} {:<14} LAST AUTHOR\n",
+         {:<36} {:<10} {:<10} {:>5} {:<10} {:>8} {:>8}  {:<12} {:<14} LAST AUTHOR\n",
         crate::shared::terminal_text::escape(&report.environment),
         crate::shared::terminal_text::escape(&report.main),
         commit_count(report.inventory.ahead.len()),
@@ -17,6 +18,9 @@ pub(super) fn format_table(report: &PromotionReport) -> String {
         "STARTED",
         "LAST",
         "AHEAD",
+        "TIP IN ENV",
+        "UNMERGED",
+        "ABSORBED",
         "JIRA",
         "STATUS"
     );
@@ -37,11 +41,14 @@ pub(super) fn format_table(report: &PromotionReport) -> String {
             JiraIssueState::Loading { .. } => "loading",
         };
         output.push_str(&format!(
-            "{:<36} {:<10} {:<10} {:>5}  {:<12} {:<14} {}\n",
+            "{:<36} {:<10} {:<10} {:>5} {:<10} {:>8} {:>8}  {:<12} {:<14} {}\n",
             crate::shared::terminal_text::escape(&row.branch),
             row.started,
             row.last,
             row.ahead,
+            yes_no(row.tip_in_environment),
+            row.unmerged_ahead,
+            row.absorbed_environment_merges,
             key,
             crate::shared::terminal_text::escape(status),
             crate::shared::terminal_text::escape(&row.last_author)

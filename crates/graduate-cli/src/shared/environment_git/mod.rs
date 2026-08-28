@@ -110,7 +110,7 @@ pub(crate) fn promotion_candidates(
                     inspection.main
                 )));
             }
-            if !inspection.environment_ancestors.contains(&id) {
+            if !reaches_environment(repository, inspection, id)? {
                 return Err(CliError::InvalidInput(format!(
                     "--params branch `{branch}` has not reached `{}`",
                     inspection.environment
@@ -123,13 +123,42 @@ pub(crate) fn promotion_candidates(
 
     let mut candidates = Vec::new();
     for (branch, id) in remote_feature_refs(repository, inspection)? {
-        if inspection.environment_ancestors.contains(&id)
-            && !inspection.main_ancestors.contains(&id)
+        if !inspection.main_ancestors.contains(&id)
+            && reaches_environment(repository, inspection, id)?
         {
             candidates.push((branch, id));
         }
     }
     Ok(candidates)
+}
+
+/// Whether any commit of the branch above main has reached the environment.
+///
+/// A branch whose tip is in the environment qualifies immediately. A branch
+/// that was merged once and then extended qualifies through the commits it
+/// shares with the environment; a branch that never reached the environment
+/// does not.
+fn reaches_environment(
+    repository: &gix::Repository,
+    inspection: &EnvironmentInspection,
+    tip: gix::ObjectId,
+) -> Result<bool, CliError> {
+    if inspection.environment_ancestors.contains(&tip) {
+        return Ok(true);
+    }
+    let mut visited = HashSet::new();
+    let mut pending = vec![tip];
+    while let Some(id) = pending.pop() {
+        if inspection.main_ancestors.contains(&id) || !visited.insert(id) {
+            continue;
+        }
+        if inspection.environment_ancestors.contains(&id) {
+            return Ok(true);
+        }
+        let commit = repository.find_commit(id).map_err(gitoxide_error)?;
+        pending.extend(commit.parent_ids().map(|parent| parent.detach()));
+    }
+    Ok(false)
 }
 
 pub(crate) fn promotion_inventory(

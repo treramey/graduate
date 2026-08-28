@@ -23,6 +23,11 @@ fn loaded_jira_details_are_visible() -> Result<(), Box<dyn std::error::Error>> {
             last_author: "Pat".to_owned(),
             commits: vec![test_commit("Add login"), test_commit("Add login tests")],
             merged_environments: Vec::new(),
+            tip: String::new(),
+            tip_in_environment: true,
+            unmerged_ahead: 0,
+            absorbed_environment_merges: 0,
+            merge_onto_main: None,
             jira: JiraIssueState::Loaded(graduate::promotion::JiraIssueSummary {
                 key: "PROJ-123".to_owned(),
                 api_url: "https://example.atlassian.net/rest/api/3/issue/10001".to_owned(),
@@ -71,6 +76,11 @@ fn inspector_separates_jira_status_from_branch_metadata() -> Result<(), Box<dyn 
             last_author: "Pat".to_owned(),
             commits: Vec::new(),
             merged_environments: Vec::new(),
+            tip: String::new(),
+            tip_in_environment: true,
+            unmerged_ahead: 0,
+            absorbed_environment_merges: 0,
+            merge_onto_main: None,
             jira: JiraIssueState::NotConfigured {
                 key: "PROJ-123".to_owned(),
             },
@@ -119,6 +129,11 @@ fn very_short_inspector_keeps_branch_metadata_visible() -> Result<(), Box<dyn st
             last_author: "Pat".to_owned(),
             commits: Vec::new(),
             merged_environments: Vec::new(),
+            tip: String::new(),
+            tip_in_environment: true,
+            unmerged_ahead: 0,
+            absorbed_environment_merges: 0,
+            merge_onto_main: None,
             jira: JiraIssueState::NotConfigured {
                 key: "PROJ-123".to_owned(),
             },
@@ -160,6 +175,11 @@ fn environment_merged_branch_renders_red_with_a_footer_warning(
             last_author: "Pat".to_owned(),
             commits: Vec::new(),
             merged_environments: vec!["qa".to_owned()],
+            tip: String::new(),
+            tip_in_environment: true,
+            unmerged_ahead: 0,
+            absorbed_environment_merges: 0,
+            merge_onto_main: None,
             jira: JiraIssueState::NoTicket,
         }))),
     )?;
@@ -173,6 +193,11 @@ fn environment_merged_branch_renders_red_with_a_footer_warning(
             last_author: "Pat".to_owned(),
             commits: Vec::new(),
             merged_environments: Vec::new(),
+            tip: String::new(),
+            tip_in_environment: true,
+            unmerged_ahead: 0,
+            absorbed_environment_merges: 0,
+            merge_onto_main: None,
             jira: JiraIssueState::NoTicket,
         }))),
     )?;
@@ -315,5 +340,44 @@ fn done_jira_statuses_render_in_the_success_color() -> Result<(), Box<dyn std::e
         .any(|cell| cell.style().fg == Some(ratatui::style::Color::Green));
 
     assert!(green_cells);
+    Ok(())
+}
+
+#[test]
+fn unmerged_work_is_visible_in_the_table_and_inspector() -> Result<(), Box<dyn std::error::Error>> {
+    let mut model = test_model()?;
+    update(
+        &mut model,
+        Message::Scan(Box::new(DiffUpdate::Skeleton {
+            environment: "qa".to_owned(),
+            main: "main".to_owned(),
+            branches: vec!["feature/extended".to_owned()],
+        })),
+    )?;
+    update(
+        &mut model,
+        Message::Scan(Box::new(DiffUpdate::Measured(PromotionBranch {
+            branch: "feature/extended".to_owned(),
+            started: "2024-01-01".to_owned(),
+            last: "2024-01-02".to_owned(),
+            ahead: 3,
+            last_author: "Pat".to_owned(),
+            commits: Vec::new(),
+            merged_environments: Vec::new(),
+            tip: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            tip_in_environment: false,
+            unmerged_ahead: 2,
+            absorbed_environment_merges: 0,
+            merge_onto_main: None,
+            jira: JiraIssueState::NoTicket,
+        }))),
+    )?;
+    let mut terminal = Terminal::new(TestBackend::new(110, 48))?;
+    terminal.draw(|frame| render(frame, &mut model))?;
+    let rendered = terminal.backend().to_string();
+
+    assert!(rendered.contains("UNMERGED"));
+    assert!(rendered.contains("Tip in env  no"));
+    assert!(rendered.contains("Unmerged  2"));
     Ok(())
 }

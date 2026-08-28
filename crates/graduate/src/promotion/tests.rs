@@ -26,6 +26,11 @@ fn branch(name: &str, commits: Vec<PromotionCommit>) -> PromotionBranch {
         last_author: "Pat".to_owned(),
         commits,
         merged_environments: Vec::new(),
+        tip: String::new(),
+        tip_in_environment: true,
+        unmerged_ahead: 0,
+        absorbed_environment_merges: 0,
+        merge_onto_main: None,
         jira: JiraIssueState::NoTicket,
     }
 }

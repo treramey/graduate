@@ -77,15 +77,32 @@ pub(super) fn environment_subjects(names: &[&str], remote: &str) -> Vec<Environm
         .collect()
 }
 
+/// Reachability sets and merge markers shared by every branch measurement.
+pub(super) struct MeasureContext<'a> {
+    pub(super) environment: &'a str,
+    pub(super) main_ancestors: &'a HashSet<gix::ObjectId>,
+    pub(super) environment_ancestors: &'a HashSet<gix::ObjectId>,
+    pub(super) environment_markers: &'a HashMap<gix::ObjectId, String>,
+    pub(super) environment_subjects: &'a [EnvironmentSubject],
+}
+
 pub(super) fn measure_branch(
     repository: &gix::Repository,
-    main_ancestors: &HashSet<gix::ObjectId>,
-    environment_markers: &HashMap<gix::ObjectId, String>,
-    environment_subjects: &[EnvironmentSubject],
+    ctx: &MeasureContext<'_>,
     branch: String,
     tip: gix::ObjectId,
     jira: JiraIssueState,
 ) -> Result<PromotionBranch, CliError> {
+    let MeasureContext {
+        environment,
+        main_ancestors,
+        environment_ancestors,
+        environment_markers,
+        environment_subjects,
+    } = *ctx;
+    let tip_in_environment = environment_ancestors.contains(&tip);
+    let mut unmerged_ahead = 0usize;
+    let mut absorbed_environment_merges = 0usize;
     let tip_commit = repository.find_commit(tip).map_err(gitoxide_error)?;
     let author = tip_commit.author().map_err(gitoxide_error)?;
     let author_time = author.time().map_err(gitoxide_error)?;
@@ -100,9 +117,12 @@ pub(super) fn measure_branch(
         if main_ancestors.contains(&id) || !unique.insert(id) {
             continue;
         }
-        if let Some(environment) = environment_markers.get(&id) {
-            if !merged_environments.contains(environment) {
-                merged_environments.push(environment.clone());
+        if let Some(marker) = environment_markers.get(&id) {
+            if marker == environment {
+                absorbed_environment_merges += 1;
+            }
+            if !merged_environments.contains(marker) {
+                merged_environments.push(marker.clone());
             }
         }
         let commit = repository.find_commit(id).map_err(gitoxide_error)?;
@@ -141,6 +161,9 @@ pub(super) fn measure_branch(
             }
             continue;
         }
+        if !environment_ancestors.contains(&id) {
+            unmerged_ahead += 1;
+        }
         let commit_author = commit.author().map_err(gitoxide_error)?;
         let committed_at = commit_author.time().map_err(gitoxide_error)?.seconds;
         started_seconds = started_seconds.min(committed_at);
@@ -170,12 +193,17 @@ pub(super) fn measure_branch(
     merged_environments.sort();
     Ok(PromotionBranch {
         branch,
+        tip: tip.to_string(),
         started: unix_date(started_seconds),
         last,
         ahead: commits.len(),
         last_author,
         commits: commits.into_iter().map(|(_, commit)| commit).collect(),
         merged_environments,
+        tip_in_environment,
+        unmerged_ahead,
+        absorbed_environment_merges,
+        merge_onto_main: None,
         jira,
     })
 }
@@ -271,12 +299,17 @@ pub(super) fn recover_deleted_branch_tickets(
             };
             PromotionBranch {
                 branch: key,
+                tip: String::new(),
                 started: unix_date(work.started),
                 last: unix_date(work.last),
                 ahead: commits.len(),
                 last_author: work.last_author,
                 commits: commits.into_iter().map(|(_, commit)| commit).collect(),
                 merged_environments: Vec::new(),
+                tip_in_environment: true,
+                unmerged_ahead: 0,
+                absorbed_environment_merges: 0,
+                merge_onto_main: None,
                 jira,
             }
         })

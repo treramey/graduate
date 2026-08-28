@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `gd diff` branch rows now expose `tip`, `tipInEnvironment`, `unmergedAhead`,
+  and `absorbedEnvironmentMerges` in JSON, YAML, CSV, and table output, with
+  matching `UNMERGED` column and inspector lines in the TUI. Branches that
+  were merged into the environment once and then extended now appear in the
+  report instead of being skipped. The branch report schema is version 2.
+
 - `gd restack` can now rebuild an environment whose history cannot be read.
   When the history proof fails, the interactive flow explains the blocking
   commit and offers to rebuild from inventory: membership from remote tips
