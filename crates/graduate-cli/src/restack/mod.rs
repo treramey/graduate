@@ -8,13 +8,15 @@ use crate::restack::session::SessionStore;
 use crate::shared::environment_git::validate_ref_component;
 use crate::shared::error::CliError;
 use errors::session_error;
-use interactive::run_interactive;
+use interactive::{interactive_resume_requested, interactive_terminal, run_interactive};
+use interactive_resume::run_interactive_resume;
 use machine_output::{machine_failure, machine_usage};
 use preview::preview;
 use resume::{abort_session, resume_apply, resume_preview};
 
 mod errors;
 mod interactive;
+mod interactive_resume;
 mod interactive_steps;
 mod isolated;
 mod isolated_merge;
@@ -23,6 +25,7 @@ mod machine_output;
 mod plan_validation;
 mod preview;
 mod resume;
+mod sealed;
 pub(crate) mod session;
 mod source;
 #[cfg(test)]
@@ -40,6 +43,9 @@ struct MachineParams {
 pub(crate) fn run(args: RestackArgs) -> Result<(), CliError> {
     if args.params.is_none() && args.resume.is_none() && !args.dry_run {
         return run_interactive(args);
+    }
+    if interactive_resume_requested(&args, interactive_terminal()) {
+        return run_interactive_resume(args);
     }
     validate_inputs(&args)?;
     let sessions = SessionStore::open().map_err(session_error)?;

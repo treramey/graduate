@@ -277,3 +277,27 @@ fn restack_resume_rejects_expired_locked_tampered_and_mismatched_sessions(
     assert!(!expired_area.exists());
     Ok(())
 }
+
+#[test]
+fn restack_resume_reviews_a_sealed_session_again_without_changing_it() -> Result<(), Box<dyn Error>>
+{
+    let fixture = ConflictRestackFixture::new()?;
+    let (token, _work_area, plan) = fixture.seal_manual_resolution()?;
+
+    let again = fixture.resume(&token, "qa", &fixture.source)?;
+    assert!(
+        again.status.success(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    let replayed: serde_json::Value = serde_json::from_slice(&again.stdout)?;
+    assert_eq!(replayed, plan);
+
+    let applied = fixture.resume_apply(&token)?;
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    Ok(())
+}

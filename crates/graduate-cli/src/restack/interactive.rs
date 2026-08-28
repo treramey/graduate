@@ -54,6 +54,13 @@ pub(super) enum InteractiveOutcome {
     Cancelled(String),
     Published(Box<RestackPlan>),
     Conflict(InteractiveConflict),
+    /// A resumed, sealed session left for `--apply` or `--abort`.
+    Preserved(InteractivePreserved),
+}
+
+pub(super) struct InteractivePreserved {
+    pub(super) environment: String,
+    pub(super) resume_token: String,
 }
 
 pub(super) fn run_interactive(args: RestackArgs) -> Result<(), CliError> {
@@ -64,7 +71,7 @@ pub(super) fn run_interactive(args: RestackArgs) -> Result<(), CliError> {
             json!({}),
         ));
     }
-    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+    if !interactive_terminal() {
         return Err(machine_usage(
             "params_required",
             "a non-terminal restack requires --params or --resume",
@@ -86,6 +93,22 @@ pub(super) fn run_interactive(args: RestackArgs) -> Result<(), CliError> {
     finish_interactive(outcome, || terminal.restore(), write_interactive_outcome)
 }
 
+/// Whether a human is attached to both the input and rendering streams.
+pub(super) fn interactive_terminal() -> bool {
+    std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
+/// Whether `--resume` should continue in the review screen instead of
+/// emitting a machine plan: a bare resume from an attached terminal.
+pub(super) fn interactive_resume_requested(args: &RestackArgs, terminal_attached: bool) -> bool {
+    terminal_attached
+        && args.resume.is_some()
+        && !args.apply
+        && !args.abort
+        && args.params.is_none()
+        && !args.dry_run
+}
+
 pub(super) fn finish_interactive(
     outcome: Result<InteractiveOutcome, CliError>,
     restore: impl FnOnce() -> std::io::Result<()>,
@@ -95,7 +118,7 @@ pub(super) fn finish_interactive(
     write(outcome.map_err(interactive_error)?)
 }
 
-fn write_interactive_outcome(outcome: InteractiveOutcome) -> Result<(), CliError> {
+pub(super) fn write_interactive_outcome(outcome: InteractiveOutcome) -> Result<(), CliError> {
     match outcome {
         InteractiveOutcome::Cancelled(environment) => super::tui::write_cancelled(&environment),
         InteractiveOutcome::Published(plan) => super::tui::write_success(&plan),
@@ -106,6 +129,9 @@ fn write_interactive_outcome(outcome: InteractiveOutcome) -> Result<(), CliError
             resume_token: &conflict.resume_token,
             work_area: &conflict.work_area,
         }),
+        InteractiveOutcome::Preserved(preserved) => {
+            super::tui::write_preserved(&preserved.environment, &preserved.resume_token)
+        }
     }
 }
 

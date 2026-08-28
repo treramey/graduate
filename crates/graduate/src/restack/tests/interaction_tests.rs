@@ -180,3 +180,25 @@ fn history_interaction_never_visits_the_unsupported_stage() -> Result<(), Box<dy
     assert_eq!(interaction.orphaned_commit_count(), 0);
     Ok(())
 }
+
+#[test]
+fn interaction_for_review_starts_on_the_review_screen() {
+    let mut interaction = RestackInteraction::for_review(planning_snapshot());
+
+    assert_eq!(interaction.stage(), RestackInteractionStage::Review);
+    assert!(interaction.is_retained(0));
+    assert_eq!(
+        interaction.update(RestackInteractionAction::Continue),
+        RestackInteractionEffect::None
+    );
+    assert_eq!(interaction.stage(), RestackInteractionStage::Confirmation);
+    assert_eq!(
+        interaction.update(RestackInteractionAction::Back),
+        RestackInteractionEffect::None
+    );
+    assert_eq!(interaction.stage(), RestackInteractionStage::Review);
+    assert_eq!(
+        interaction.update(RestackInteractionAction::Back),
+        RestackInteractionEffect::Revise
+    );
+}

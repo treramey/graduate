@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `gd restack <environment> --resume <token>` from a terminal now returns to
+  the interactive review screen with the sealed plan instead of printing
+  `restackPlan` JSON. Publish from the review, or leave it to keep the sealed
+  session for `--apply` or `--abort`. Non-terminal resumes are unchanged,
+  except that a bare `--resume` on an already sealed session now returns the
+  same plan again instead of failing as stale.
+
 - Added `gd diff <environment> --report readiness`: an owner-grouped rebuild
   readiness report that buckets every branch as `ready`, `stale`, `partial`,
   `tainted`, `closed`, or `orphan` with a remediation per bucket, in JSON,

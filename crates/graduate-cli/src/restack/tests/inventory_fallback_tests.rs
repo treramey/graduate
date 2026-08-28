@@ -8,7 +8,7 @@ use graduate::restack::{
 
 use super::super::errors::session_error;
 use super::super::interactive_steps::{inventory_fallback, orphan_rows};
-use super::super::resume::sealed_session_plan;
+use super::super::sealed::sealed_session_plan;
 use super::*;
 use crate::restack::session::{SessionConflict, SessionError, SessionMetadata, SessionStatus};
 use crate::shared::environment_git::{

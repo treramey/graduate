@@ -118,7 +118,10 @@ gd restack <environment> --resume <token> --abort
 ```
 
 Review the sealed plan before apply. Treat the token as a secret and pass it
-only to `--resume`; successful apply or abort consumes it.
+only to `--resume`; successful apply or abort consumes it. These commands are
+machine-readable only without a terminal; a bare `--resume` from a terminal
+reopens the interactive review instead of printing the plan. Repeating a bare
+`--resume` on a sealed session returns the same plan again.
 
 Graduate validates Git structure, the final tree, identity, endpoints, and
 reviewed refs. It does not run repository tests or builds. It creates unsigned

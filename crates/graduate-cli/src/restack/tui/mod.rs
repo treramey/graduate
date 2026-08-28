@@ -28,7 +28,7 @@ mod selection;
 mod tests;
 mod unsupported_history;
 
-pub(crate) use handoff::{write_cancelled, write_conflict, write_success};
+pub(crate) use handoff::{write_cancelled, write_conflict, write_preserved, write_success};
 
 pub(crate) enum SelectionDecision {
     Preview(RestackSelection),
