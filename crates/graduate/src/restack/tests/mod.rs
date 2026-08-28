@@ -11,6 +11,7 @@ mod interaction_tests;
 mod inventory_orphans_tests;
 mod inventory_tests;
 mod snapshot_tests;
+mod tainted_tests;
 mod unsupported_history_tests;
 
 fn base_graph() -> RestackGraph {
@@ -87,6 +88,7 @@ fn planning_snapshot() -> RestackSnapshot {
         unsupported_history: None,
         carried_features: Vec::new(),
         unattributed_commits: Vec::new(),
+        tainted_features: Vec::new(),
     }
 }
 

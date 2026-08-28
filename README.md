@@ -104,10 +104,19 @@ gd restack qa --params '{"removeBranches":["feature/PROJ-123"]}' --dry-run
 ```
 
 Use `gd restack qa --dry-run` without `--params` to preview the default
-selection, which retains every discovered feature. The existing `gd describe
-restack --json` spelling remains available for explicit contract discovery.
+selection, which retains every discovered feature except tainted ones. The
+existing `gd describe restack --json` spelling remains available for explicit
+contract discovery.
 
-After reviewing the schema-v2 `restackPlan`, pass the same removal selection
+A feature branch that merged the environment into itself is *tainted*: its
+tip reaches every other feature the environment had promoted, so retaining it
+would re-import all of them. Graduate lists such branches under
+`taintedBranches` with the absorbed merge ids, removes them by default in both
+the checklist and machine previews, and never lets them be retained. The
+checklist marks them with a `↳ tainted` sub-row and tells the owner to
+recreate the branch from main and cherry-pick its commits.
+
+After reviewing the schema-v3 `restackPlan`, pass the same removal selection
 and digest with the separate apply flag:
 
 ```bash
@@ -115,7 +124,7 @@ gd restack qa --params '{"removeBranches":["feature/PROJ-123"],"planDigest":"<PL
 ```
 
 Machine results go to stdout as JSON. Machine errors go to stderr as redacted
-schema-v2 `restackError` JSON. `--dry-run` and `--params` never authorize a push.
+schema-v3 `restackError` JSON. `--dry-run` and `--params` never authorize a push.
 Restack always fetches; it has no stale-ref, alternate-format, or output-file
 mode. Use `--main <branch>` or `--remote <remote>` to override discovery.
 Branch and remote inputs reject percent-encoded octets instead of interpreting

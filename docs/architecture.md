@@ -44,9 +44,9 @@ actions.
   promotion-report attribution rows, Jira enrichment states, deterministic
   branch-to-ticket mapping, and commit-age projections.
 - `graduate::restack`: deterministic restack graph snapshots, explicit feature
-  ordering, commit attribution, marker recognition, unsupported-history
-  evidence, removal selection, terminal-independent review transitions, and
-  endpoint-bound plan digests.
+  ordering, ownership-based commit attribution, tainted-feature detection,
+  marker recognition, unsupported-history evidence, removal selection,
+  terminal-independent review transitions, and endpoint-bound plan digests.
 - `graduate::jira`: validated Jira sites, credentials, and identities shared by every delivery path.
 - `graduate::jira_auth`: deterministic Jira onboarding state and secret-retention
   transitions.
@@ -151,6 +151,9 @@ actions.
 - Restack inventory accepts only uniquely mapped two-parent explicit feature
   merges and exact empty phase markers; direct work, fast-forwards, octopus
   merges, deleted feature refs, and ambiguous mappings fail with evidence.
+- A feature that merged the environment into itself is tainted: it is removed
+  by default, can never be retained, and owns only the commits it reaches
+  without passing through an absorbed environment merge (ADR 0002).
 - Restack preview always fetches, validates removals and dependencies, and
   reconstructs unsigned canonical merges in a temporary repository that only
   borrows source objects. It never pushes or changes the source checkout,

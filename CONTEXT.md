@@ -71,6 +71,13 @@ A feature whose captured remote tip is reachable from the captured mainline.
 A restack does not merge a graduated feature into the rebuilt environment.
 _Avoid_: Closed feature, deleted feature
 
+**Tainted feature**:
+An explicit feature whose tip reaches an environment merge other than the
+merges that promoted it, because the environment branch was merged into the
+feature. A restack removes a tainted feature by default and never retains it;
+its owner recreates the branch from main and cherry-picks its commits.
+_Avoid_: Dirty branch, polluted feature, environment-synced branch
+
 **Resumable session**:
 An isolated restack that Graduate preserves after an unresolved conflict. It
 binds the conflict resolution to the reviewed plan until the session is

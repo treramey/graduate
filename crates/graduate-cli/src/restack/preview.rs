@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use graduate::restack::{build_plan, select_features};
+use graduate::restack::{build_plan, select_features, RestackSnapshot};
 use serde_json::json;
 
 use super::errors::{conflict_error, inspection_error, plan_error, selection_error, session_error};
@@ -60,7 +60,8 @@ pub(super) fn preview(
             },
         )?;
     let snapshot = restack_snapshot(&repository, &inspection).map_err(inspection_error)?;
-    let selection = select_features(&snapshot, &params.remove_branches).map_err(selection_error)?;
+    let removals = with_tainted_removals(&snapshot, &params.remove_branches);
+    let selection = select_features(&snapshot, &removals).map_err(selection_error)?;
     let author = configured_author(source)?;
     let repository_id = source_repository_identity(source)?;
     let source_objects = source_object_directory(source)?;
@@ -165,4 +166,16 @@ fn finish_or_preserve(
             ))
         }
     }
+}
+
+/// Every tainted feature is removed by default; explicit removals are kept
+/// in order and never duplicated.
+fn with_tainted_removals(snapshot: &RestackSnapshot, remove_branches: &[String]) -> Vec<String> {
+    let mut removals = remove_branches.to_vec();
+    for tainted in &snapshot.tainted_features {
+        if !removals.contains(&tainted.name) {
+            removals.push(tainted.name.clone());
+        }
+    }
+    removals
 }

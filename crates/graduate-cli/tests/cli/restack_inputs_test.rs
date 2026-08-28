@@ -39,7 +39,7 @@ fn restack_machine_preview_never_falls_back_to_the_reachability_inventory(
         assert!(output.stdout.is_empty());
         let error = structured_restack_error(output)?;
         assert_eq!(error["kind"], "restackError");
-        assert_eq!(error["schemaVersion"], 2);
+        assert_eq!(error["schemaVersion"], 3);
         assert_eq!(error["code"], "unsupported_history");
         assert_eq!(error["details"]["kind"], "directCommit");
         assert!(error["details"].get("fallback").is_none());

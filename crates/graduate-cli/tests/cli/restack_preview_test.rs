@@ -93,7 +93,7 @@ fn restack_preview_is_isolated_and_emits_canonical_machine_json() -> Result<(), 
     );
     let plan: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(plan["kind"], "restackPlan");
-    assert_eq!(plan["schemaVersion"], 2);
+    assert_eq!(plan["schemaVersion"], 3);
     assert_eq!(plan["author"]["name"], "Global Fixture Author");
     assert_eq!(plan["author"]["email"], "global-fixture@example.com");
     assert_eq!(plan["retainedBranches"][0]["name"], "feature/a");
@@ -164,7 +164,7 @@ fn restack_dry_run_defaults_to_retaining_every_feature() -> Result<(), Box<dyn E
     );
     let plan: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(plan["kind"], "restackPlan");
-    assert_eq!(plan["schemaVersion"], 2);
+    assert_eq!(plan["schemaVersion"], 3);
     assert_eq!(plan["retainedBranches"][0]["name"], "feature/a");
     assert_eq!(plan["removedBranches"], serde_json::json!([]));
     assert_eq!(

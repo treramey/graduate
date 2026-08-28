@@ -249,8 +249,13 @@ pub(super) fn pad_text(value: &str, width: usize) -> String {
     format!("{value}{}", " ".repeat(padding))
 }
 
-pub(super) fn selection_error_message(error: &SelectionError) -> String {
+pub(super) fn selection_error_message(error: &SelectionError, main: &str) -> String {
     match error {
+        SelectionError::Tainted { branch } => format!(
+            "Recreate {} from {} and cherry-pick your commits",
+            escape(branch),
+            escape(main)
+        ),
         SelectionError::RetainedDependency { branch, dependents } => format!(
             "Cannot remove {} while retained by {}.",
             escape(branch),

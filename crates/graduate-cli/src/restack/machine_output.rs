@@ -188,6 +188,11 @@ pub(super) fn plan_json(plan: &RestackPlan) -> Value {
             "tip": carried.tip,
             "carriers": carried.carriers,
         })).collect::<Vec<_>>(),
+        "taintedBranches": plan.snapshot.tainted_features.iter().map(|tainted| json!({
+            "name": tainted.name,
+            "tip": tainted.tip,
+            "absorbedMerges": tainted.absorbed_merges,
+        })).collect::<Vec<_>>(),
         "orphanedCommits": plan.orphaned_commits.iter().map(|commit| json!({
             "commit": commit.commit,
             "subject": commit.subject,

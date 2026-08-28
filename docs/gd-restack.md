@@ -57,7 +57,16 @@ can deliberately remove selected features from the reconstructed branch.
   empty commits, remain reconstructability errors.
 - The interactive flow shows the discovered feature branches and allows the
   user to exclude branches from the rebuilt environment. Every discovered
-  explicit feature is selected by default; unchecking it means removal.
+  explicit feature is selected by default, except a tainted feature (one that
+  merged the environment into itself); unchecking a feature means removal.
+- A tainted feature can never be retained, interactively or by machine.
+  Retaining it would re-import every other unreleased feature through its
+  tip. The checklist starts it removed with a `↳ tainted` sub-row, rejects
+  toggling it back on, and names the remediation: recreate the branch from
+  main and cherry-pick its commits. Machine previews union every tainted
+  feature into `removeBranches`. Attribution follows ownership: a tainted
+  feature owns only the commits it reaches without passing through an
+  absorbed environment merge. See ADR 0002.
 - Interactive selection uses a focused Ratatui checklist on stderr, with merge
   order, branch, short tip SHA, locally parsed Jira key when present, and rerere
   training availability. Compact terminals reflow those fields instead of
@@ -182,7 +191,9 @@ can deliberately remove selected features from the reconstructed branch.
   plan digest. The failed proof's evidence travels with the snapshot and the
   plan JSON (`inventory.reason`). Schema version 2 adds `inventory`,
   `carriedBranches`, `orphanedCommits`, and `effects.reusedResolutions` to
-  `restackPlan`; persisted schema-1 sessions are rejected as mismatched.
+  `restackPlan`; schema version 3 adds `taintedBranches` (`name`, `tip`,
+  `absorbedMerges`). Persisted sessions from an older schema are rejected as
+  mismatched.
 - Reconstruction validation is Git-only: resolved index, no leftover conflict
   markers, canonical merge parents/order/messages, reviewed final tree, and
   unchanged remote inputs. `git diff --check` runs with every whitespace class
@@ -483,6 +494,18 @@ contract.
    dropped commits in review and state the count in the confirmation.
 4. Keep `--dry-run` and `--params` failing with `unsupported_history`; the
    machine mode is a follow-up.
+
+### 10. Exclude tainted features
+
+1. Add `TaintedFeature` and `RestackSnapshot::tainted_features` to
+   `graduate::restack`; detect absorbed environment merges in both history and
+   inventory snapshots; attribute commits by ownership rather than
+   reachability; bump the schema to 3.
+2. Start tainted features removed in `RestackInteraction::new`, reject
+   retaining them with `SelectionError::Tainted`, and union them into machine
+   removals before `select_features`.
+3. Show a `↳ tainted` sub-row and remediation in the checklist, a "Tainted
+   branches" block in review, and `taintedBranches` in `restackPlan`.
 
 ## Investigated context
 

@@ -95,7 +95,11 @@ impl RestackInteraction {
             RestackInteractionAction::KeepAll
                 if self.stage == RestackInteractionStage::Selection =>
             {
-                self.retained.fill(true);
+                // Keep all never retains a tainted feature.
+                let retained = (0..self.retained.len())
+                    .map(|index| self.tainted_feature_at(index).is_none())
+                    .collect();
+                self.retained = retained;
                 RestackInteractionEffect::None
             }
             RestackInteractionAction::RemoveAll

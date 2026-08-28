@@ -82,9 +82,12 @@ gd restack qa --params '{"removeBranches":["feature/PROJ-123"]}' --dry-run
 ```
 
 Use `gd restack qa --dry-run` without `--params` to preview the default
-selection, which retains every discovered feature.
+selection, which retains every discovered feature except tainted ones. A
+tainted branch merged the environment into itself; the plan lists it under
+`taintedBranches`, always removes it, and never lets you retain it. Tell its
+owner to recreate the branch from main and cherry-pick their commits.
 
-Review the schema-v2 `restackPlan` from stdout, including all captured refs,
+Review the schema-v3 `restackPlan` from stdout, including all captured refs,
 retained and removed branches, merge outcomes, final tree, effects, and
 `planDigest`. Then repeat the exact removal selection and add the digest plus
 the separate apply flag:

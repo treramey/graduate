@@ -90,6 +90,42 @@ impl RestackFixture {
         })
     }
 
+    /// Add `feature/b`, merge `qa` into it, then promote it into `qa`.
+    pub(crate) fn add_environment_merging_feature(&self) -> Result<(), Box<dyn Error>> {
+        self.git(&self.source, &["checkout", "-q", "-b", "feature/b", "main"])?;
+        std::fs::write(self.source.join("feature-b"), "feature b\n")?;
+        self.git(&self.source, &["add", "feature-b"])?;
+        self.git(&self.source, &["commit", "-q", "-m", "feature b"])?;
+        self.git(
+            &self.source,
+            &["merge", "-q", "--no-ff", "qa", "-m", "sync qa"],
+        )?;
+        self.git(&self.source, &["push", "-q", "-u", "origin", "feature/b"])?;
+        self.git(&self.source, &["checkout", "-q", "qa"])?;
+        self.git(
+            &self.source,
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "feature/b",
+                "-m",
+                "accepted feature b",
+            ],
+        )?;
+        self.git(&self.source, &["push", "-q", "origin", "qa"])?;
+        self.git(&self.source, &["checkout", "-q", "main"])
+    }
+
+    pub(crate) fn dry_run(&self) -> Result<std::process::Output, Box<dyn Error>> {
+        Ok(self
+            .command()?
+            .current_dir(&self.source)
+            .args(["restack", "qa", "--main", "main", "--dry-run"])
+            .env("GIT_CONFIG_GLOBAL", &self.global)
+            .output()?)
+    }
+
     pub(crate) fn command(&self) -> Result<Command, Box<dyn Error>> {
         let mut command = gd_command()?;
         isolate_gd_storage(&mut command, &self.cache);

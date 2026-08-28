@@ -61,7 +61,7 @@ fn write_restack_schema() -> Result<(), CliError> {
                     "flag": "--dry-run",
                     "required": false,
                     "schema": {"type": "boolean"},
-                    "defaultSelection": {"removeBranches": []},
+                    "defaultSelection": {"removeBranches": [], "alsoRemoves": "every branch listed in taintedBranches"},
                     "conflictsWith": ["apply", "resume", "abort"]
                 },
                 {
@@ -162,11 +162,11 @@ fn write_restack_schema() -> Result<(), CliError> {
             ],
             "results": {
                 "stdout": [
-                    {"kind": "restackPlan", "schemaVersion": 2},
-                    {"kind": "restackResult", "schemaVersion": 2},
-                    {"kind": "restackAbortResult", "schemaVersion": 2}
+                    {"kind": "restackPlan", "schemaVersion": 3},
+                    {"kind": "restackResult", "schemaVersion": 3},
+                    {"kind": "restackAbortResult", "schemaVersion": 3}
                 ],
-                "stderr": {"kind": "restackError", "schemaVersion": 2},
+                "stderr": {"kind": "restackError", "schemaVersion": 3},
                 "exitCodes": {"success": 0, "failure": 1, "usage": 2}
             },
             "validation": {

@@ -10,6 +10,7 @@ mod interaction_update;
 mod inventory;
 mod plan;
 mod snapshot;
+mod taint;
 #[cfg(test)]
 mod tests;
 
@@ -22,7 +23,7 @@ pub use inventory::{build_inventory_snapshot, orphaned_commit_ids};
 pub use plan::{build_plan, canonical_merge_message, select_features};
 pub use snapshot::build_snapshot;
 
-pub const RESTACK_SCHEMA_VERSION: u8 = 2;
+pub const RESTACK_SCHEMA_VERSION: u8 = 3;
 
 /// One commit needed to classify an environment history.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,6 +135,20 @@ pub struct CarriedFeature {
     pub carriers: Vec<String>,
 }
 
+/// A feature branch that merged the environment into itself.
+///
+/// Retaining it would re-import every other feature the absorbed merges
+/// carry, so it is removed by default and can never be retained.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaintedFeature {
+    pub name: String,
+    pub tip: String,
+    /// Environment merge commits the branch reaches, excluding the merges
+    /// that promoted the branch itself.
+    pub absorbed_merges: Vec<String>,
+}
+
 /// A commit the rebuilt environment will not contain.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -166,6 +181,8 @@ pub struct RestackSnapshot {
     /// Environment-only work that no top-level feature reaches. Always empty
     /// in history mode, where the proof rejects such commits instead.
     pub unattributed_commits: Vec<String>,
+    /// Explicit features that absorbed environment merges; removed by default.
+    pub tainted_features: Vec<TaintedFeature>,
 }
 
 /// The configured identity used for every reconstructed merge commit.

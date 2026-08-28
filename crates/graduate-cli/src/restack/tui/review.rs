@@ -8,6 +8,7 @@ use ratatui::Frame;
 
 use super::render::{pad_text, short_oid, truncate_text};
 use super::review_details::{dropped_summary, resolution_summary, technical_detail_lines};
+use super::selection::absorbed_merges_text;
 use crate::shared::terminal_text::escape;
 use crate::shared::theme::Palette;
 
@@ -45,6 +46,8 @@ pub(super) fn wrapped_text_height(text: &Text<'_>, width: u16) -> usize {
         .wrap(Wrap { trim: false })
         .line_count(width.max(1))
 }
+
+const TAINTED_EVIDENCE_LIMIT: usize = 3;
 
 fn review_text(plan: &RestackPlan, show_details: bool) -> Text<'static> {
     let retained = plan.selection.retained.len();
@@ -228,6 +231,57 @@ fn review_text(plan: &RestackPlan, show_details: bool) -> Text<'static> {
                 Span::raw(truncate_text(&escape(&commit.subject), 48)),
             ])
         }));
+    }
+    if !plan.snapshot.tainted_features.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!(
+                "Tainted branches ({})",
+                plan.snapshot.tainted_features.len()
+            ),
+            Palette::warning().bold(),
+        ));
+        lines.push(Line::styled(
+            format!(
+                "Merged {} into themselves; removed and never retained. Recreate from {} and cherry-pick.",
+                escape(&plan.snapshot.environment),
+                escape(&plan.snapshot.main)
+            ),
+            Palette::muted(),
+        ));
+        lines.extend(
+            plan.snapshot
+                .tainted_features
+                .iter()
+                .take(TAINTED_EVIDENCE_LIMIT)
+                .map(|tainted| {
+                    Line::from(vec![
+                        Span::styled(
+                            format!(
+                                "  {}  {}  ",
+                                pad_text(&truncate_text(&escape(&tainted.name), 32), 32),
+                                short_oid(&tainted.tip)
+                            ),
+                            Palette::warning(),
+                        ),
+                        Span::styled(
+                            absorbed_merges_text(tainted.absorbed_merges.len()),
+                            Palette::muted(),
+                        ),
+                    ])
+                }),
+        );
+        let hidden = plan
+            .snapshot
+            .tainted_features
+            .len()
+            .saturating_sub(TAINTED_EVIDENCE_LIMIT);
+        if hidden > 0 {
+            lines.push(Line::styled(
+                format!("  … and {hidden} more"),
+                Palette::muted(),
+            ));
+        }
     }
     if show_details {
         lines.push(Line::from(""));

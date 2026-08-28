@@ -109,7 +109,10 @@ pub(crate) fn choose_features(
             }
             RestackInteractionEffect::Cancel => return Ok(SelectionDecision::Cancel),
             RestackInteractionEffect::Rejected(error) => {
-                rejection = Some(selection_error_message(&error));
+                rejection = Some(selection_error_message(
+                    &error,
+                    &interaction.snapshot().main,
+                ));
             }
             RestackInteractionEffect::None
             | RestackInteractionEffect::Revise

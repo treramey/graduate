@@ -54,6 +54,16 @@ pub fn select_features(
         });
     }
 
+    if let Some(tainted) = snapshot
+        .tainted_features
+        .iter()
+        .find(|tainted| !requested.contains(tainted.name.as_str()))
+    {
+        return Err(SelectionError::Tainted {
+            branch: tainted.name.clone(),
+        });
+    }
+
     for branch in remove_branches {
         let dependents = snapshot
             .attributed_commits
